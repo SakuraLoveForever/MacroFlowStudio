@@ -17,11 +17,13 @@ from macroflow.core.image_match import capture_bgr
 from macroflow.input.input_guard import KeyCapturer, RESERVED_HOTKEY_VKS
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
-    SCRIPT_START_TARGET_ID, ensure_action_ids, special_action_label,
+    SCRIPT_START_TARGET_ID, ensure_action_ids, script_ref_repeat_count,
+    special_action_label,
 )
 from macroflow.execution.player import running_process_names
 from macroflow.core.storage import (
     BASE_DIR, DIRECTION_SCRIPTS_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
+    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
     load_app_settings, load_module_images_dir, load_module_objects,
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
@@ -135,6 +137,24 @@ def choose_module_binding(parent, categories: tuple[str, ...]) -> dict | None:
         parent, categories=categories, selection_only=True, allow_number=False,
     ).show()
     return result if isinstance(result, dict) and result.get("module_ref") else None
+
+
+def module_display_name(module_key: str, module_obj: dict | None = None) -> str:
+    """Return a human-readable module label without exposing stable object IDs."""
+    key = str(module_key or "").strip()
+    if not key:
+        return "未选择模块"
+    obj = module_obj if module_obj is not None else registered_module_object(key)
+    if obj:
+        name = str(obj.get("name") or "").strip()
+        if name:
+            return name
+        template = str(obj.get("template") or "").strip()
+        if template:
+            return Path(template.replace("\\", "/")).stem or "未命名模块"
+    if key.startswith("module:"):
+        return "未找到模块"
+    return Path(key.replace("\\", "/")).stem or "未命名模块"
 
 
 def module_action_for_key(key: str, category: str, obj: dict | None = None) -> dict:
@@ -928,6 +948,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "repeat_click": "连续点击",
         "scroll": "滚轮", "image_match": "识图", "text_ocr": "识别文字",
         "ocr_compare": "数字比较", "multi_condition_click": "多条件识图",
+        "row_list_condition_click": "列表逐行点击",
         "notice": "浮动提醒", "comment": "注释",
         "script_ref": "引用脚本", "open_app": "打开软件",
         "close_app": "关闭软件", "jump": "跳转",
@@ -1013,6 +1034,8 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
                 if isinstance(condition, dict) and condition.get("enabled")
             ]
             detail = f"启用 {len(enabled)}/3 个条件 · 点击 {int(action.get('click_count', 1))} 次"
+        elif kind == "row_list_condition_click":
+            detail = "从上到下查找首个匹配项"
         elif kind == "notice":
             detail = clip(action.get("text", ""), 16)
         elif kind == "comment":
@@ -1708,10 +1731,7 @@ class GlobalDetectDialog(ModalDialog):
         saved_module_key = str(action.get("module_key", "")).strip()
         saved_module = registered_module_object(saved_module_key) if saved_module_key else None
         self.module_key = tk.StringVar(value=saved_module_key)
-        self.module_name = tk.StringVar(value=(
-            str((saved_module or {}).get("name") or "").strip()
-            or (Path(saved_module_key.replace("\\", "/")).stem if saved_module_key else "未选择模块")
-        ))
+        self.module_name = tk.StringVar(value=module_display_name(saved_module_key, saved_module))
         self.template = tk.StringVar(value=str(action.get("template", "")))
         self.threshold = tk.StringVar(value=str(action.get("threshold", 0.85)))
         self.interval = duration_var(action.get("interval_ms", 500))
@@ -1733,24 +1753,34 @@ class GlobalDetectDialog(ModalDialog):
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
 
-        ttk.Label(body, text="模板").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="模块" if self.jump else "模板").grid(
+            row=0, column=0, sticky="w", pady=8,
+        )
         template_row = ttk.Frame(body)
         template_row.grid(row=0, column=1, sticky="ew")
-        self.template_combo = ttk.Combobox(
-            template_row, textvariable=self.template,
-            values=registered_template_options(str(action.get("template", ""))),
-            state="readonly",
-        )
-        self.template_combo.pack(side="left", fill="x", expand=True)
-        self.template_combo.bind(
-            "<<ComboboxSelected>>", lambda _event: self._clear_image_module_binding(),
-        )
-        ttk.Button(
-            template_row, text="选择模块…", command=self.select_image_module,
-        ).pack(side="left", padx=(6, 0))
-        ttk.Button(template_row, text="模板区域…", command=self.open_template_region_manager).pack(
-            side="left", padx=(6, 0),
-        )
+        if self.jump:
+            ttk.Label(
+                template_row, textvariable=self.module_name, foreground=COLOR_MUTED,
+            ).pack(side="left", fill="x", expand=True)
+            ttk.Button(
+                template_row, text="选择模块…", command=self.select_image_module,
+            ).pack(side="left", padx=(6, 0))
+        else:
+            self.template_combo = ttk.Combobox(
+                template_row, textvariable=self.template,
+                values=registered_template_options(str(action.get("template", ""))),
+                state="readonly",
+            )
+            self.template_combo.pack(side="left", fill="x", expand=True)
+            self.template_combo.bind(
+                "<<ComboboxSelected>>", lambda _event: self._clear_image_module_binding(),
+            )
+            ttk.Button(
+                template_row, text="选择模块…", command=self.select_image_module,
+            ).pack(side="left", padx=(6, 0))
+            ttk.Button(template_row, text="模板区域…", command=self.open_template_region_manager).pack(
+                side="left", padx=(6, 0),
+            )
 
         rows = [
             ("相似度", self.threshold, 0.1, 1.0, 0.05),
@@ -1880,8 +1910,13 @@ class GlobalDetectDialog(ModalDialog):
             module_name.set("未选择模块")
 
     def select_image_module(self):
+        categories = (
+            ("workflow_global", "script_global")
+            if getattr(self, "jump", False)
+            else ("switch", "workflow_global", "script_global")
+        )
         binding = choose_module_binding(
-            self, categories=("switch", "workflow_global", "script_global"),
+            self, categories=categories,
         )
         if not binding:
             return
@@ -1893,11 +1928,10 @@ class GlobalDetectDialog(ModalDialog):
         self.region_mode.set("template")
         self.region.set(",".join(map(str, region)))
         obj = registered_module_object(module_key) or {}
-        self.module_name.set(
-            str(obj.get("name") or "").strip()
-            or Path(module_key.replace("\\", "/")).stem
-        )
-        self.template_combo.configure(values=registered_template_options(template))
+        self.module_name.set(module_display_name(module_key, obj))
+        template_combo = getattr(self, "template_combo", None)
+        if template_combo is not None:
+            template_combo.configure(values=registered_template_options(template))
 
     def _refresh_template_options(self):
         current = self.template.get()
@@ -1931,7 +1965,14 @@ class GlobalDetectDialog(ModalDialog):
             module_key_var = getattr(self, "module_key", None)
             module_key = module_key_var.get().strip() if module_key_var is not None else ""
             module_binding = None
-            if module_key:
+            if getattr(self, "jump", False):
+                module_obj = registered_module_object(module_key) if module_key else None
+                if module_obj is None or module_obj.get("category") not in (
+                    "workflow_global", "script_global",
+                ):
+                    raise ValueError("添加全局模块只能选择工作流全局模块或脚本全局模块")
+                module_binding = module_reference_binding(module_key, module_obj)
+            elif module_key:
                 module_obj = registered_module_object(module_key)
                 if module_obj is None:
                     raise ValueError("所选图片模块已不存在，请重新选择")
@@ -2385,7 +2426,8 @@ def segment_row_label(action: dict) -> str:
         label = f"全局检测 {Path(str(action.get('template', ''))).stem}"
         return f"【阻塞等待】{label}" if segment_action_is_blocking(action) else label
     if kind == "script_ref":
-        return f"引用脚本 {Path(str(action.get('script', ''))).stem}"
+        repeats = script_ref_repeat_count(action)
+        return f"引用脚本 {Path(str(action.get('script', ''))).stem} · 执行 {repeats} 次"
     if kind == "open_app":
         return f"打开软件 {Path(str(action.get('path', ''))).stem or '?'}"
     if kind == "close_app":
@@ -2559,7 +2601,9 @@ class TemplateRegionFormDialog(ModalDialog):
         self.run_code_on_timeout_var = tk.BooleanVar(
             value=bool(obj.get("run_code_on_timeout", False)),
         )
-        self.not_found_timeout_var = duration_var(obj.get("not_found_timeout_ms", 3000))
+        self.not_found_timeout_var = duration_var(
+            obj.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
+        )
         self.timeout_segment = [dict(item) for item in obj.get("on_timeout_actions") or []]
         # 表单行数多，小屏 / 高 DPI（打包版按真实 DPI 渲染）下固定高度窗口会把
         # 底部的延时、识别成功后动作、点击按钮等行挤出窗口且没有滚动条（用户
@@ -5374,9 +5418,10 @@ class ScriptRefDialog(ModalDialog):
     """Choose another script to reference; its latest content is read at runtime."""
 
     def __init__(self, parent, action: dict | None = None):
-        super().__init__(parent, "引用脚本", 560, 320)
+        super().__init__(parent, "引用脚本", 560, 360)
         action = action or {}
         self.script = tk.StringVar(value=str(action.get("script", "")))
+        self.repeats = tk.StringVar(value=str(script_ref_repeat_count(action)))
         self.delay = duration_var(action.get("delay_ms", 0))
         self.after_delay = duration_var(action.get("after_delay_ms", 0))
 
@@ -5394,25 +5439,31 @@ class ScriptRefDialog(ModalDialog):
             side="left", padx=(6, 0),
         )
 
-        ttk.Label(body, text="执行前延时").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行次数").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Spinbox(
+            body, from_=1, to=999999, increment=1,
+            textvariable=self.repeats, width=10,
+        ).grid(row=1, column=1, sticky="ew")
+
+        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=8)
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
-        ).grid(row=1, column=1, sticky="ew")
-        ttk.Label(body, text="执行后延时").grid(row=2, column=0, sticky="w", pady=8)
+        ).grid(row=2, column=1, sticky="ew")
+        ttk.Label(body, text="执行后延时").grid(row=3, column=0, sticky="w", pady=8)
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.after_delay, width=10,
-        ).grid(row=2, column=1, sticky="ew")
+        ).grid(row=3, column=1, sticky="ew")
 
         ttk.Label(
             body,
-            text="运行时实时读取所选脚本的最新内容；修改原脚本后，这里的引用会自动跟着更新。",
+            text="运行时实时读取所选脚本的最新内容；修改原脚本后，这里的引用会自动跟着更新。执行次数为每次引用动作的完整运行次数。",
             foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
 
@@ -5430,14 +5481,18 @@ class ScriptRefDialog(ModalDialog):
             show_floating_notice(self, "脚本无效", "请选择要引用的脚本。")
             return
         try:
+            repeats = int(self.repeats.get())
+            if repeats < 1:
+                raise ValueError
             delay = max(0, int(self.delay.get()))
             after_delay = max(0, int(self.after_delay.get()))
         except ValueError:
-            show_floating_notice(self, "参数错误", "延时必须是整数毫秒。")
+            show_floating_notice(self, "参数错误", "执行次数必须是正整数，延时必须是整数毫秒。")
             return
         self.result = {
             "type": "script_ref",
             "script": script,
+            "repeats": repeats,
             "delay_ms": delay,
             "after_delay_ms": after_delay,
         }
@@ -7628,10 +7683,37 @@ class OcrCompareActionDialog(ModalDialog):
         self.destroy()
 
 
-class MultiConditionClickDialog(ModalDialog):
-    """Fixed three-slot image/OCR/number condition click action."""
+def multi_condition_field_states(kind: str, ocr_mode: str) -> dict[str, bool]:
+    """Return which condition-specific inputs are editable."""
+    image = kind == "image"
+    text = kind == "ocr" and ocr_mode == "text"
+    number = kind == "ocr" and ocr_mode == "number"
+    return {
+        "image": image,
+        "ocr_mode": not image,
+        "ocr_text": text,
+        "ocr_match": text,
+        "separator": number,
+        "relation": number,
+    }
 
-    CONDITION_TYPES = (("图片识别", "image"), ("OCR识别", "ocr"), ("数字比较", "number_compare"))
+
+def row_list_condition_field_states(kind: str) -> dict[str, bool]:
+    """Return the editable inputs for one row-list condition type."""
+    return {
+        "module": kind == "image",
+        "text": kind == "text",
+        "match_mode": kind == "text",
+        "separator": kind == "number",
+        "relation": kind == "number",
+    }
+
+
+class MultiConditionClickDialog(ModalDialog):
+    """Fixed three-slot image/OCR condition click action."""
+
+    CONDITION_TYPES = (("图片识别", "image"), ("OCR识别", "ocr"))
+    OCR_MODES = (("文字匹配", "text"), ("数字比较", "number"))
     MATCH_MODES = (("包含", "contains"), ("完全相等", "equals"))
     RELATIONS = (("相等", "equal"), ("不相等", "not_equal"))
     TIMEOUT_OPTIONS = (("继续执行", "continue"), ("停止脚本", "stop"))
@@ -7648,10 +7730,12 @@ class MultiConditionClickDialog(ModalDialog):
         self.condition_module_key = []
         self.condition_template = []
         self.condition_threshold = []
+        self.condition_ocr_mode = []
         self.condition_expected = []
         self.condition_match_mode = []
         self.condition_separator = []
         self.condition_relation = []
+        self.condition_field_widgets = []
 
         canvas = tk.Canvas(self, background=COLOR_BG, highlightthickness=0, borderwidth=0)
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -7676,6 +7760,7 @@ class MultiConditionClickDialog(ModalDialog):
         canvas.after_idle(update_scrollregion)
         body.columnconfigure(0, weight=1)
         type_labels = tuple(label for label, _value in self.CONDITION_TYPES)
+        ocr_mode_labels = tuple(label for label, _value in self.OCR_MODES)
         match_labels = tuple(label for label, _value in self.MATCH_MODES)
         relation_labels = tuple(label for label, _value in self.RELATIONS)
 
@@ -7706,6 +7791,9 @@ class MultiConditionClickDialog(ModalDialog):
             self.condition_module_key.append(tk.StringVar(value=module_key))
             self.condition_template.append(tk.StringVar(value=str(condition.get("template", ""))))
             self.condition_threshold.append(tk.StringVar(value=str(condition.get("threshold", 0.85))))
+            self.condition_ocr_mode.append(tk.StringVar(
+                value=_option_label(str(condition.get("ocr_mode", "text")), self.OCR_MODES, "文字匹配"),
+            ))
             self.condition_expected.append(tk.StringVar(value=str(condition.get("expected_text", ""))))
             self.condition_match_mode.append(tk.StringVar(
                 value=_option_label(str(condition.get("match_mode", "contains")), self.MATCH_MODES, "包含"),
@@ -7716,10 +7804,15 @@ class MultiConditionClickDialog(ModalDialog):
             ))
             dark_checkbutton(frame, text="启用", variable=enabled).grid(row=0, column=0, sticky="w", padx=(0, 10))
             ttk.Label(frame, text="类型").grid(row=0, column=1, sticky="w")
-            ttk.Combobox(
+            type_combo = ttk.Combobox(
                 frame, textvariable=self.condition_type[-1], values=type_labels,
                 state="readonly", width=12,
-            ).grid(row=0, column=2, sticky="w", padx=(8, 0))
+            )
+            type_combo.grid(row=0, column=2, sticky="w", padx=(8, 0))
+            type_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, slot=index: self._refresh_condition_fields(slot),
+            )
             ttk.Label(frame, text="识别区域 (x,y,w,h)").grid(row=1, column=0, sticky="w", pady=(8, 0))
             region_row = ttk.Frame(frame)
             region_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
@@ -7740,32 +7833,52 @@ class MultiConditionClickDialog(ModalDialog):
                 "<<ComboboxSelected>>",
                 lambda _event, slot=index: self.condition_module_key[slot].set(""),
             )
-            ttk.Button(
+            module_button = ttk.Button(
                 frame, text="选择模块…",
                 command=lambda slot=index: self.select_condition_module(slot),
-            ).grid(row=2, column=3, sticky="e", padx=(8, 0), pady=(8, 0))
+            )
+            module_button.grid(row=2, column=3, sticky="e", padx=(8, 0), pady=(8, 0))
             ttk.Label(frame, text="相似度").grid(row=3, column=0, sticky="w", pady=(8, 0))
-            ttk.Entry(frame, textvariable=self.condition_threshold[-1], width=12).grid(
-                row=3, column=1, sticky="w", pady=(8, 0),
+            threshold_entry = ttk.Entry(frame, textvariable=self.condition_threshold[-1], width=12)
+            threshold_entry.grid(row=3, column=1, sticky="w", pady=(8, 0))
+            ttk.Label(frame, text="OCR模式").grid(row=4, column=0, sticky="w", pady=(8, 0))
+            ocr_mode_combo = ttk.Combobox(
+                frame, textvariable=self.condition_ocr_mode[-1], values=ocr_mode_labels,
+                state="readonly", width=12,
             )
-            ttk.Label(frame, text="OCR文字").grid(row=4, column=0, sticky="w", pady=(8, 0))
-            ttk.Entry(frame, textvariable=self.condition_expected[-1]).grid(
-                row=4, column=1, columnspan=2, sticky="ew", pady=(8, 0),
+            ocr_mode_combo.grid(row=4, column=1, sticky="w", pady=(8, 0))
+            ocr_mode_combo.bind(
+                "<<ComboboxSelected>>",
+                lambda _event, slot=index: self._refresh_condition_fields(slot),
             )
-            ttk.Label(frame, text="OCR匹配").grid(row=5, column=0, sticky="w", pady=(8, 0))
-            ttk.Combobox(
+            ttk.Label(frame, text="OCR文字").grid(row=5, column=0, sticky="w", pady=(8, 0))
+            expected_entry = ttk.Entry(frame, textvariable=self.condition_expected[-1])
+            expected_entry.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+            ttk.Label(frame, text="OCR匹配").grid(row=6, column=0, sticky="w", pady=(8, 0))
+            match_combo = ttk.Combobox(
                 frame, textvariable=self.condition_match_mode[-1], values=match_labels,
                 state="readonly", width=12,
-            ).grid(row=5, column=1, sticky="w", pady=(8, 0))
-            ttk.Label(frame, text="数字分隔符").grid(row=6, column=0, sticky="w", pady=(8, 0))
-            ttk.Entry(frame, textvariable=self.condition_separator[-1], width=12).grid(
-                row=6, column=1, sticky="w", pady=(8, 0),
             )
-            ttk.Label(frame, text="数字关系").grid(row=6, column=2, sticky="w", padx=(20, 0), pady=(8, 0))
-            ttk.Combobox(
+            match_combo.grid(row=6, column=1, sticky="w", pady=(8, 0))
+            ttk.Label(frame, text="数字分隔符").grid(row=7, column=0, sticky="w", pady=(8, 0))
+            separator_entry = ttk.Entry(frame, textvariable=self.condition_separator[-1], width=12)
+            separator_entry.grid(row=7, column=1, sticky="w", pady=(8, 0))
+            ttk.Label(frame, text="数字关系").grid(row=7, column=2, sticky="w", padx=(20, 0), pady=(8, 0))
+            relation_combo = ttk.Combobox(
                 frame, textvariable=self.condition_relation[-1], values=relation_labels,
                 state="readonly", width=12,
-            ).grid(row=6, column=3, sticky="e", pady=(8, 0))
+            )
+            relation_combo.grid(row=7, column=3, sticky="e", pady=(8, 0))
+            self.condition_field_widgets.append({
+                "image": ((template_combo, "readonly"), (module_button, "normal"),
+                          (threshold_entry, "normal")),
+                "ocr_mode": ((ocr_mode_combo, "readonly"),),
+                "ocr_text": ((expected_entry, "normal"),),
+                "ocr_match": ((match_combo, "readonly"),),
+                "separator": ((separator_entry, "normal"),),
+                "relation": ((relation_combo, "readonly"),),
+            })
+            self._refresh_condition_fields(index)
 
         click_frame = ttk.LabelFrame(body, text="满足条件后的操作", padding=10)
         click_frame.pack(fill="x", pady=(10, 5))
@@ -7831,6 +7944,14 @@ class MultiConditionClickDialog(ModalDialog):
         self._form_canvas.yview_scroll(-int(event.delta / 120), "units")
         return "break"
 
+    def _refresh_condition_fields(self, slot: int):
+        kind = _option_value(self.condition_type[slot].get(), self.CONDITION_TYPES, "image")
+        ocr_mode = _option_value(self.condition_ocr_mode[slot].get(), self.OCR_MODES, "text")
+        states = multi_condition_field_states(kind, ocr_mode)
+        for field, widgets in self.condition_field_widgets[slot].items():
+            for widget, enabled_state in widgets:
+                widget.configure(state=enabled_state if states[field] else "disabled")
+
     def _ancestors_to_hide(self):
         windows = []
         seen = set()
@@ -7871,6 +7992,7 @@ class MultiConditionClickDialog(ModalDialog):
         self.condition_template[slot].set(str(binding["template"]))
         self.condition_region[slot].set(",".join(map(str, binding.get("region") or [])))
         self.condition_type[slot].set("图片识别")
+        self._refresh_condition_fields(slot)
 
     def start_click_region_selection(self):
         self.picker = ScreenRegionPicker(
@@ -7925,18 +8047,27 @@ class MultiConditionClickDialog(ModalDialog):
                             "region_mode": "template",
                         })
                 elif kind == "ocr":
-                    condition.update(
-                        expected_text=self.condition_expected[index].get(),
-                        match_mode=_option_value(self.condition_match_mode[index].get(), self.MATCH_MODES, "contains"),
+                    ocr_mode = _option_value(
+                        self.condition_ocr_mode[index].get(), self.OCR_MODES, "text",
                     )
-                elif kind == "number_compare":
-                    separator = self.condition_separator[index].get().strip()
-                    if enabled and not separator:
-                        raise ValueError(f"请设置条件 {index + 1} 的数字分隔符")
-                    condition.update(
-                        separator=separator or "/",
-                        relation=_option_value(self.condition_relation[index].get(), self.RELATIONS, "equal"),
-                    )
+                    condition["ocr_mode"] = ocr_mode
+                    if ocr_mode == "text":
+                        condition.update(
+                            expected_text=self.condition_expected[index].get(),
+                            match_mode=_option_value(
+                                self.condition_match_mode[index].get(), self.MATCH_MODES, "contains",
+                            ),
+                        )
+                    else:
+                        separator = self.condition_separator[index].get().strip()
+                        if enabled and not separator:
+                            raise ValueError(f"请设置条件 {index + 1} 的数字分隔符")
+                        condition.update(
+                            separator=separator or "/",
+                            relation=_option_value(
+                                self.condition_relation[index].get(), self.RELATIONS, "equal",
+                            ),
+                        )
                 conditions.append(condition)
             if not any(condition["enabled"] for condition in conditions):
                 raise ValueError("至少需要启用一个条件")
@@ -7958,6 +8089,432 @@ class MultiConditionClickDialog(ModalDialog):
             "interval_ms": interval,
             "on_timeout": on_timeout,
             "show_result_notice": bool(self.show_result_notice.get()),
+        }
+        try:
+            self.master.after_idle(lambda root=self.master: activate_main_after_modal(root))
+        except tk.TclError:
+            pass
+        self.destroy()
+
+
+class RowListConditionClickDialog(ModalDialog):
+    """Configure a click on the first list row satisfying two conditions."""
+
+    CONDITION_TYPES = (("图片识别", "image"), ("文字识别", "text"), ("数字比较", "number"))
+    MATCH_MODES = (("包含", "contains"), ("完全相等", "equals"))
+    RELATIONS = (("相等", "equal"), ("不相等", "not_equal"))
+    NO_MATCH_ACTIONS = (("结束", "finish"), ("重试", "retry"))
+
+    def __init__(self, parent, action: dict | None = None,
+                 actions: list[dict] | None = None):
+        super().__init__(parent, "列表逐行条件点击", 700, 640)
+        action = action or {}
+        self.picker = None
+        self.condition_field_widgets = {}
+        self.jump_target_ids = dict(image_jump_target_options(actions or []))
+        list_region = action.get("list_region", [])
+        self.list_region = tk.StringVar(
+            value=",".join(map(str, list_region)) if len(list_region) == 4 else "",
+        )
+        self.left_region = tk.StringVar(value=self._absolute_region_text(action, "left_region"))
+        self.right_region = tk.StringVar(value=self._absolute_region_text(action, "right_region"))
+        self.click_region = tk.StringVar(value=self._absolute_region_text(action, "click_region"))
+        self.button = tk.StringVar(value=str(action.get("button", "left")))
+        self.click_count = tk.StringVar(value=str(action.get("click_count", 1) or 1))
+        self.no_match_action = tk.StringVar(value=_option_label(
+            str(action.get("no_match_action", "finish")), self.NO_MATCH_ACTIONS, "结束",
+        ))
+        self.retry_interval = duration_var(action.get("retry_interval_ms", 500))
+        self.on_success = tk.StringVar(value=module_result_option_label(
+            str(action.get("on_found", "continue")),
+        ))
+        self.success_target = tk.StringVar(value=select_jump_target_label(
+            str(action.get("found_jump_action_id", "")).strip(),
+            max(1, int(action.get("found_jump_row", 1))),
+            list(self.jump_target_ids.items()),
+        ))
+        self.on_failure = tk.StringVar(value=module_result_option_label(
+            str(action.get("on_timeout", "continue")),
+        ))
+        self.failure_target = tk.StringVar(value=select_jump_target_label(
+            str(action.get("timeout_jump_action_id", "")).strip(),
+            max(1, int(action.get("timeout_jump_row", 1))),
+            list(self.jump_target_ids.items()),
+        ))
+
+        for side in ("left", "right"):
+            condition = action.get(f"{side}_condition", {})
+            condition = condition if isinstance(condition, dict) else {}
+            kind = str(condition.get("type", "text"))
+            setattr(self, f"{side}_condition_type", tk.StringVar(
+                value=_option_label(kind, self.CONDITION_TYPES, "文字识别"),
+            ))
+            module_key = str(condition.get("module_key", "")).strip()
+            setattr(self, f"{side}_module_key", tk.StringVar(value=module_key))
+            setattr(self, f"{side}_module_name", tk.StringVar(
+                value=module_display_name(module_key),
+            ))
+            setattr(self, f"{side}_expected_text", tk.StringVar(value=str(condition.get("expected_text", ""))))
+            setattr(self, f"{side}_match_mode", tk.StringVar(value=_option_label(
+                str(condition.get("match_mode", "contains")), self.MATCH_MODES, "包含",
+            )))
+            setattr(self, f"{side}_separator", tk.StringVar(value=str(condition.get("separator", "/"))))
+            setattr(self, f"{side}_relation", tk.StringVar(value=_option_label(
+                str(condition.get("relation", "equal")), self.RELATIONS, "相等",
+            )))
+
+        canvas = tk.Canvas(self, background=COLOR_BG, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        body = ttk.Frame(canvas, padding=12)
+        body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+        self._form_canvas = canvas
+
+        def update_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def stretch_body(event):
+            canvas.itemconfigure(body_window, width=event.width)
+
+        body.bind("<Configure>", update_scrollregion)
+        canvas.bind("<Configure>", stretch_body)
+        canvas.bind("<Map>", update_scrollregion)
+        self.bind("<MouseWheel>", self._scroll_form)
+        canvas.bind("<MouseWheel>", self._scroll_form, add="+")
+        canvas.after_idle(update_scrollregion)
+        body.columnconfigure(0, weight=1)
+        self._build_region_panel(body)
+        self._build_condition_panel(body, "left", "左侧条件")
+        self._build_condition_panel(body, "right", "右侧条件")
+        self._build_action_panel(body)
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(8, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+
+    def _absolute_region_text(self, action: dict, key: str) -> str:
+        list_region = action.get("list_region", [])
+        region = action.get(key, [])
+        if len(list_region) != 4 or len(region) != 4:
+            return ""
+        try:
+            x, y, _width, _height = (int(value) for value in list_region)
+            relative_x, relative_y, width, height = (int(value) for value in region)
+        except (TypeError, ValueError):
+            return ""
+        return f"{x + relative_x},{y + relative_y},{width},{height}"
+
+    def _build_region_panel(self, parent):
+        frame = ttk.LabelFrame(parent, text="列表与首行区域", padding=8)
+        frame.pack(fill="x", pady=(0, 4))
+        frame.columnconfigure(1, weight=1)
+        self._entry_row(frame, 0, "列表区域 (x,y,w,h)", self.list_region, "list", "框选列表区域")
+        self._entry_row(frame, 1, "左侧识别区域 (x,y,w,h)", self.left_region, "left", "框选首行左侧识别区域")
+        self._entry_row(frame, 2, "右侧识别区域 (x,y,w,h)", self.right_region, "right", "框选首行右侧识别区域")
+        self._entry_row(
+            frame, 3, "点击区域 (x,y,w,h)", self.click_region, "click",
+            "框选首行点击区域，首行框选范围自动计算行距",
+        )
+
+    def _build_condition_panel(self, parent, side: str, title: str):
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
+        type_var = getattr(self, f"{side}_condition_type")
+        module_var = getattr(self, f"{side}_module_key")
+        expected_var = getattr(self, f"{side}_expected_text")
+        match_var = getattr(self, f"{side}_match_mode")
+        separator_var = getattr(self, f"{side}_separator")
+        relation_var = getattr(self, f"{side}_relation")
+        ttk.Label(frame, text="类型").grid(row=0, column=0, sticky="w", pady=3)
+        type_combo = ttk.Combobox(
+            frame, textvariable=type_var,
+            values=tuple(label for label, _value in self.CONDITION_TYPES), state="readonly", width=12,
+        )
+        type_combo.grid(row=0, column=1, sticky="w", pady=3)
+        type_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_condition_fields(side))
+        module_label = ttk.Label(frame, text="图片模块")
+        module_label.grid(row=1, column=0, sticky="w", pady=3)
+        module_row = ttk.Frame(frame)
+        module_row.grid(row=1, column=1, sticky="ew", pady=3)
+        module_row.columnconfigure(0, weight=1)
+        module_name_var = getattr(self, f"{side}_module_name")
+        module_entry = ttk.Entry(module_row, textvariable=module_name_var, state="readonly")
+        module_entry.grid(row=0, column=0, sticky="ew")
+        module_button = ttk.Button(module_row, text="选择模块…", command=lambda: self.select_condition_module(side))
+        module_button.grid(row=0, column=1, padx=(8, 0))
+        expected_label = ttk.Label(frame, text="期望文字")
+        expected_label.grid(row=2, column=0, sticky="w", pady=3)
+        expected_entry = ttk.Entry(frame, textvariable=expected_var)
+        expected_entry.grid(row=2, column=1, sticky="ew", pady=3)
+        match_label = ttk.Label(frame, text="文字匹配")
+        match_label.grid(row=3, column=0, sticky="w", pady=3)
+        match_combo = ttk.Combobox(
+            frame, textvariable=match_var,
+            values=tuple(label for label, _value in self.MATCH_MODES), state="readonly", width=12,
+        )
+        match_combo.grid(row=3, column=1, sticky="w", pady=3)
+        separator_label = ttk.Label(frame, text="数字分隔符")
+        separator_label.grid(row=4, column=0, sticky="w", pady=3)
+        separator_entry = ttk.Entry(frame, textvariable=separator_var, width=12)
+        separator_entry.grid(row=4, column=1, sticky="w", pady=3)
+        relation_label = ttk.Label(frame, text="数字关系")
+        relation_label.grid(row=5, column=0, sticky="w", pady=3)
+        relation_combo = ttk.Combobox(
+            frame, textvariable=relation_var,
+            values=tuple(label for label, _value in self.RELATIONS), state="readonly", width=12,
+        )
+        relation_combo.grid(row=5, column=1, sticky="w", pady=3)
+        self.condition_field_widgets[side] = {
+            "module": ((module_label, None), (module_row, None)),
+            "text": ((expected_label, None), (expected_entry, None)),
+            "match_mode": ((match_label, None), (match_combo, None)),
+            "separator": ((separator_label, None), (separator_entry, None)),
+            "relation": ((relation_label, None), (relation_combo, None)),
+        }
+        self._refresh_condition_fields(side)
+
+    def _build_action_panel(self, parent):
+        frame = ttk.LabelFrame(parent, text="点击与结果分支", padding=8)
+        frame.pack(fill="x", pady=4)
+        frame.columnconfigure(1, weight=1)
+        frame.columnconfigure(3, weight=1)
+        ttk.Label(frame, text="点击按钮").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            frame, textvariable=self.button,
+            values=("left", "right", "middle"), state="readonly", width=10,
+        ).grid(row=0, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="连续点击次数").grid(row=0, column=2, sticky="w", padx=(18, 0), pady=3)
+        ttk.Spinbox(
+            frame, from_=1, to=9999, increment=1,
+            textvariable=self.click_count, width=8,
+        ).grid(row=0, column=3, sticky="w", pady=3)
+
+        result_labels = tuple(label for label, _value in MODULE_RESULT_OPTIONS)
+        target_labels = tuple(self.jump_target_ids)
+        ttk.Label(frame, text="成功后").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            frame, textvariable=self.on_success,
+            values=result_labels, state="readonly", width=18,
+        ).grid(row=1, column=1, sticky="ew", pady=3)
+        ttk.Label(frame, text="成功跳转到").grid(row=1, column=2, sticky="w", padx=(18, 0), pady=3)
+        self.success_target_combo = ttk.Combobox(
+            frame, textvariable=self.success_target, values=target_labels,
+            state="disabled", width=28,
+        )
+        self.success_target_combo.grid(row=1, column=3, sticky="ew", pady=3)
+
+        ttk.Label(frame, text="失败后").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            frame, textvariable=self.on_failure,
+            values=result_labels, state="readonly", width=18,
+        ).grid(row=2, column=1, sticky="ew", pady=3)
+        ttk.Label(frame, text="失败跳转到").grid(row=2, column=2, sticky="w", padx=(18, 0), pady=3)
+        self.failure_target_combo = ttk.Combobox(
+            frame, textvariable=self.failure_target, values=target_labels,
+            state="disabled", width=28,
+        )
+        self.failure_target_combo.grid(row=2, column=3, sticky="ew", pady=3)
+
+        ttk.Label(frame, text="无匹配时").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Combobox(
+            frame, textvariable=self.no_match_action,
+            values=tuple(label for label, _value in self.NO_MATCH_ACTIONS), state="readonly", width=12,
+        ).grid(row=3, column=1, sticky="w", pady=3)
+        ttk.Label(frame, text="重试间隔").grid(row=3, column=2, sticky="w", padx=(18, 0), pady=3)
+        ttk.Entry(frame, textvariable=self.retry_interval, width=12).grid(
+            row=3, column=3, sticky="w", pady=3,
+        )
+        self.on_success.trace_add("write", self._update_result_target_states)
+        self.on_failure.trace_add("write", self._update_result_target_states)
+        self._update_result_target_states()
+
+    def _update_result_target_states(self, *_args):
+        self.success_target_combo.configure(
+            state="readonly"
+            if module_result_option_value(self.on_success.get()) == "jump" else "disabled",
+        )
+        self.failure_target_combo.configure(
+            state="readonly"
+            if module_result_option_value(self.on_failure.get()) == "jump" else "disabled",
+        )
+
+    def _entry_row(self, parent, row: int, label: str, variable, picker_key: str | None = None,
+                   picker_tip: str = ""):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=1, sticky="ew", pady=3)
+        holder.columnconfigure(0, weight=1)
+        ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
+        if picker_key:
+            ttk.Button(
+                holder, text="框选区域…",
+                command=lambda: self.start_region_selection(picker_key, picker_tip),
+            ).grid(row=0, column=1, padx=(8, 0))
+
+    def _scroll_form(self, event):
+        if not event.delta:
+            return "break"
+        self._form_canvas.yview_scroll(-int(event.delta / 120), "units")
+        return "break"
+
+    def _refresh_condition_fields(self, side: str):
+        kind = _option_value(
+            getattr(self, f"{side}_condition_type").get(), self.CONDITION_TYPES, "text",
+        )
+        states = row_list_condition_field_states(kind)
+        for field, widgets in self.condition_field_widgets[side].items():
+            for widget, _unused_state in widgets:
+                if states[field]:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+
+    def _ancestors_to_hide(self):
+        windows = []
+        seen = set()
+        window = self.master
+        while window is not None and len(windows) < 20:
+            identity = id(window)
+            if identity in seen:
+                break
+            seen.add(identity)
+            try:
+                window = window.master
+            except (AttributeError, tk.TclError):
+                break
+            if window is None:
+                break
+            windows.append(window)
+            try:
+                if window.winfo_class() == "Tk":
+                    break
+            except tk.TclError:
+                break
+        return windows
+
+    def start_region_selection(self, key: str, tip_text: str):
+        variable = getattr(self, f"{key}_region")
+        self.picker = ScreenRegionPicker(
+            self, self.master,
+            lambda region: variable.set(",".join(map(str, region))),
+            hidden_windows=self._ancestors_to_hide(), tip_text=tip_text,
+        )
+        self.picker.start()
+
+    def select_condition_module(self, side: str):
+        binding = choose_module_binding(self, categories=("switch",))
+        if not binding:
+            return
+        module_key = str(binding["module_key"])
+        getattr(self, f"{side}_module_key").set(module_key)
+        getattr(self, f"{side}_module_name").set(
+            module_display_name(module_key, registered_module_object(module_key)),
+        )
+        getattr(self, f"{side}_condition_type").set("图片识别")
+        self._refresh_condition_fields(side)
+
+    @staticmethod
+    def _parse_region(value: str, label: str) -> list[int]:
+        try:
+            region = [int(part.strip()) for part in value.split(",")]
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label}需要四个整数：x,y,w,h") from exc
+        if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+            raise ValueError(f"{label}需要有效的 x,y,w,h 框选区域")
+        return region
+
+    def _relative_first_row_region(self, value: str, label: str, list_region: list[int]) -> list[int]:
+        region = self._parse_region(value, label)
+        list_x, list_y, list_width, list_height = list_region
+        x, y, width, height = region
+        if (
+            x < list_x or y < list_y
+            or x + width > list_x + list_width
+            or y + height > list_y + list_height
+        ):
+            raise ValueError(f"{label}必须位于列表区域内")
+        return [x - list_x, y - list_y, width, height]
+
+    def _condition_value(self, side: str) -> dict:
+        kind = _option_value(
+            getattr(self, f"{side}_condition_type").get(), self.CONDITION_TYPES, "text",
+        )
+        if kind == "image":
+            module_key = getattr(self, f"{side}_module_key").get().strip()
+            if not module_key:
+                raise ValueError(f"请选择{side}侧图片模块")
+            return {"type": "image", "module_ref": True, "module_key": module_key}
+        if kind == "text":
+            return {
+                "type": "text",
+                "expected_text": getattr(self, f"{side}_expected_text").get(),
+                "match_mode": _option_value(
+                    getattr(self, f"{side}_match_mode").get(), self.MATCH_MODES, "contains",
+                ),
+            }
+        separator = getattr(self, f"{side}_separator").get().strip()
+        if not separator:
+            raise ValueError(f"{side}侧数字分隔符不能为空")
+        return {
+            "type": "number",
+            "separator": separator,
+            "relation": _option_value(
+                getattr(self, f"{side}_relation").get(), self.RELATIONS, "equal",
+            ),
+        }
+
+    def save(self):
+        try:
+            list_region = self._parse_region(self.list_region.get(), "列表区域")
+            left_region = self._relative_first_row_region(
+                self.left_region.get(), "左侧识别区域", list_region,
+            )
+            right_region = self._relative_first_row_region(
+                self.right_region.get(), "右侧识别区域", list_region,
+            )
+            click_region = self._relative_first_row_region(
+                self.click_region.get(), "点击区域", list_region,
+            )
+            click_count = int(self.click_count.get())
+            if not 1 <= click_count <= 9999:
+                raise ValueError("连续点击次数必须是 1 到 9999 之间的整数")
+            retry_interval = int(self.retry_interval.get())
+            if retry_interval < 0:
+                raise ValueError("重试间隔不能小于零")
+            left_condition = self._condition_value("left")
+            right_condition = self._condition_value("right")
+            on_found = module_result_option_value(self.on_success.get())
+            on_timeout = module_result_option_value(self.on_failure.get())
+            found_jump_action_id = self.jump_target_ids.get(self.success_target.get(), "")
+            timeout_jump_action_id = self.jump_target_ids.get(self.failure_target.get(), "")
+            if on_found == "jump" and not found_jump_action_id:
+                raise ValueError("请选择成功后要跳转的行对象")
+            if on_timeout == "jump" and not timeout_jump_action_id:
+                raise ValueError("请选择失败后要跳转的行对象")
+        except (TypeError, ValueError) as exc:
+            show_floating_notice(self, "参数错误", str(exc))
+            return
+        self.result = {
+            "type": "row_list_condition_click",
+            "list_region": list_region,
+            "left_region": left_region,
+            "right_region": right_region,
+            "click_region": click_region,
+            "left_condition": left_condition,
+            "right_condition": right_condition,
+            "button": self.button.get(),
+            "click_count": click_count,
+            "no_match_action": _option_value(
+                self.no_match_action.get(), self.NO_MATCH_ACTIONS, "finish",
+            ),
+            "retry_interval_ms": retry_interval,
+            "on_found": on_found,
+            "found_jump_action_id": found_jump_action_id,
+            "on_timeout": on_timeout,
+            "timeout_jump_action_id": timeout_jump_action_id,
         }
         try:
             self.master.after_idle(lambda root=self.master: activate_main_after_modal(root))
@@ -8057,6 +8614,10 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
     if kind == "multi_condition_click":
         return preserve_identity(
             MultiConditionClickDialog(parent, action).show(),
+        )
+    if kind == "row_list_condition_click":
+        return preserve_identity(
+            RowListConditionClickDialog(parent, action, actions=all_actions).show(),
         )
     if kind == "global_detect":
         return preserve_identity(

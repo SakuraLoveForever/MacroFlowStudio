@@ -206,6 +206,8 @@ def parse_ocr_number_pair(recognized: str, separator: str = "/") -> tuple[int, i
 
     OCR may return full-width punctuation or spaces around the separator, so
     both the recognized text and separator are normalized with NFKC first.
+    When the configured separator is ``/``, common OCR confusions such as
+    ``.``, ``(``, or ``|`` are accepted between the two numbers as well.
     Only the first integer on each side is used; malformed text returns None.
     """
     text = unicodedata.normalize("NFKC", str(recognized or ""))
@@ -214,7 +216,15 @@ def parse_ocr_number_pair(recognized: str, separator: str = "/") -> tuple[int, i
         return None
     parts = text.split(token, 1)
     if len(parts) != 2:
-        return None
+        if token not in {"/", "\\"}:
+            return None
+        confused = re.search(
+            r"(?<!\d)(\d+)\s*[.．。·•|丨｜\\()（）,，;；]+\s*(\d+)(?!\d)",
+            text,
+        )
+        if confused is None:
+            return None
+        return int(confused.group(1)), int(confused.group(2))
     left = re.search(r"\d+", parts[0])
     right = re.search(r"\d+", parts[1])
     if left is None or right is None:

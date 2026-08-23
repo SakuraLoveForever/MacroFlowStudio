@@ -115,6 +115,8 @@ SWP_FRAMECHANGED = 0x0020
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_CAPTION_COLOR = 35
 DWMWA_TEXT_COLOR = 36
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWM_WINDOW_CORNER_ROUND = 2
 KLF_ACTIVATE = 0x00000001
 WM_INPUTLANGCHANGEREQUEST = 0x0050
 ENGLISH_US_LAYOUT = "00000409"
@@ -194,6 +196,13 @@ def set_dark_titlebar(hwnd: int, background: str = "#0E1419", foreground: str = 
     text = wintypes.DWORD(_colorref(foreground))
     dwmapi.DwmSetWindowAttribute(root_hwnd, DWMWA_CAPTION_COLOR, ctypes.byref(caption), ctypes.sizeof(caption))
     dwmapi.DwmSetWindowAttribute(root_hwnd, DWMWA_TEXT_COLOR, ctypes.byref(text), ctypes.sizeof(text))
+    corners = ctypes.c_int(DWM_WINDOW_CORNER_ROUND)
+    # Windows 11 ignores this attribute on unsupported builds; the dark title
+    # bar and normal square frame remain the safe fallback on older Windows.
+    dwmapi.DwmSetWindowAttribute(
+        root_hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+        ctypes.byref(corners), ctypes.sizeof(corners),
+    )
     return result == 0
 
 

@@ -31,6 +31,96 @@ def capture_bgr(region: tuple[int, int, int, int] | None = None) -> tuple[np.nda
         return cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR), origin
 
 
+def detect_row_height(region: tuple[int, int, int, int], fallback: int) -> int:
+    """Detect a repeated list-row spacing from horizontal screen boundaries.
+
+    List rows in the target UI are separated by horizontal rules.  Text boxes
+    are often shorter than a complete row, so using a selected OCR box height
+    as the scan step causes every row after the first one to drift.  When the
+    screen has no stable repeated boundary, return the selection-based
+    fallback instead.
+    """
+    fallback = max(1, int(fallback))
+    try:
+        screen, _origin = capture_bgr(region)
+    except Exception:
+        return fallback
+    if not isinstance(screen, np.ndarray) or screen.ndim < 2 or screen.shape[0] < 4:
+        return fallback
+
+    gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
+    strength = np.mean(
+        np.abs(np.diff(gray.astype(np.float32), axis=0)), axis=1,
+    )
+    if strength.size < 3 or float(np.max(strength)) <= 0:
+        return fallback
+
+    threshold = max(
+        float(np.percentile(strength, 80)),
+        float(np.max(strength)) * 0.35,
+    )
+    peaks = [
+        index + 1
+        for index in range(1, len(strength) - 1)
+        if strength[index] >= strength[index - 1]
+        and strength[index] >= strength[index + 1]
+        and strength[index] >= threshold
+    ]
+    if not peaks:
+        return fallback
+
+    # Collapse the two sides of a one-pixel horizontal rule into one peak.
+    grouped: list[list[int]] = []
+    for peak in peaks:
+        if grouped and peak - grouped[-1][-1] <= 2:
+            grouped[-1].append(peak)
+        else:
+            grouped.append([peak])
+    peaks = [max(group, key=lambda value: strength[value - 1]) for group in grouped]
+    if len(peaks) < 3:
+        return fallback
+
+    def chain_quality(period: int) -> tuple[int, int]:
+        best = (0, 0)
+        for start in peaks:
+            length = 1
+            error = 0
+            current = start
+            while True:
+                candidates = [
+                    peak for peak in peaks
+                    if abs(peak - (current + period)) <= 1
+                ]
+                if not candidates:
+                    break
+                expected = current + period
+                current = min(candidates, key=lambda value: abs(value - expected))
+                error += abs(current - expected)
+                length += 1
+            if length > best[0] or (length == best[0] and error < best[1]):
+                best = (length, error)
+        return best
+
+    best_period = fallback
+    best_chain = 0
+    best_error = 0
+    for period in range(8, min(120, len(strength) // 2) + 1):
+        chain, error = chain_quality(period)
+        if (
+            chain > best_chain
+            or (chain == best_chain and error < best_error)
+            or (
+                chain == best_chain
+                and error == best_error
+                and abs(period - fallback) < abs(best_period - fallback)
+            )
+        ):
+            best_period = period
+            best_chain = chain
+            best_error = error
+    return best_period if best_chain >= 3 else fallback
+
+
 def find_template(template_path: str | Path, threshold: float = 0.85,
                   region: tuple[int, int, int, int] | None = None,
                   ignore_background: bool = False,

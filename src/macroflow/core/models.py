@@ -27,6 +27,14 @@ def special_action_label(action_type: str) -> str:
     return SPECIAL_ACTION_LABELS.get(str(action_type), "")
 
 
+def script_ref_repeat_count(action: dict[str, Any]) -> int:
+    """Return a safe positive execution count for a script reference action."""
+    try:
+        return max(1, int(action.get("repeats", 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def new_action_id() -> str:
     return uuid.uuid4().hex
 

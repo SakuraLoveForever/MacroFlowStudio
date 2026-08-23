@@ -362,6 +362,7 @@ MODULE_AFTER_ACTIONS = (
     "run_actions",       # 旧格式：仅执行代码段；加载时迁移为 continue + 附加代码段
 )
 MODULE_FALLBACK_ACTIONS = ("continue", "click_continue", "exit", "click_exit")
+DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS = 5000
 DEFAULT_MODULE_OBJECT: dict = {
     "category": "switch",
     "enabled": True,                    # 仓库可用性：禁用后不能再插入新引用
@@ -392,7 +393,7 @@ DEFAULT_MODULE_OBJECT: dict = {
     "second_match_click_region": [],   # custom_region 时点击该框选区域中心
     "on_success_actions": [],          # 可选附加代码段（动作 dict 列表，可含特殊模块）
     "run_code_on_timeout": False,      # 连续未识别达到时限后执行独立代码段
-    "not_found_timeout_ms": 3000,
+    "not_found_timeout_ms": DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
     "on_timeout_actions": [],
 }
 
@@ -532,10 +533,12 @@ def _normalize_object(value, key: str = ""):
     obj["run_code_on_timeout"] = bool(obj.get("run_code_on_timeout", False))
     try:
         obj["not_found_timeout_ms"] = max(
-            0, min(86400000, int(obj.get("not_found_timeout_ms", 3000)))
+            0, min(86400000, int(obj.get(
+                "not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+            )))
         )
     except (TypeError, ValueError):
-        obj["not_found_timeout_ms"] = 3000
+        obj["not_found_timeout_ms"] = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
     if not isinstance(obj.get("on_timeout_actions"), list):
         obj["on_timeout_actions"] = []
     if obj.get("recognize") == "number":

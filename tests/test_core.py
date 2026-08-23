@@ -42,7 +42,7 @@ from macroflow.ui.dialogs import (
     DurationVar, ImageActionDialog, JumpActionDialog, KeyActionDialog, ModalDialog,
     ModulePickerDialog, ModuleReferenceDelayDialog, MultiConditionClickDialog,
     MouseMoveDialog, OcrActionDialog, OcrCompareActionDialog, OpenAppDialog, RepeatClickDialog, RestartWorkflowTargetDialog,
-    ScreenPointPicker,
+    ScreenPointPicker, ScriptRefDialog,
     ScreenOffsetPicker, ScreenRegionPicker, ScriptDirectoriesDialog, TemplateRegionFormDialog,
     TemplateRegionManagerDialog, TextActionDialog, activate_main_after_modal, ancestor_windows,
     drag_selection_region, edit_action,
@@ -61,7 +61,7 @@ from macroflow.ui.dialogs import (
     segment_action_is_blocking, segment_row_label,
     selectable_target_windows,
 )
-from macroflow.core.image_match import find_template, find_template_in_image
+from macroflow.core.image_match import detect_row_height, find_template, find_template_in_image
 from macroflow.core.ocr import (
     extract_ocr_integer, find_expected_match, format_ocr_observation, matches_expected,
     parse_ocr_number_pair, recognize_image_with_boxes,
@@ -97,8 +97,10 @@ from macroflow.core.storage import (
     save_template_regions, save_workflow,
 )
 from macroflow.input.wininput import (
-    MACROFLOW_INPUT_TAG, WindowInfo, activate_window, force_english_input, is_cursor_near_window_center,
-    resolve_window_signature, send_move_relative, set_input_dispatcher, show_window, show_window_no_activate,
+    DWMWA_WINDOW_CORNER_PREFERENCE, MACROFLOW_INPUT_TAG, WindowInfo, activate_window,
+    force_english_input, is_cursor_near_window_center, resolve_window_signature,
+    send_move_relative, set_dark_titlebar, set_input_dispatcher, show_window,
+    show_window_no_activate,
 )
 
 
@@ -1041,6 +1043,23 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(updated["path"], "C:/new/app.exe")
         dialog_class.assert_called_once()
 
+    def test_script_ref_dialog_saves_repeat_count(self):
+        dialog = ScriptRefDialog.__new__(ScriptRefDialog)
+        dialog.script = Mock()
+        dialog.script.get.return_value = "scripts/ref.json"
+        dialog.repeats = Mock()
+        dialog.repeats.get.return_value = "3"
+        dialog.delay = Mock()
+        dialog.delay.get.return_value = "0"
+        dialog.after_delay = Mock()
+        dialog.after_delay.get.return_value = "0"
+        dialog.destroy = Mock()
+
+        dialog.save()
+
+        self.assertEqual(dialog.result["repeats"], 3)
+        dialog.destroy.assert_called_once()
+
     def test_editing_close_app_action_uses_close_app_dialog(self):
         original = {"type": "close_app", "action_id": "stable-close", "name": "old.exe"}
         with patch("macroflow.ui.dialogs.CloseAppDialog") as dialog_class:
@@ -1067,6 +1086,92 @@ class ScriptEditingTests(unittest.TestCase):
             updated = edit_action(None, original, [original])
         self.assertEqual(updated["action_id"], "stable-jump")
         self.assertEqual(updated["jump_action_id"], NEXT_WORKFLOW_STEP_TARGET_ID)
+
+    def test_row_list_condition_click_summary_describes_scan_and_conditions(self):
+        kind, detail, _delay = action_summary({
+            "type": "row_list_condition_click",
+            "left_condition": {
+                "type": "number", "separator": "/", "relation": "not_equal",
+            },
+            "right_condition": {
+                "type": "text", "expected_text": "刚开始", "match_mode": "equals",
+            },
+            "no_match_action": "retry",
+        })
+
+        self.assertEqual(kind, "▤  列表逐行点击")
+        self.assertIn("从上到下", detail)
+        self.assertIn("左:数字/数字（不相等）", detail)
+        self.assertIn("右:文字:刚开始（完全相等）", detail)
+        self.assertIn("首个匹配即点击", detail)
+        self.assertIn("未命中:重试", detail)
+
+    def test_row_list_condition_click_needs_ocr_unless_both_conditions_are_images(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        cases = (
+            ("both_images", "image", "image", False),
+            ("left_text", "text", "image", True),
+            ("right_text", "image", "text", True),
+            ("left_number", "number", "image", True),
+            ("right_number", "image", "number", True),
+        )
+
+        for name, left_type, right_type, expected in cases:
+            with self.subTest(name=name):
+                self.assertIs(
+                    app._script_needs_ocr([{
+                        "type": "row_list_condition_click",
+                        "left_condition": {"type": left_type},
+                        "right_condition": {"type": right_type},
+                    }]),
+                    expected,
+                )
+
+    def test_add_row_list_condition_click_assigns_new_action_identity(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.script = MacroScript(actions=[])
+        app.action_tree = Mock()
+        app._selected_action_index = Mock(return_value=None)
+        app._checkpoint_action_edit = Mock()
+        app._mark_dirty = Mock()
+        app.rebuild_action_tree = Mock()
+        result = {
+            "type": "row_list_condition_click",
+            "left_condition": {"type": "image"},
+            "right_condition": {"type": "image"},
+        }
+
+        with patch("macroflow.ui.app.RowListConditionClickDialog") as dialog_class, \
+             patch("macroflow.ui.app.new_action_id", return_value="new-row-list-id"):
+            dialog_class.return_value.show.return_value = result
+            app.add_row_list_condition_click()
+
+        dialog_class.assert_called_once_with(app.root)
+        self.assertEqual(app.script.actions, [{
+            "type": "row_list_condition_click",
+            "left_condition": {"type": "image"},
+            "right_condition": {"type": "image"},
+            "action_id": "new-row-list-id",
+        }])
+
+    def test_editing_row_list_condition_click_opens_its_dialog_and_preserves_identity(self):
+        original = {
+            "type": "row_list_condition_click", "action_id": "stable-row-list",
+            "left_condition": {"type": "image"},
+            "right_condition": {"type": "image"},
+        }
+        with patch("macroflow.ui.dialogs.RowListConditionClickDialog") as dialog_class:
+            dialog_class.return_value.show.return_value = {
+                "type": "row_list_condition_click",
+                "left_condition": {"type": "text", "expected_text": "就绪"},
+                "right_condition": {"type": "number", "separator": "/"},
+            }
+            updated = edit_action(None, original)
+
+        dialog_class.assert_called_once_with(None, original)
+        self.assertEqual(updated["action_id"], "stable-row-list")
+        self.assertEqual(updated["left_condition"]["type"], "text")
 
     def test_run_script_from_selected_action_uses_first_selected_row(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1272,6 +1377,7 @@ class ScriptEditingTests(unittest.TestCase):
         ref = app.script.actions[1]
         self.assertEqual(ref["type"], "script_ref")
         self.assertEqual(ref["script"], str(Path("C:/scripts/C.json").resolve()))
+        self.assertEqual(ref["repeats"], 1)
         self.assertTrue(ref.get("action_id"))
         app._checkpoint_action_edit.assert_called_once()
         app._mark_dirty.assert_called_once()
@@ -2235,6 +2341,24 @@ class WorkflowInsertTests(unittest.TestCase):
 
 
 class WorkflowDisplayTests(unittest.TestCase):
+    def test_workflow_header_keeps_execution_buttons_in_dedicated_action_bar(self):
+        source = inspect.getsource(MacroFlowApp._build_workflow_tab)
+
+        self.assertIn("workflow_action_bar", source)
+        self.assertIn('text="从选中行运行"', source)
+        self.assertIn('text="运行工作流"', source)
+
+    def test_toolbar_spec_rows_keep_action_buttons_visible(self):
+        import macroflow.ui.app as app_module
+
+        specs = tuple((f"button-{index}", None, "ScriptTool.TButton") for index in range(16))
+        toolbar_spec_rows = getattr(app_module, "toolbar_spec_rows", None)
+        self.assertIsNotNone(toolbar_spec_rows)
+        rows = toolbar_spec_rows(specs, row_size=8)
+
+        self.assertEqual([len(row) for row in rows], [8, 8])
+        self.assertEqual(tuple(item for row in rows for item in row), specs)
+
     def test_workflow_tab_uses_resizable_split_and_grouped_toolbars(self):
         source = inspect.getsource(MacroFlowApp._build_workflow_tab)
         self.assertIn("ttk.Panedwindow", source)
@@ -3976,7 +4100,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "conditions": [
                 {"enabled": True, "type": "image"},
                 {"enabled": False, "type": "ocr"},
-                {"enabled": False, "type": "number_compare"},
+                {"enabled": False, "type": "ocr", "ocr_mode": "number"},
             ],
         }]
         self.assertFalse(app._script_needs_ocr(image_only))
@@ -3985,7 +4109,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "conditions": [
                 {"enabled": True, "type": "image"},
                 {"enabled": True, "type": "ocr"},
-                {"enabled": False, "type": "number_compare"},
+                {"enabled": False, "type": "ocr", "ocr_mode": "number"},
             ],
         }]
         self.assertTrue(app._script_needs_ocr(mixed))
@@ -5648,6 +5772,50 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.region_mode.set.assert_called_once_with("template")
         dialog.region.set.assert_called_once_with("11,22,333,444")
 
+    def test_global_module_selection_limits_picker_to_global_categories(self):
+        dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
+        dialog.jump = True
+        dialog.module_key = Mock()
+        dialog.template = Mock()
+        dialog.region_mode = Mock()
+        dialog.region = Mock()
+        dialog.template_combo = Mock()
+        dialog.module_name = Mock()
+        with patch("macroflow.ui.dialogs.choose_module_binding", return_value={
+            "module_ref": True, "module_key": "module:global",
+            "template": "images/global.png", "region_mode": "template",
+            "region": [1, 2, 30, 40],
+        }) as choose:
+            dialog.select_image_module()
+
+        self.assertEqual(
+            choose.call_args.kwargs,
+            {"categories": ("workflow_global", "script_global")},
+        )
+
+    def test_global_module_save_requires_selected_global_module(self):
+        dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
+        dialog.jump = True
+        dialog.require_click = False
+        dialog.module_key = Mock(**{"get.return_value": ""})
+        dialog.template = Mock(**{"get.return_value": "images/legacy.png"})
+        dialog.threshold = Mock(**{"get.return_value": "0.9"})
+        dialog.interval = Mock(**{"get.return_value": "500"})
+        dialog.hold = Mock(**{"get.return_value": "1000"})
+        dialog.region = Mock(**{"get.return_value": ""})
+        dialog.region_mode = Mock(**{"get.return_value": "screen"})
+        dialog.jump_target_ids = {}
+        dialog.jump_row = Mock(**{"get.return_value": "1"})
+        dialog.click_point = Mock(**{"get.return_value": ""})
+        dialog.restart_delay = Mock(**{"get.return_value": "0"})
+        dialog.destroy = Mock()
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            dialog.save()
+
+        notice.assert_called_once()
+        self.assertIn("全局模块", notice.call_args.args[2])
+        dialog.destroy.assert_not_called()
+
     def test_global_detect_saves_selected_module_identity_and_region(self):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.module_key = Mock(**{"get.return_value": "module:first"})
@@ -5760,6 +5928,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.require_click = False
         dialog.jump = True
+        dialog.module_key = Mock(**{"get.return_value": "module:global"})
         dialog.template = Mock()
         dialog.template.get.return_value = "images/g.png"
         dialog.threshold = Mock()
@@ -5780,9 +5949,15 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.destroy = Mock()
-        dialog.save()
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "category": "workflow_global", "template": "images/g.png", "region": [],
+        }):
+            dialog.save()
         result = dialog.result
+        self.assertTrue(result["module_ref"])
+        self.assertEqual(result["module_key"], "module:global")
         self.assertEqual(result["template"], "images/g.png")
+        self.assertEqual(result["region_mode"], "template")
         self.assertEqual(result["jump_row"], 5)
         self.assertEqual(result["jump_action_id"], "target-b")
         self.assertIsNone(result["click_point"])
@@ -5792,6 +5967,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.require_click = False
         dialog.jump = True
+        dialog.module_key = Mock(**{"get.return_value": "module:global"})
         dialog.template = Mock()
         dialog.template.get.return_value = "images/g.png"
         dialog.threshold = Mock()
@@ -5812,7 +5988,10 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row.get.return_value = "脚本结束（工作流中执行下一项）"
         dialog.destroy = Mock()
 
-        dialog.save()
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "category": "script_global", "template": "images/g.png", "region": [],
+        }):
+            dialog.save()
 
         self.assertEqual(dialog.result["jump_row"], 4)
         self.assertEqual(
@@ -5825,6 +6004,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.require_click = False
         dialog.jump = True
+        dialog.module_key = Mock(**{"get.return_value": "module:global"})
         dialog.template = Mock()
         dialog.template.get.return_value = "images/g.png"
         dialog.threshold = Mock()
@@ -5846,7 +6026,10 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.jump_enabled_var = _FakeBooleanVar(False)
         dialog.destroy = Mock()
-        dialog.save()
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "category": "workflow_global", "template": "images/g.png", "region": [],
+        }):
+            dialog.save()
         result = dialog.result
         self.assertFalse(result["jump_enabled"])
         self.assertEqual(result["jump_row"], 5)
@@ -5857,6 +6040,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.require_click = False
         dialog.jump = True
+        dialog.module_key = Mock(**{"get.return_value": "module:global"})
         dialog.template = Mock()
         dialog.template.get.return_value = "images/g.png"
         dialog.threshold = Mock()
@@ -5874,7 +6058,10 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.destroy = Mock()
-        dialog.save()
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "category": "workflow_global", "template": "images/g.png", "region": [],
+        }):
+            dialog.save()
         self.assertFalse(dialog.result["jump_enabled"])
 
     def test_global_detect_dialog_jump_mode_falls_back_to_spinbox(self):
@@ -5882,6 +6069,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.require_click = False
         dialog.jump = True
+        dialog.module_key = Mock(**{"get.return_value": "module:global"})
         dialog.template = Mock()
         dialog.template.get.return_value = "images/g.png"
         dialog.threshold = Mock()
@@ -5898,7 +6086,10 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "5"
         dialog.destroy = Mock()
-        dialog.save()
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "category": "script_global", "template": "images/g.png", "region": [],
+        }):
+            dialog.save()
         result = dialog.result
         self.assertEqual(result["jump_row"], 5)
         self.assertNotIn("jump_action_id", result)
@@ -6114,6 +6305,18 @@ class RecordingDisplayTests(unittest.TestCase):
 
 
 class WinInputTests(unittest.TestCase):
+    def test_set_dark_titlebar_requests_rounded_window_corners(self):
+        with patch("macroflow.input.wininput.user32.GetAncestor", return_value=123), \
+             patch("macroflow.input.wininput.dwmapi.DwmSetWindowAttribute", return_value=0) as set_attr:
+            self.assertTrue(set_dark_titlebar(456))
+
+        corner_calls = [
+            item for item in set_attr.call_args_list
+            if item.args[1] == DWMWA_WINDOW_CORNER_PREFERENCE
+        ]
+        self.assertEqual(len(corner_calls), 1)
+        self.assertEqual(corner_calls[0].args[2]._obj.value, 2)
+
     def test_resolve_window_signature_matches_exact_signature(self):
         # 标题 + 类名 + 进程路径全匹配时命中对应窗口。
         windows = [
@@ -6368,6 +6571,8 @@ class ImageTests(unittest.TestCase):
         dialog.condition_template = [Mock()]
         dialog.condition_region = [Mock()]
         dialog.condition_type = [Mock()]
+        dialog.condition_ocr_mode = [Mock()]
+        dialog.condition_field_widgets = [{}]
         with patch("macroflow.ui.dialogs.choose_module_binding", return_value={
             "module_ref": True, "module_key": "module:first",
             "template": "images/shared.png", "region_mode": "template",
@@ -7327,9 +7532,24 @@ class ImageTests(unittest.TestCase):
 
 class OcrTests(unittest.TestCase):
 
+    def test_detect_row_height_finds_repeated_horizontal_boundaries(self):
+        screen = np.full((140, 80, 3), 45, dtype=np.uint8)
+        for y in (19, 46, 73, 100, 127):
+            screen[y:y + 1, :] = 180
+
+        with patch(
+            "macroflow.core.image_match.capture_bgr", return_value=(screen, (0, 0)),
+        ):
+            self.assertEqual(detect_row_height((0, 0, 80, 140), 18), 27)
+
     def test_parse_ocr_number_pair_accepts_full_width_separator_and_spaces(self):
         self.assertEqual(parse_ocr_number_pair("当前 １２ ／ １２", "/"), (12, 12))
         self.assertEqual(parse_ocr_number_pair("挑战 12 / 34", "/"), (12, 34))
+
+    def test_parse_ocr_number_pair_accepts_common_ocr_slash_confusions(self):
+        self.assertEqual(parse_ocr_number_pair("15.16", "/"), (15, 16))
+        self.assertEqual(parse_ocr_number_pair("17.(12", "/"), (17, 12))
+        self.assertEqual(parse_ocr_number_pair("2|12", "/"), (2, 12))
 
     def test_parse_ocr_number_pair_rejects_missing_or_malformed_side(self):
         self.assertIsNone(parse_ocr_number_pair("12-34", "/"))
@@ -7380,7 +7600,11 @@ class OcrTests(unittest.TestCase):
         form.condition_type = [Mock(), Mock(), Mock()]
         form.condition_type[0].get.return_value = "image"
         form.condition_type[1].get.return_value = "ocr"
-        form.condition_type[2].get.return_value = "number_compare"
+        form.condition_type[2].get.return_value = "ocr"
+        form.condition_ocr_mode = [Mock(), Mock(), Mock()]
+        form.condition_ocr_mode[0].get.return_value = "text"
+        form.condition_ocr_mode[1].get.return_value = "text"
+        form.condition_ocr_mode[2].get.return_value = "number"
         form.condition_region = [Mock(), Mock(), Mock()]
         form.condition_region[0].get.return_value = "10,20,100,80"
         form.condition_region[1].get.return_value = "200,20,120,40"
@@ -7430,13 +7654,250 @@ class OcrTests(unittest.TestCase):
         form.destroy.assert_called_once()
         self.assertEqual(form.result["type"], "multi_condition_click")
         self.assertEqual([item["enabled"] for item in form.result["conditions"]], [True, True, False])
-        self.assertEqual([item["type"] for item in form.result["conditions"]], ["image", "ocr", "number_compare"])
+        self.assertEqual([item["type"] for item in form.result["conditions"]], ["image", "ocr", "ocr"])
         self.assertEqual(form.result["conditions"][0]["template"], "images/shared.png")
         self.assertEqual(form.result["conditions"][0]["module_key"], "module:first")
         self.assertEqual(form.result["conditions"][0]["region"], [11, 22, 333, 444])
         self.assertTrue(form.result["conditions"][0]["module_ref"])
         self.assertEqual(form.result["conditions"][1]["expected_text"], "完成")
+        self.assertEqual(form.result["conditions"][1].get("ocr_mode"), "text")
+        self.assertEqual(form.result["conditions"][2].get("ocr_mode"), "number")
+        self.assertEqual(form.result["conditions"][2]["separator"], "/")
+        self.assertEqual(form.result["conditions"][2]["relation"], "not_equal")
         self.assertEqual(form.result["click_region"], [600, 200, 50, 40])
+
+    def test_multi_condition_fields_follow_type_and_ocr_mode(self):
+        states = getattr(dialog_module, "multi_condition_field_states", None)
+        self.assertIsNotNone(states, "缺少多条件输入控件状态规则")
+        self.assertEqual(states("image", "text"), {
+            "image": True, "ocr_mode": False, "ocr_text": False,
+            "ocr_match": False, "separator": False, "relation": False,
+        })
+        self.assertEqual(states("ocr", "text"), {
+            "image": False, "ocr_mode": True, "ocr_text": True,
+            "ocr_match": True, "separator": False, "relation": False,
+        })
+        self.assertEqual(states("ocr", "number"), {
+            "image": False, "ocr_mode": True, "ocr_text": False,
+            "ocr_match": False, "separator": True, "relation": True,
+        })
+
+    def test_row_list_condition_fields_follow_selected_type(self):
+        states = getattr(dialog_module, "row_list_condition_field_states", None)
+        self.assertIsNotNone(states, "缺少列表逐行条件输入控件状态规则")
+        self.assertEqual(states("image"), {
+            "module": True, "text": False, "match_mode": False,
+            "separator": False, "relation": False,
+        })
+        self.assertEqual(states("text"), {
+            "module": False, "text": True, "match_mode": True,
+            "separator": False, "relation": False,
+        })
+        self.assertEqual(states("number"), {
+            "module": False, "text": False, "match_mode": False,
+            "separator": True, "relation": True,
+        })
+
+    def test_module_display_name_does_not_show_stable_module_id(self):
+        display_name = getattr(dialog_module, "module_display_name", None)
+        self.assertIsNotNone(display_name, "缺少模块显示名称解析函数")
+        with patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "name": "右侧条件模块", "template": "images/right.png",
+        }):
+            self.assertEqual(display_name("module:68ce87a9d03541d7a9abc4a817e794d9"), "右侧条件模块")
+
+    def test_row_list_condition_module_selection_displays_name_but_keeps_stable_key(self):
+        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
+        form = form_class.__new__(form_class)
+        form.condition_field_widgets = {"right": {}}
+        form.right_module_key = Mock()
+        form.right_module_name = Mock()
+        form.right_condition_type = Mock()
+        with patch("macroflow.ui.dialogs.choose_module_binding", return_value={
+            "module_ref": True, "module_key": "module:68ce87a9d03541d7a9abc4a817e794d9",
+        }), patch("macroflow.ui.dialogs.registered_module_object", return_value={
+            "name": "右侧条件模块", "template": "images/right.png",
+        }):
+            form.select_condition_module("right")
+
+        form.right_module_key.set.assert_called_once_with(
+            "module:68ce87a9d03541d7a9abc4a817e794d9",
+        )
+        form.right_module_name.set.assert_called_once_with("右侧条件模块")
+
+    def _row_list_dialog_form(self):
+        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
+        form = form_class.__new__(form_class)
+        form.master = Mock()
+        form.list_region = Mock(); form.list_region.get.return_value = "100,200,160,340"
+        form.left_region = Mock(); form.left_region.get.return_value = "100,200,70,26"
+        form.right_region = Mock(); form.right_region.get.return_value = "180,200,80,26"
+        form.click_region = Mock(); form.click_region.get.return_value = "190,200,60,26"
+        form.left_condition_type = Mock(); form.left_condition_type.get.return_value = "number"
+        form.right_condition_type = Mock(); form.right_condition_type.get.return_value = "text"
+        form.left_module_key = Mock(); form.left_module_key.get.return_value = ""
+        form.right_module_key = Mock(); form.right_module_key.get.return_value = ""
+        form.left_expected_text = Mock(); form.left_expected_text.get.return_value = ""
+        form.right_expected_text = Mock(); form.right_expected_text.get.return_value = "刚开始"
+        form.left_match_mode = Mock(); form.left_match_mode.get.return_value = "contains"
+        form.right_match_mode = Mock(); form.right_match_mode.get.return_value = "equals"
+        form.left_separator = Mock(); form.left_separator.get.return_value = "/"
+        form.right_separator = Mock(); form.right_separator.get.return_value = "/"
+        form.left_relation = Mock(); form.left_relation.get.return_value = "not_equal"
+        form.right_relation = Mock(); form.right_relation.get.return_value = "equal"
+        form.button = Mock(); form.button.get.return_value = "left"
+        form.click_count = Mock(); form.click_count.get.return_value = "1"
+        form.no_match_action = Mock(); form.no_match_action.get.return_value = "retry"
+        form.retry_interval = Mock(); form.retry_interval.get.return_value = "1500"
+        form.on_success = Mock(); form.on_success.get.return_value = "继续下一行"
+        form.success_target = Mock(); form.success_target.get.return_value = ""
+        form.on_failure = Mock(); form.on_failure.get.return_value = "继续下一行"
+        form.failure_target = Mock(); form.failure_target.get.return_value = ""
+        form.jump_target_ids = {}
+        form.result = None
+        form.destroy = Mock()
+        return form
+
+    def test_row_list_dialog_saves_relative_regions_for_confirmed_screenshot(self):
+        form = self._row_list_dialog_form()
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+        notice.assert_not_called()
+        form.destroy.assert_called_once()
+        self.assertEqual(form.result, {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 340],
+            "left_region": [0, 0, 70, 26],
+            "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {
+                "type": "number", "separator": "/", "relation": "not_equal",
+            },
+            "right_condition": {
+                "type": "text", "expected_text": "刚开始", "match_mode": "equals",
+            },
+            "button": "left",
+            "click_count": 1,
+            "no_match_action": "retry",
+            "retry_interval_ms": 1500,
+            "on_found": "continue",
+            "found_jump_action_id": "",
+            "on_timeout": "continue",
+            "timeout_jump_action_id": "",
+        })
+
+    def test_row_list_dialog_saves_success_and_failure_result_routes(self):
+        form = self._row_list_dialog_form()
+        form.on_success.get.return_value = "跳转到行对象"
+        form.success_target.get.return_value = "目标行"
+        form.on_failure.get.return_value = "结束当前最里层脚本"
+        form.jump_target_ids = {"目标行": "action-target"}
+
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+
+        notice.assert_not_called()
+        self.assertEqual(form.result["on_found"], "jump")
+        self.assertEqual(form.result["found_jump_action_id"], "action-target")
+        self.assertEqual(form.result["on_timeout"], "end_current_script")
+        self.assertEqual(form.result["timeout_jump_action_id"], "")
+
+    def test_row_list_dialog_auto_derives_row_height_and_saves_click_count(self):
+        form = self._row_list_dialog_form()
+        form.left_region.get.return_value = "100,205,70,20"
+        form.right_region.get.return_value = "180,205,80,20"
+        form.click_region.get.return_value = "190,200,60,26"
+        form.click_count.get.return_value = "3"
+
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+
+        notice.assert_not_called()
+        self.assertNotIn("row_height", form.result)
+        self.assertEqual(form.result["click_count"], 3)
+        self.assertEqual(form.result["left_region"], [0, 5, 70, 20])
+        self.assertEqual(form.result["right_region"], [80, 5, 80, 20])
+
+    def test_row_list_dialog_rejects_invalid_click_count(self):
+        form = self._row_list_dialog_form()
+        form.click_count.get.return_value = "0"
+
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+
+        notice.assert_called_once()
+        self.assertIsNone(form.result)
+        form.destroy.assert_not_called()
+
+    def test_row_list_dialog_saves_negative_virtual_desktop_coordinates(self):
+        form = self._row_list_dialog_form()
+        form.list_region.get.return_value = "-320,-180,160,78"
+        form.left_region.get.return_value = "-320,-180,70,26"
+        form.right_region.get.return_value = "-240,-180,80,26"
+        form.click_region.get.return_value = "-230,-180,60,26"
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+        notice.assert_not_called()
+        self.assertEqual(form.result["list_region"], [-320, -180, 160, 78])
+        self.assertEqual(form.result["left_region"], [0, 0, 70, 26])
+        self.assertEqual(form.result["right_region"], [80, 0, 80, 26])
+        self.assertEqual(form.result["click_region"], [90, 0, 60, 26])
+
+    def test_row_list_coordinate_parser_rejects_empty_components_and_accepts_signed_origin(self):
+        with self.assertRaises(ValueError):
+            dialog_module.RowListConditionClickDialog._parse_region(
+                "100,,200,160,340", "列表区域",
+            )
+        self.assertEqual(
+            dialog_module.RowListConditionClickDialog._parse_region(
+                "-320,+180,160,340", "列表区域",
+            ),
+            [-320, 180, 160, 340],
+        )
+
+    def test_row_list_dialog_rejects_click_region_taller_than_list(self):
+        form = self._row_list_dialog_form()
+        form.click_region.get.return_value = "190,200,60,341"
+
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+
+        notice.assert_called_once()
+        self.assertIsNone(form.result)
+        form.destroy.assert_not_called()
+
+    def test_row_list_dialog_saves_image_module_reference_for_row_local_recognition(self):
+        form = self._row_list_dialog_form()
+        form.left_condition_type.get.return_value = "image"
+        form.left_module_key.get.return_value = "module:left"
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+        notice.assert_not_called()
+        self.assertEqual(form.result["left_condition"], {
+            "type": "image", "module_ref": True, "module_key": "module:left",
+        })
+
+    def test_row_list_dialog_rejects_invalid_values_without_setting_result(self):
+        cases = [
+            ("subregion_outside_list", lambda form: setattr(form.left_region.get, "return_value", "100,200,161,26")),
+            ("empty_number_separator", lambda form: setattr(form.left_separator.get, "return_value", "")),
+            ("missing_image_module", lambda form: (
+                setattr(form.left_condition_type.get, "return_value", "image"),
+                setattr(form.left_module_key.get, "return_value", ""),
+            )),
+            ("negative_retry_interval", lambda form: setattr(form.retry_interval.get, "return_value", "-1")),
+        ]
+        for name, invalidate in cases:
+            with self.subTest(name=name):
+                form = self._row_list_dialog_form()
+                invalidate(form)
+                with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+                    form.save()
+                notice.assert_called_once()
+                self.assertIsNone(form.result)
+                form.destroy.assert_not_called()
 
     def test_multi_condition_click_dialog_has_scrollable_form(self):
         form_class = getattr(dialog_module, "MultiConditionClickDialog", None)
@@ -7448,6 +7909,18 @@ class OcrTests(unittest.TestCase):
         self.assertIn("scrollregion", init_source)
         self.assertIn("create_window", init_source)
         self.assertIn("yview_scroll", scroll_source)
+
+    def test_row_list_condition_click_dialog_has_scrollable_form(self):
+        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
+        init_source = inspect.getsource(form_class.__init__)
+        self.assertIn("tk.Canvas", init_source)
+        self.assertIn("ttk.Scrollbar", init_source)
+        self.assertIn("scrollregion", init_source)
+        self.assertIn("create_window", init_source)
+        scroll_form = getattr(form_class, "_scroll_form", None)
+        self.assertIsNotNone(scroll_form, "列表逐行条件点击窗口缺少滚轮处理")
+        self.assertIn("yview_scroll", inspect.getsource(scroll_form))
 
     def test_extract_ocr_integer_sorts_boxes_left_to_right(self):
         value, digits = extract_ocr_integer("721", [
@@ -7903,6 +8376,12 @@ class PlayerTests(unittest.TestCase):
         patcher = patch("macroflow.execution.player.show_overlay")
         patcher.start()
         self.addCleanup(patcher.stop)
+        self._row_height_detector = patch(
+            "macroflow.execution.player.detect_row_height",
+            side_effect=lambda _region, fallback: fallback,
+        )
+        self._row_height_detector.start()
+        self.addCleanup(self._row_height_detector.stop)
 
     def test_script_scope_reentered_on_each_repeat(self):
         # 关卡封装"执行 x 次"时，每次重复都要重新进入脚本全局作用域，
@@ -8271,7 +8750,7 @@ class PlayerTests(unittest.TestCase):
                     "match_mode": "contains", "region": [200, 20, 120, 40],
                 },
                 {
-                    "enabled": True, "type": "number_compare", "separator": "/",
+                    "enabled": True, "type": "ocr", "ocr_mode": "number", "separator": "/",
                     "relation": "equal", "region": [400, 20, 120, 40],
                 },
             ],
@@ -8335,7 +8814,7 @@ class PlayerTests(unittest.TestCase):
                     "enabled": True, "type": "ocr", "expected_text": "完成",
                     "match_mode": "contains", "region": [200, 20, 120, 40],
                 },
-                {"enabled": False, "type": "number_compare"},
+                {"enabled": False, "type": "ocr", "ocr_mode": "number"},
             ],
             "click_region": [600, 200, 50, 40],
             "button": "left", "click_count": 4,
@@ -8362,7 +8841,7 @@ class PlayerTests(unittest.TestCase):
             "type": "multi_condition_click",
             "conditions": [
                 {
-                    "enabled": True, "type": "number_compare", "separator": "/",
+                    "enabled": True, "type": "ocr", "ocr_mode": "number", "separator": "/",
                     "relation": "not_equal", "region": [400, 20, 120, 40],
                 },
                 {"enabled": False, "type": "image"},
@@ -8382,6 +8861,340 @@ class PlayerTests(unittest.TestCase):
                 self.fail(f"多条件数字比较条件未实现：{exc}")
         self.assertIsNone(result)
         player._click_module_point.assert_called_once_with(625, 220, "right", 2, None)
+
+    def test_multi_condition_ocr_number_mode_requires_numeric_pair(self):
+        player = MacroPlayer()
+        condition = {
+            "enabled": True, "type": "ocr", "ocr_mode": "number",
+            "separator": "/", "relation": "equal", "region": [10, 20, 120, 40],
+        }
+        with patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            return_value=("没有数字对", []),
+        ):
+            self.assertFalse(player._multi_condition_matches(condition, None))
+
+    def test_row_list_clicks_first_matching_row_and_stops_scanning(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, False, True, True])
+        player._click_module_point = Mock()
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "button": "left", "no_match_action": "finish",
+        }, None)
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (100, 200, 70, 26)),
+            call({"type": "text"}, (180, 200, 80, 26)),
+            call({"type": "number"}, (100, 226, 70, 26)),
+            call({"type": "text"}, (180, 226, 80, 26)),
+        ])
+        player._click_module_point.assert_called_once_with(220, 239, "left", 1, None)
+
+    def test_row_list_success_can_end_current_inner_script(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, True])
+        player._click_module_point = Mock()
+
+        result = player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "on_found": "end_current_script",
+            "no_match_action": "finish",
+        }, None)
+
+        self.assertEqual(result, ("end_current_script", 0))
+        player._click_module_point.assert_called_once()
+
+    def test_row_list_success_can_jump_to_action_id(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, True])
+        player._click_module_point = Mock()
+
+        result = player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "on_found": "jump", "found_jump_action_id": "action-target",
+            "no_match_action": "finish",
+        }, None)
+
+        self.assertEqual(result, ("action_id", "action-target"))
+
+    def test_row_list_failure_can_end_current_inner_script(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(return_value=False)
+        player._click_module_point = Mock()
+
+        result = player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "on_timeout": "end_current_script",
+            "no_match_action": "finish",
+        }, None)
+
+        self.assertEqual(result, ("end_current_script", 0))
+        player._click_module_point.assert_not_called()
+
+    def test_row_list_text_and_number_conditions(self):
+        player = MacroPlayer()
+        cases = [
+            ({"type": "text", "expected_text": "刚开始", "match_mode": "equals"}, "刚开始", True),
+            ({"type": "text", "expected_text": "刚开始", "match_mode": "equals"}, "游戏中", False),
+            ({"type": "number", "separator": "/", "relation": "not_equal"}, "11/12", True),
+            ({"type": "number", "separator": "/", "relation": "not_equal"}, "12/12", False),
+            ({"type": "number", "separator": "/", "relation": "equal"}, "无效", False),
+        ]
+        for condition, recognized, expected in cases:
+            with self.subTest(condition=condition, recognized=recognized), patch(
+                "macroflow.execution.player.recognize_region_with_boxes",
+                return_value=(recognized, []),
+            ) as recognize:
+                self.assertEqual(
+                    player._row_list_condition_matches(condition, (100, 200, 70, 26)),
+                    expected,
+                )
+                recognize.assert_called_once_with((100, 200, 70, 26))
+
+    def test_row_list_logs_recognized_text_when_condition_misses(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        condition = {"type": "text", "expected_text": "刚开始", "match_mode": "equals"}
+
+        with patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            return_value=("游戏中", [{"text": "游戏中"}]),
+        ):
+            matched = player._row_list_condition_matches(
+                condition, (100, 200, 70, 26), "第1行左侧",
+            )
+
+        self.assertFalse(matched)
+        self.assertTrue(any(
+            "第1行左侧" in text
+            and "游戏中" in text
+            and "刚开始" in text
+            and "未命中" in text
+            for text in logs
+        ), logs)
+
+    def test_row_list_logs_empty_ocr_as_not_recognized(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        with patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            return_value=("", []),
+        ):
+            matched = player._row_list_condition_matches(
+                {"type": "number", "separator": "/", "relation": "not_equal"},
+                (100, 200, 70, 26), "第1行左侧",
+            )
+
+        self.assertFalse(matched)
+        self.assertTrue(any("未识别到文字" in text for text in logs), logs)
+
+    def test_row_list_number_condition_rejects_unknown_relation(self):
+        player = MacroPlayer()
+        condition = {"type": "number", "separator": "/", "relation": "greater"}
+
+        with patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            return_value=("11/12", []),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "greater"):
+                player._row_list_condition_matches(condition, (100, 200, 70, 26))
+
+    def test_row_list_image_condition_uses_live_module_with_row_region(self):
+        player = MacroPlayer()
+        condition = {"type": "image", "module_key": "module:first"}
+        module = {
+            "template": "images/live.png", "threshold": 0.91,
+            "ignore_background": True,
+        }
+        row_region = (100, 200, 70, 26)
+        with patch(
+            "macroflow.execution.player.registered_module_object", return_value=module,
+        ), patch("macroflow.execution.player.find_template", return_value={}) as find:
+            self.assertTrue(player._row_list_condition_matches(condition, row_region))
+        find.assert_called_once_with(
+            resolve_path("images/live.png"), 0.91, row_region,
+            ignore_background=True, scale=1.0,
+        )
+        with patch("macroflow.execution.player.registered_module_object", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "module:first"):
+                player._row_list_condition_matches(condition, row_region)
+
+    def test_row_list_image_condition_logs_module_name_instead_of_stable_id(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        condition = {
+            "type": "image",
+            "module_key": "module:68ce87a9d03541d7a9abc4a817e794d9",
+        }
+        module = {
+            "name": "右侧条件模块",
+            "template": "images/right.png",
+            "threshold": 0.9,
+        }
+        with patch(
+            "macroflow.execution.player.registered_module_object", return_value=module,
+        ), patch("macroflow.execution.player.find_template", return_value={}):
+            self.assertTrue(
+                player._row_list_condition_matches(
+                    condition, (100, 200, 70, 26), "第1行右侧",
+                )
+            )
+
+        self.assertEqual(logs, ["第1行右侧 图片识别：右侧条件模块；命中"])
+
+    def test_row_list_finishes_without_waiting_or_clicking_when_no_row_matches(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._row_list_condition_matches = Mock(return_value=False)
+        player._click_module_point = Mock()
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "no_match_action": "finish",
+        }, None)
+        player._wait.assert_not_called()
+        player._click_module_point.assert_not_called()
+
+    def test_row_list_runtime_rejects_row_height_taller_than_list(self):
+        player = MacroPlayer()
+
+        with self.assertRaisesRegex(RuntimeError, "行高"):
+            player._execute_row_list_condition_click({
+                "type": "row_list_condition_click",
+                "list_region": [100, 200, 160, 26],
+                "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+                "click_region": [90, 0, 60, 27],
+                "left_condition": {"type": "number"},
+                "right_condition": {"type": "text"},
+                "no_match_action": "finish",
+            }, None)
+
+    def test_row_list_retries_after_interval_and_clicks_first_matching_rescan_row(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._row_list_condition_matches = Mock(side_effect=[False, False, True, True])
+        player._click_module_point = Mock()
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 52], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "no_match_action": "retry", "retry_interval_ms": 1500,
+        }, None)
+        player._wait.assert_called_once_with(1500)
+        player._click_module_point.assert_called_once_with(220, 213, "left", 1, None)
+
+    def test_row_list_clicks_matching_row_repeatedly(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, True])
+        player._click_module_point = Mock()
+
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 52],
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26], "click_count": 4,
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "button": "left", "no_match_action": "finish",
+        }, None)
+
+        player._click_module_point.assert_called_once_with(220, 213, "left", 4, None)
+
+    def test_row_list_uses_detected_spacing_when_text_boxes_are_shorter(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, True])
+        player._click_module_point = Mock()
+
+        with patch(
+            "macroflow.execution.player.detect_row_height", return_value=27,
+        ) as detect:
+            player._execute_row_list_condition_click({
+                "type": "row_list_condition_click",
+                "list_region": [100, 200, 160, 54],
+                "left_region": [0, 4, 70, 18], "right_region": [80, 4, 80, 18],
+                "click_region": [90, 4, 60, 18],
+                "left_condition": {"type": "number"},
+                "right_condition": {"type": "text"},
+                "button": "left", "no_match_action": "finish",
+            }, None)
+
+        detect.assert_called_once_with((100, 200, 160, 54), 22)
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (100, 204, 70, 18)),
+            call({"type": "text"}, (180, 204, 80, 18)),
+        ])
+
+    def test_row_list_rejects_child_regions_outside_list(self):
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 52], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "no_match_action": "finish",
+        }
+        cases = [
+            ("left_region", [91, 0, 70, 26]),
+            ("right_region", [80, 52, 80, 1]),
+            ("click_region", [90, -1, 60, 26]),
+        ]
+        for key, invalid_region in cases:
+            with self.subTest(key=key, invalid_region=invalid_region):
+                player = MacroPlayer()
+                player._row_list_condition_matches = Mock(return_value=True)
+                malformed = dict(action, **{key: invalid_region})
+                with self.assertRaises(RuntimeError):
+                    player._execute_row_list_condition_click(malformed, None)
+
+    def test_row_list_scales_translated_regions_and_click_center_for_replay(self):
+        player = MacroPlayer()
+        player._source_screen = {"left": 0, "top": 0, "width": 1000, "height": 500}
+        player._target_screen = {"left": 10, "top": 20, "width": 2000, "height": 1000}
+        player._row_list_condition_matches = Mock(side_effect=[False, True, True])
+        player._click_module_point = Mock()
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 52], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "button": "left", "no_match_action": "finish",
+        }, None)
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (210, 420, 140, 52)),
+            call({"type": "number"}, (210, 472, 140, 52)),
+            call({"type": "text"}, (370, 472, 160, 52)),
+        ])
+        player._click_module_point.assert_called_once_with(450, 498, "left", 1, None)
 
     def test_ocr_hit_any_text_when_expected_empty(self):
         # 期望文字留空：识别到任意文字即命中。
@@ -10450,6 +11263,44 @@ class PlayerTests(unittest.TestCase):
             player.play([{"type": "script_ref", "script": str(ref_path)}])
         self.assertEqual(notices, [("第一版", 500), ("第二版", 500)])
 
+    def test_script_ref_executes_referenced_script_requested_number_of_times(self):
+        notices = []
+        player = MacroPlayer(on_notice=lambda text, duration: notices.append((text, duration)))
+        with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
+            ref_path = Path(folder) / "referenced.json"
+            ref_path.write_text(json.dumps({
+                "name": "被引用脚本",
+                "actions": [{"type": "notice", "text": "重复执行", "duration_ms": 500}],
+            }, ensure_ascii=False), encoding="utf-8")
+            player.play([{
+                "type": "script_ref", "script": str(ref_path), "repeats": 3,
+            }])
+        self.assertEqual(notices, [("重复执行", 500)] * 3)
+
+    def test_script_ref_reloads_file_between_repetitions(self):
+        notices = []
+        with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
+            ref_path = Path(folder) / "referenced.json"
+
+            def write_referenced(text):
+                ref_path.write_text(json.dumps({
+                    "name": "ref",
+                    "actions": [{"type": "notice", "text": text, "duration_ms": 500}],
+                }, ensure_ascii=False), encoding="utf-8")
+
+            write_referenced("第一版")
+
+            def on_notice(text, duration):
+                notices.append((text, duration))
+                if text == "第一版":
+                    write_referenced("第二版")
+
+            player = MacroPlayer(on_notice=on_notice)
+            player.play([{
+                "type": "script_ref", "script": str(ref_path), "repeats": 2,
+            }])
+        self.assertEqual(notices, [("第一版", 500), ("第二版", 500)])
+
     def test_script_ref_respects_pre_and_after_delay(self):
         player = MacroPlayer()
         waits = []
@@ -10493,6 +11344,13 @@ class PlayerTests(unittest.TestCase):
         })
         self.assertIn("引用脚本", kind)
         self.assertIn("某脚本", detail)
+        self.assertIn("执行 1 次", detail)
+
+    def test_script_ref_summary_shows_requested_repeat_count(self):
+        _kind, detail, _delay = action_summary({
+            "type": "script_ref", "script": "scripts/关卡/某脚本.json", "repeats": 4,
+        })
+        self.assertIn("执行 4 次", detail)
 
     def test_open_app_action_launches_selected_executable(self):
         player = MacroPlayer()
@@ -12053,6 +12911,7 @@ class TemplateRegionTests(unittest.TestCase):
                 loaded = load_module_objects()
             self.assertFalse(loaded["module:disabled"]["enabled"])
             self.assertTrue(loaded["module:default"]["enabled"])
+            self.assertEqual(loaded["module:default"]["not_found_timeout_ms"], 5000)
 
     def test_text_absent_wait_state_roundtrips(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -12293,7 +13152,7 @@ class TemplateRegionTests(unittest.TestCase):
             "button": "left", "second_match_template": "",
             "second_match_region": [], "second_match_timeout_ms": 3000,
             "on_success_actions": [], "run_code_on_timeout": False,
-            "not_found_timeout_ms": 3000, "on_timeout_actions": [],
+            "not_found_timeout_ms": 5000, "on_timeout_actions": [],
         }
         obj.update(overrides)
         return obj
@@ -12452,7 +13311,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.run_code_on_timeout_var = Mock()
         form.run_code_on_timeout_var.get.return_value = False
         form.not_found_timeout_var = Mock()
-        form.not_found_timeout_var.get.return_value = "3000"
+        form.not_found_timeout_var.get.return_value = "5000"
         form.button_var = Mock()
         form.button_var.get.return_value = "left"
         form.click_count_var = Mock()
@@ -12597,7 +13456,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(obj["second_match_click_region"], [])
         self.assertEqual(obj["on_success_actions"], [])
         self.assertFalse(obj["run_code_on_timeout"])
-        self.assertEqual(obj["not_found_timeout_ms"], 3000)
+        self.assertEqual(obj["not_found_timeout_ms"], 5000)
         self.assertEqual(obj["on_timeout_actions"], [])
         form.destroy.assert_called_once()
         notice.assert_not_called()

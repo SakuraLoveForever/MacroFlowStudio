@@ -33,6 +33,7 @@ from macroflow.ui.dialogs import (
     HotkeyScriptsDialog,
     JsonActionDialog, JumpActionDialog, KeyActionDialog,
     RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
+    RowListConditionClickDialog,
     ModulePickerDialog,
     MouseMoveDialog, ScheduleDialog,
     OpenAppDialog, ScriptDirectoriesDialog, TemplateRegionFormDialog,
@@ -55,6 +56,7 @@ from macroflow.core.models import (
     MacroScript, Workflow, clone_actions_with_new_ids,
     ensure_action_ids, ensure_workflow_step_ids, is_global_script,
     new_action_id,
+    script_ref_repeat_count,
 )
 from macroflow.input.input_guard import FocusInputGuard, RESERVED_HOTKEY_VKS
 from macroflow.execution.player import (
@@ -66,6 +68,7 @@ from macroflow.execution.player import (
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
+    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
     available_script_path, backup_script,
     display_path, ensure_dirs, migrate_workflow_templates, safe_name,
     DIRECTION_SCRIPTS_DIR,
@@ -143,6 +146,9 @@ FLOATING_NOTICE_POSITIONS = ("左上", "顶部居中", "右上", "左下", "底�
 SCRIPT_CATEGORY_VALUES = ("关卡", "关卡封装", "切换", "方向")
 FLOATING_NOTICE_WIDTH = 360
 FLOATING_NOTICE_HEIGHT = 68
+DEFAULT_MAIN_GEOMETRY = "1540x860"
+MIN_MAIN_WIDTH = 1280
+MIN_MAIN_HEIGHT = 700
 
 COLOR_BG = "#0E1419"
 COLOR_SIDEBAR = "#131B22"
@@ -169,6 +175,7 @@ ACTION_ICONS = {
     "image_match": "▣",
     "ocr_compare": "⇄",
     "multi_condition_click": "⊞",
+    "row_list_condition_click": "▤",
     "notice": "i",
     "comment": "≡",
     "script_ref": "⇄",
@@ -177,6 +184,13 @@ ACTION_ICONS = {
     "jump": "⇢",
     "jump_current_script_last": "⇥",
 }
+
+
+def toolbar_spec_rows(specs, row_size: int = 8) -> tuple[tuple, ...]:
+    """Split a toolbar's button specs into rows that fit the content area."""
+    items = tuple(specs)
+    size = max(1, int(row_size))
+    return tuple(items[index:index + size] for index in range(0, len(items), size))
 
 
 def floating_notice_xy(position: str, screen_width: int, screen_height: int,
@@ -350,7 +364,7 @@ def _module_ref_summary(action: dict, label: str,
         detail += f" · 再执行代码段 {len(obj.get('on_success_actions') or [])} 项"
     if bool(obj.get("run_code_on_timeout", False)):
         detail += (
-            f" · 未识别 {int(obj.get('not_found_timeout_ms', 3000))} ms 后"
+            f" · 未识别 {int(obj.get('not_found_timeout_ms', DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS))} ms 后"
             f"执行代码段 {len(obj.get('on_timeout_actions') or [])} 项"
         )
     if kind == "global_detect" and action.get("module_ref"):
@@ -600,7 +614,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             delay,
         )
     if kind == "multi_condition_click":
-        type_labels = {"image": "图片", "ocr": "OCR", "number_compare": "数字比较"}
+        type_labels = {"image": "图片", "ocr": "OCR"}
         condition_text = []
         for index, condition in enumerate(action.get("conditions", [])[:3], start=1):
             if not isinstance(condition, dict) or not condition.get("enabled"):
@@ -611,9 +625,10 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             if condition_kind == "image":
                 detail = Path(str(condition.get("template", ""))).name or "未设置模板"
             elif condition_kind == "ocr":
-                detail = f"文字:{str(condition.get('expected_text', ''))[:20] or '任意文字'}"
-            elif condition_kind == "number_compare":
-                detail = f"数字{condition.get('separator', '/')}数字·{condition.get('relation', 'equal')}"
+                if str(condition.get("ocr_mode", "text")) == "number":
+                    detail = f"数字{condition.get('separator', '/')}数字·{condition.get('relation', 'equal')}"
+                else:
+                    detail = f"文字:{str(condition.get('expected_text', ''))[:20] or '任意文字'}"
             else:
                 detail = "未知条件"
             condition_text.append(
@@ -624,6 +639,42 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             action_kind_label(kind, "多条件识图"),
             f"{' · '.join(condition_text) or '未设置条件'} · 点击区域 {click_region} · "
             f"连续点击 {int(action.get('click_count', 1))} 次 · 超时 {int(action.get('timeout_ms', 3000))} ms",
+            delay,
+        )
+    if kind == "row_list_condition_click":
+        def condition_summary(condition: dict) -> str:
+            condition_kind = str(condition.get("type", ""))
+            if condition_kind == "image":
+                return "图片模块"
+            if condition_kind == "text":
+                expected = str(condition.get("expected_text", "")).strip() or "任意文字"
+                match_mode = "完全相等" if condition.get("match_mode") == "equals" else "包含"
+                return f"文字:{expected}（{match_mode}）"
+            if condition_kind == "number":
+                relation = "相等" if condition.get("relation", "equal") == "equal" else "不相等"
+                return f"数字{condition.get('separator', '/')}数字（{relation}）"
+            return "未设置"
+
+        left = action.get("left_condition")
+        right = action.get("right_condition")
+        no_match = "重试" if action.get("no_match_action") == "retry" else "结束"
+        def result_summary(behavior_key: str, target_key: str) -> str:
+            behavior = str(action.get(behavior_key, "continue"))
+            if behavior == "jump":
+                target_id = str(action.get(target_key, "")).strip()
+                target_row = action_rows.get(target_id) if action_rows and target_id else None
+                return f"跳到第 {target_row} 行" if target_row is not None else "跳转目标已删除"
+            if behavior == "end_current_script":
+                return "结束当前最里层脚本"
+            return "继续下一行"
+        return (
+            action_kind_label(kind, "列表逐行点击"),
+            "从上到下 · "
+            f"左:{condition_summary(left if isinstance(left, dict) else {})} · "
+            f"右:{condition_summary(right if isinstance(right, dict) else {})} · "
+            f"首个匹配即点击，连续点击 {int(action.get('click_count', 1))} 次 · "
+            f"成功后:{result_summary('on_found', 'found_jump_action_id')} · "
+            f"失败后:{result_summary('on_timeout', 'timeout_jump_action_id')} · 未命中:{no_match}",
             delay,
         )
     if kind == "global_detect":
@@ -674,7 +725,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         return action_kind_label(kind, "注释"), str(action.get("text", "")), delay
     if kind == "script_ref":
         name = workflow_script_name(str(action.get("script", ""))) or "未设置"
-        return action_kind_label(kind, "引用脚本"), f"执行 {name}（实时读取原脚本最新内容）", delay
+        repeats = script_ref_repeat_count(action)
+        return action_kind_label(kind, "引用脚本"), f"执行 {repeats} 次：{name}（实时读取原脚本最新内容）", delay
     if kind == "open_app":
         name = Path(str(action.get("path", ""))).name or "未设置"
         args = str(action.get("args", "")).strip()
@@ -768,9 +820,9 @@ class MacroFlowApp:
         self.root = ttk.Window(themename="darkly")
         self.root._macroflow_app = self
         self.root.title(f"{APP_NAME}  {APP_VERSION}")
-        self.root.geometry("1700x940")
-        self.root.minsize(1480, 780)
-        self.root.option_add("*Font", ("Microsoft YaHei UI", 11))
+        self.root.geometry(DEFAULT_MAIN_GEOMETRY)
+        self.root.minsize(MIN_MAIN_WIDTH, MIN_MAIN_HEIGHT)
+        self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
         disable_combobox_wheel_selection(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._configure_dark_theme()
@@ -987,7 +1039,7 @@ class MacroFlowApp:
         style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT)
         style.configure("Sidebar.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT)
         style.configure("Brand.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
-                        font=("Microsoft YaHei UI", 22, "bold"))
+                        font=("Microsoft YaHei UI", 18, "bold"))
         style.configure("Muted.TLabel", background=COLOR_BG, foreground=COLOR_MUTED)
         style.configure("SidebarMuted.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_MUTED)
         style.configure("Section.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
@@ -1017,27 +1069,29 @@ class MacroFlowApp:
 
         style.configure("TEntry", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        insertcolor=COLOR_TEXT, padding=8)
+                        insertcolor=COLOR_TEXT, padding=5)
         style.configure("TSpinbox", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
-                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=6)
+                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=4)
         style.configure("TCombobox", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
-                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=6)
+                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=4)
         style.configure("TSeparator", background=COLOR_BORDER)
+        style.configure("TButton", padding=(9, 5), font=("Microsoft YaHei UI", 9))
+        style.configure("TCheckbutton", padding=(2, 2), font=("Microsoft YaHei UI", 9))
 
         style.configure("TNotebook", background=COLOR_BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure("TNotebook.Tab", background=COLOR_BG, foreground=COLOR_MUTED,
-                        borderwidth=0, padding=(20, 13), font=("Microsoft YaHei UI", 11))
+                        borderwidth=0, padding=(14, 8), font=("Microsoft YaHei UI", 10))
         style.map("TNotebook.Tab",
                   background=[("selected", COLOR_BG), ("active", COLOR_SURFACE)],
                   foreground=[("selected", COLOR_TEXT), ("active", COLOR_TEXT)],
                   lightcolor=[("selected", COLOR_BLUE)], bordercolor=[("selected", COLOR_BLUE)])
 
         style.configure("Treeview", background=COLOR_SURFACE, fieldbackground=COLOR_SURFACE,
-                        foreground=COLOR_TEXT, bordercolor=COLOR_BORDER, rowheight=42,
-                        font=("Microsoft YaHei UI", 11))
+                        foreground=COLOR_TEXT, bordercolor=COLOR_BORDER, rowheight=34,
+                        font=("Microsoft YaHei UI", 10))
         style.configure("Treeview.Heading", background=COLOR_SURFACE_ALT, foreground=COLOR_MUTED,
-                        bordercolor=COLOR_BORDER, relief="flat", padding=(9, 10),
-                        font=("Microsoft YaHei UI", 10, "bold"))
+                        bordercolor=COLOR_BORDER, relief="flat", padding=(8, 7),
+                        font=("Microsoft YaHei UI", 9, "bold"))
         style.map("Treeview", background=[("selected", "#244D78")],
                   foreground=[("selected", "#FFFFFF")])
         style.configure("Workflow.Treeview")
@@ -1046,16 +1100,16 @@ class MacroFlowApp:
         style.map("Treeview.Heading", background=[("active", "#24313B")])
         style.configure("Ghost.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(13, 8),
-                        font=("Microsoft YaHei UI", 10))
+                        relief="solid", borderwidth=1, padding=(10, 5),
+                        font=("Microsoft YaHei UI", 9))
         style.map("Ghost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
                   bordercolor=[("active", "#516170")])
         style.configure("CompactGhost.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(10, 7),
-                        font=("Microsoft YaHei UI", 10))
+                        relief="solid", borderwidth=1, padding=(8, 4),
+                        font=("Microsoft YaHei UI", 9))
         style.map("CompactGhost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
@@ -1069,7 +1123,7 @@ class MacroFlowApp:
                         foreground=COLOR_TEXT, font=("Microsoft YaHei UI", 10, "bold"))
         style.configure("ScriptTool.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(5, 7),
+                        relief="solid", borderwidth=1, padding=(5, 5),
                         font=("Microsoft YaHei UI", 9))
         style.map("ScriptTool.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
@@ -1077,22 +1131,22 @@ class MacroFlowApp:
                   bordercolor=[("active", "#516170")])
         style.configure("AccentScriptTool.TButton", background="#122D48", foreground="#8FC4FF",
                         bordercolor=COLOR_BLUE, lightcolor=COLOR_BLUE, darkcolor=COLOR_BLUE,
-                        relief="solid", borderwidth=1, padding=(5, 7),
+                        relief="solid", borderwidth=1, padding=(5, 5),
                         font=("Microsoft YaHei UI", 9, "bold"))
         style.map("AccentScriptTool.TButton",
                   background=[("active", "#18426A"), ("pressed", "#205582")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")])
         style.configure("DangerScriptTool.TButton", background=COLOR_BG, foreground="#FF6B6B",
                         bordercolor="#A93636", lightcolor="#A93636", darkcolor="#A93636",
-                        relief="solid", borderwidth=1, padding=(5, 7),
+                        relief="solid", borderwidth=1, padding=(5, 5),
                         font=("Microsoft YaHei UI", 9))
         style.map("DangerScriptTool.TButton",
                   background=[("active", "#3B1E22"), ("pressed", "#522329")],
                   foreground=[("active", "#FFFFFF")], bordercolor=[("active", COLOR_RED)])
         style.configure("SidebarGhost.TButton", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(12, 7),
-                        font=("Microsoft YaHei UI", 10))
+                        relief="solid", borderwidth=1, padding=(9, 5),
+                        font=("Microsoft YaHei UI", 9))
         style.map("SidebarGhost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
@@ -1654,16 +1708,21 @@ class MacroFlowApp:
             ("↻ 连点", self.add_repeat_click, "ScriptTool.TButton"),
             ("⇄ 数字比较", self.add_ocr_compare, "AccentScriptTool.TButton"),
             ("⊞ 多条件识图", self.add_multi_condition_click, "AccentScriptTool.TButton"),
+            ("▤ 列表逐行点击", self.add_row_list_condition_click, "AccentScriptTool.TButton"),
             ("▶ 软件", self.add_open_app, "ScriptTool.TButton"),
             ("✕ 关闭", self.add_close_app, "ScriptTool.TButton"),
             ("◈ 脚本全局", self.add_global_detect, "AccentScriptTool.TButton"),
             ("▤ 识别模块", self.add_module, "AccentScriptTool.TButton"),
             ("⇢ 跳转", self.add_jump, "AccentScriptTool.TButton"),
         )
-        for index, (text, command, style_name) in enumerate(add_button_specs):
-            ttk.Button(add_buttons, text=text, command=command, style=style_name).pack(
-                side="left", padx=(0 if index == 0 else 4, 0),
-            )
+        add_button_rows = toolbar_spec_rows(add_button_specs, row_size=8)
+        for row_index, row_specs in enumerate(add_button_rows):
+            row = ttk.Frame(add_buttons, style="Toolbar.TFrame")
+            row.pack(fill="x", pady=(0 if row_index == 0 else 4, 0))
+            for index, (text, command, style_name) in enumerate(row_specs):
+                ttk.Button(row, text=text, command=command, style=style_name).pack(
+                    side="left", padx=(0 if index == 0 else 4, 0),
+                )
         ttk.Label(edit_group, text="编辑选中动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
         edit_buttons = ttk.Frame(edit_group, style="Toolbar.TFrame")
         edit_buttons.pack(fill="x")
@@ -1791,32 +1850,36 @@ class MacroFlowApp:
     def _build_workflow_tab(self):
         header = ttk.Frame(self.workflow_tab, padding=(16, 18, 16, 12), style="Workspace.TFrame")
         header.pack(fill="x")
-        ttk.Label(header, text="工作流名称", style="PageTitle.TLabel").pack(side="left")
-        workflow_name_entry = ttk.Entry(header, textvariable=self.workflow_name_var, width=22)
+        workflow_meta_bar = ttk.Frame(header, style="Workspace.TFrame")
+        workflow_meta_bar.pack(fill="x")
+        ttk.Label(workflow_meta_bar, text="工作流名称", style="PageTitle.TLabel").pack(side="left")
+        workflow_name_entry = ttk.Entry(workflow_meta_bar, textvariable=self.workflow_name_var, width=22)
         workflow_name_entry.pack(side="left", padx=(8, 6))
         workflow_name_entry.bind("<KeyRelease>", self._schedule_workflow_draft_save)
-        ttk.Button(header, text="✏️ 修改名称", command=self.rename_workflow,
+        ttk.Button(workflow_meta_bar, text="✏️ 修改名称", command=self.rename_workflow,
                    style="CompactGhost.TButton").pack(side="left")
-        ttk.Button(header, text="⧉ 复制为新工作流", command=self.duplicate_workflow,
+        ttk.Button(workflow_meta_bar, text="⧉ 复制为新工作流", command=self.duplicate_workflow,
                    style="CompactGhost.TButton").pack(side="left", padx=(5, 15))
-        start_label = ttk.Frame(header, style="Workspace.TFrame")
+        start_label = ttk.Frame(workflow_meta_bar, style="Workspace.TFrame")
         start_label.pack(side="left")
         ttk.Label(start_label, text="开始时间").pack(side="left")
         self._help_badge(
             start_label, "留空表示手动运行；设置后到达指定时间自动开始当前工作流。",
         ).pack(side="left", padx=(6, 0))
-        ttk.Entry(header, textvariable=self.workflow_start_var, width=20, state="readonly").pack(side="left", padx=(8, 4))
-        ttk.Button(header, text="📅 选择", command=self.choose_workflow_start,
+        ttk.Entry(workflow_meta_bar, textvariable=self.workflow_start_var, width=20, state="readonly").pack(side="left", padx=(8, 4))
+        ttk.Button(workflow_meta_bar, text="📅 选择", command=self.choose_workflow_start,
                    style="CompactGhost.TButton").pack(side="left")
+        workflow_action_bar = ttk.Frame(header, style="Workspace.TFrame")
+        workflow_action_bar.pack(fill="x", pady=(8, 0))
         ttk.Button(
-            header, text="运行工作流", command=self.run_workflow,
+            workflow_action_bar, text="运行工作流", command=self.run_workflow,
             bootstyle="success",
         ).pack(side="right")
         ttk.Checkbutton(
-            header, text="测试模式", variable=self.workflow_test_mode_var,
+            workflow_action_bar, text="测试模式", variable=self.workflow_test_mode_var,
             bootstyle="round-toggle",
         ).pack(side="right", padx=(0, 8))
-        ttk.Button(header, text="从选中行运行", command=self.run_workflow_from_selected,
+        ttk.Button(workflow_action_bar, text="从选中行运行", command=self.run_workflow_from_selected,
                    style="CompactGhost.TButton").pack(side="right", padx=(0, 8))
 
         start_delay_bar = ttk.Frame(self.workflow_tab, padding=(16, 0, 16, 8), style="Workspace.TFrame")
@@ -2496,7 +2559,7 @@ class MacroFlowApp:
         second = None
         segment: list[dict] = []
         timeout_enabled = False
-        not_found_timeout_ms = 3000
+        not_found_timeout_ms = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
         timeout_segment: list[dict] = []
         if module_ref:
             obj = registered_module_object(module_ref_key)
@@ -2518,7 +2581,11 @@ class MacroFlowApp:
                 timeout_enabled = bool(obj.get("run_code_on_timeout", False)) and not bool(
                     obj.get("wait_text_absent", False)
                 )
-                not_found_timeout_ms = max(0, int(obj.get("not_found_timeout_ms", 3000)))
+                not_found_timeout_ms = max(
+                    0, int(obj.get(
+                        "not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+                    )),
+                )
                 timeout_segment = list(obj.get("on_timeout_actions") or [])
         if module is not None:
             module_display_name = (
@@ -2862,11 +2929,15 @@ class MacroFlowApp:
             if (
                 guard.get("timeout_enabled")
                 and not guard.get("timeout_triggered")
-                and timeout_elapsed >= int(guard.get("not_found_timeout_ms", 3000))
+                and timeout_elapsed >= int(
+                    guard.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
+                )
             ):
                 guard["timeout_triggered"] = True
                 guard["trigger_kind"] = "timeout"
-                timeout_ms = int(guard.get("not_found_timeout_ms", 3000))
+                timeout_ms = int(
+                    guard.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
+                )
                 segment = list(guard.get("timeout_segment") or [])
                 self._ui(
                     self._log,
@@ -2907,7 +2978,10 @@ class MacroFlowApp:
                 obj.get("wait_text_absent", False)
             )
             guard["not_found_timeout_ms"] = max(
-                0, int(obj.get("not_found_timeout_ms", guard.get("not_found_timeout_ms", 3000))),
+                0, int(obj.get(
+                    "not_found_timeout_ms",
+                    guard.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
+                )),
             )
             guard["timeout_segment"] = list(obj.get("on_timeout_actions") or [])
             guard["success_segment"] = (
@@ -3848,8 +3922,14 @@ class MacroFlowApp:
             if kind == "multi_condition_click" and any(
                 isinstance(condition, dict)
                 and condition.get("enabled")
-                and condition.get("type") in ("ocr", "number_compare")
+                and condition.get("type") == "ocr"
                 for condition in action.get("conditions", [])
+            ):
+                return True
+            if kind == "row_list_condition_click" and any(
+                isinstance(action.get(f"{side}_condition"), dict)
+                and action[f"{side}_condition"].get("type") in {"text", "number"}
+                for side in ("left", "right")
             ):
                 return True
             # 任意动作/配置携带 recognize == "text" 都走 OCR 识别。
@@ -5340,6 +5420,14 @@ class MacroFlowApp:
         if action:
             self._insert_action(action)
 
+    def add_row_list_condition_click(self):
+        ensure_action_ids(self.script.actions)
+        action = RowListConditionClickDialog(
+            self.root, actions=self.script.actions,
+        ).show()
+        if action:
+            self._insert_action(action)
+
     def add_open_app(self):
         action = OpenAppDialog(self.root).show()
         if action:
@@ -5540,6 +5628,7 @@ class MacroFlowApp:
         ref_action = {
             "type": "script_ref",
             "script": display_path(path),
+            "repeats": 1,
             "delay_ms": 0,
             "after_delay_ms": 0,
         }

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from macroflow.ui.detect_overlay import show_overlay
-from macroflow.core.image_match import find_template
+from macroflow.core.image_match import detect_row_height, find_template
 from macroflow.core.ocr import (
     extract_ocr_integer, find_expected_match, format_ocr_observation, matches_expected,
     parse_ocr_number_pair,
@@ -18,9 +18,12 @@ from macroflow.core.ocr import (
 )
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
-    SCRIPT_START_TARGET_ID,
+    SCRIPT_START_TARGET_ID, script_ref_repeat_count,
 )
-from macroflow.core.storage import load_script, registered_module_object, registered_template_region, resolve_path
+from macroflow.core.storage import (
+    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, load_script, registered_module_object,
+    registered_template_region, resolve_path,
+)
 from macroflow.input.wininput import (
     activate_window, get_cursor_pos, get_foreground_window_info, get_virtual_screen_rect,
     get_window_rect, is_window,
@@ -952,6 +955,8 @@ class MacroPlayer:
             return self._execute_ocr_compare(action, hwnd)
         elif kind == "multi_condition_click":
             return self._execute_multi_condition_click(action, hwnd)
+        elif kind == "row_list_condition_click":
+            return self._execute_row_list_condition_click(action, hwnd)
         elif kind == "global_detect":
             if self.on_global_detect_request and not self._script_scope_managed:
                 self.on_global_detect_request(action)
@@ -999,35 +1004,46 @@ class MacroPlayer:
                 raise RuntimeError(f"检测到脚本循环引用：{Path(script_path).stem} 引用了自身或其上级脚本")
             if depth >= MAX_SCRIPT_REF_DEPTH:
                 raise RuntimeError("脚本引用嵌套过深，已停止执行")
+            repeat_total = script_ref_repeat_count(action)
             script_stack.add(resolved)
-            referenced_scope = None
             try:
-                referenced = load_script(script_path)
-                if self.on_script_scope_enter:
-                    referenced_scope = self.on_script_scope_enter(referenced.actions)
-                self._status(
-                    f"执行引用脚本 {referenced.name}（{len(referenced.actions)} 个动作）",
-                )
-                self._run_action_sequence(
-                    referenced.actions, hwnd,
-                    script_stack=script_stack, depth=depth + 1,
-                )
-            except EndCurrentScriptRequest:
-                # 只在最近的脚本引用边界接住；模块代码段本身不是脚本边界，
-                # 因而结束信号会先穿过代码段，再结束当前最里层引用脚本。
-                self._status(f"已{END_CURRENT_SCRIPT_LABEL}（返回外层脚本）")
-            except PlaybackStopped as stopped:
-                # 异常从最内层先冒泡：只保留最内层被引用脚本的信息，
-                # 嵌套更深的外层引用不覆盖。
-                if stopped.referenced_actions is None:
-                    stopped.referenced_actions = referenced.actions
-                    stopped.referenced_source_screen = (
-                        dict(referenced.settings.get("recorded_screen", {})) or None
-                    )
-                raise
+                for repeat_index in range(repeat_total):
+                    referenced = load_script(script_path)
+                    referenced_scope = None
+                    try:
+                        if self.on_script_scope_enter:
+                            referenced_scope = self.on_script_scope_enter(referenced.actions)
+                        if repeat_total > 1:
+                            self._status(
+                                f"执行引用脚本 {referenced.name}（第 {repeat_index + 1}/{repeat_total} 次，"
+                                f"{len(referenced.actions)} 个动作）",
+                            )
+                        else:
+                            self._status(
+                                f"执行引用脚本 {referenced.name}（{len(referenced.actions)} 个动作）",
+                            )
+                        self._run_action_sequence(
+                            referenced.actions, hwnd,
+                            script_stack=script_stack, depth=depth + 1,
+                        )
+                    except EndCurrentScriptRequest:
+                        # 只在最近的脚本引用边界接住；模块代码段本身不是脚本边界，
+                        # 因而结束信号会先穿过代码段，再结束当前最里层引用脚本。
+                        self._status(f"已{END_CURRENT_SCRIPT_LABEL}（返回外层脚本）")
+                        break
+                    except PlaybackStopped as stopped:
+                        # 异常从最内层先冒泡：只保留最内层被引用脚本的信息，
+                        # 嵌套更深的外层引用不覆盖。
+                        if stopped.referenced_actions is None:
+                            stopped.referenced_actions = referenced.actions
+                            stopped.referenced_source_screen = (
+                                dict(referenced.settings.get("recorded_screen", {})) or None
+                            )
+                        raise
+                    finally:
+                        if self.on_script_scope_exit and referenced_scope is not None:
+                            self.on_script_scope_exit(referenced_scope)
             finally:
-                if self.on_script_scope_exit and referenced_scope is not None:
-                    self.on_script_scope_exit(referenced_scope)
                 script_stack.discard(resolved)
         elif kind == "open_app":
             app_value = str(action.get("path", "")).strip()
@@ -1203,7 +1219,9 @@ class MacroPlayer:
         if number_module:
             module_timeout_enabled = False
         module_timeout_ms = max(
-            0, int(module_obj.get("not_found_timeout_ms", 3000))
+            0, int(module_obj.get(
+                "not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+            ))
         ) if module_obj is not None else 0
         fallback_template = None
         if module_obj is None:
@@ -1809,6 +1827,165 @@ class MacroPlayer:
                 return None
             self._wait(interval_ms)
 
+    def _row_list_result_route(self, action: dict, succeeded: bool) -> tuple[str, str | int] | None:
+        """Resolve a row-list click's success/failure branch."""
+        result_text = "成功" if succeeded else "失败"
+        behavior_key = "on_found" if succeeded else "on_timeout"
+        target_key = "found_jump_action_id" if succeeded else "timeout_jump_action_id"
+        legacy_row_key = "found_jump_row" if succeeded else "timeout_jump_row"
+        behavior = str(action.get(behavior_key, "continue")).strip() or "continue"
+        if behavior == "continue":
+            self._status(f"列表逐行点击{result_text}，按设置继续下一行")
+            return None
+        if behavior == "end_current_script":
+            self._status(f"列表逐行点击{result_text}，按设置结束当前最里层脚本")
+            return "end_current_script", 0
+        if behavior == "jump":
+            self._jump_reason = f"列表逐行点击{result_text}"
+            target_id = str(action.get(target_key, "")).strip()
+            if target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
+                return "next_workflow_step", 0
+            if target_id:
+                return "action_id", target_id
+            return "row", max(1, int(action.get(legacy_row_key, 1)))
+        raise RuntimeError(f"列表逐行点击{result_text}后按设置停止全部执行")
+
+    def _execute_row_list_condition_click(self, action: dict, hwnd: int | None) -> tuple[str, str | int] | None:
+        """Click the first list row whose left and right conditions both match."""
+        regions: dict[str, tuple[int, int, int, int]] = {}
+        for key in ("list_region", "left_region", "right_region", "click_region"):
+            raw_region = action.get(key, [])
+            if not isinstance(raw_region, (list, tuple)) or len(raw_region) != 4:
+                raise RuntimeError("列表逐行条件点击的区域无效")
+            try:
+                region = tuple(map(int, raw_region))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("列表逐行条件点击的区域不是有效坐标") from exc
+            if region[2] <= 0 or region[3] <= 0:
+                raise RuntimeError("列表逐行条件点击的区域宽高必须大于零")
+            regions[key] = region
+        list_x, list_y, list_width, list_height = regions["list_region"]
+        fallback_row_height = max(
+            regions[key][1] + regions[key][3]
+            for key in ("left_region", "right_region", "click_region")
+        )
+        if not 0 < fallback_row_height <= list_height:
+            raise RuntimeError("列表逐行条件点击自动识别的行高必须大于零且不能超过列表高度")
+        for key in ("left_region", "right_region", "click_region"):
+            x, y, width, height = regions[key]
+            if x < 0 or y < 0 or x + width > list_width or y + height > list_height:
+                raise RuntimeError("列表逐行条件点击的子区域必须位于列表区域内")
+        target_list_region = self._scale_region(regions["list_region"])
+        scale_y = target_list_region[3] / list_height
+        target_fallback = max(1, round(fallback_row_height * scale_y))
+        detected_target_height = detect_row_height(target_list_region, target_fallback)
+        row_height = max(1, round(detected_target_height / scale_y))
+        if row_height > list_height:
+            raise RuntimeError("列表逐行条件点击自动识别的行高必须大于零且不能超过列表高度")
+        try:
+            click_count = int(action.get("click_count", 1))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("列表逐行条件点击的连续点击次数不是有效数值") from exc
+        if not 1 <= click_count <= 9999:
+            raise RuntimeError("列表逐行条件点击的连续点击次数必须是 1 到 9999 之间的整数")
+        left_condition = action.get("left_condition", {})
+        right_condition = action.get("right_condition", {})
+        if not isinstance(left_condition, dict) or not isinstance(right_condition, dict):
+            raise RuntimeError("列表逐行条件点击的条件无效")
+        while True:
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            for row_index in range(list_height // row_height):
+                row_offset = row_index * row_height
+
+                def translated(key: str) -> tuple[int, int, int, int]:
+                    x, y, width, height = regions[key]
+                    return self._scale_region(
+                        (list_x + x, list_y + row_offset + y, width, height),
+                    )
+
+                self._row_list_condition_label = f"第{row_index + 1}行左侧"
+                if not self._row_list_condition_matches(left_condition, translated("left_region")):
+                    continue
+                self._row_list_condition_label = f"第{row_index + 1}行右侧"
+                if not self._row_list_condition_matches(right_condition, translated("right_region")):
+                    continue
+                click_x, click_y, click_width, click_height = translated("click_region")
+                self._click_module_point(
+                    click_x + click_width // 2, click_y + click_height // 2,
+                    str(action.get("button", "left")), click_count, hwnd,
+                )
+                self._log_event(
+                    f"列表逐行点击：第{row_index + 1}行命中，已连续点击 {click_count} 次",
+                )
+                return self._row_list_result_route(action, succeeded=True)
+            if str(action.get("no_match_action", "finish")) != "retry":
+                self._log_event("列表逐行点击：本轮没有满足条件的行，结束扫描")
+                return self._row_list_result_route(action, succeeded=False)
+            self._log_event("列表逐行点击：本轮没有满足条件的行，等待后从顶部重新扫描")
+            self._wait(max(0, int(action.get("retry_interval_ms", 500))))
+
+    def _row_list_condition_matches(self, condition: dict,
+                                    region: tuple[int, int, int, int],
+                                    label: str | None = None) -> bool:
+        """Evaluate one row-list condition within its translated row region."""
+        label = label or getattr(self, "_row_list_condition_label", "列表条件")
+        kind = str(condition.get("type", "")).strip()
+        if kind == "image":
+            module_key = str(condition.get("module_key", "")).strip()
+            module = registered_module_object(module_key)
+            if module is None:
+                raise RuntimeError(f"列表逐行条件点击引用的图片模块不存在：{module_key}")
+            matched = find_template(
+                resolve_path(str(module.get("template", ""))),
+                float(module.get("threshold", 0.85)), region,
+                ignore_background=bool(module.get("ignore_background", False)),
+                scale=self._template_scale(),
+            ) is not None
+            module_label = str(module.get("name") or "").strip() or module_key or "未设置模块"
+            self._log_event(
+                f"{label} 图片识别：{module_label}；"
+                f"{'命中' if matched else '未命中'}",
+            )
+            return matched
+        if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
+            raise PlaybackStopped()
+        recognized, matches = recognize_region_with_boxes(region)
+        recognized_text = str(recognized or "").strip() or "未识别到文字"
+        if kind == "text":
+            expected = str(condition.get("expected_text", ""))
+            mode = str(condition.get("match_mode", "contains"))
+            matched = find_expected_match(matches, expected, mode) is not None \
+                or matches_expected(recognized, expected, mode)
+            self._log_event(
+                f"{label} OCR：识别成「{recognized_text}」；"
+                f"期望「{expected.strip() or '任意文字'}」；"
+                f"{'命中' if matched else '未命中'}",
+            )
+            return matched
+        if kind == "number":
+            relation = str(condition.get("relation", "equal"))
+            if relation not in {"equal", "not_equal"}:
+                raise RuntimeError(f"列表逐行条件点击存在未知数字关系：{relation}")
+            separator = str(condition.get("separator", "/"))
+            pair = parse_ocr_number_pair(recognized, separator)
+            if pair is None:
+                self._log_event(
+                    f"{label} OCR：识别成「{recognized_text}」；"
+                    f"无法按分隔符「{separator}」解析数字；未命中",
+                )
+                return False
+            left, right = pair
+            matched = left == right if relation == "equal" else left != right
+            relation_text = "相等" if relation == "equal" else "不相等"
+            self._log_event(
+                f"{label} OCR：识别成「{recognized_text}」；"
+                f"解析为 {left}{separator}{right}，要求{relation_text}；"
+                f"{'命中' if matched else '未命中'}",
+            )
+            return matched
+        raise RuntimeError(f"列表逐行条件点击存在未知条件类型：{kind}")
+
     def _multi_condition_matches(self, condition: dict, hwnd: int | None) -> bool:
         """Evaluate one enabled condition in its own custom recognition region."""
         kind = str(condition.get("type", "")).strip()
@@ -1846,20 +2023,17 @@ class MacroPlayer:
             if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
                 raise PlaybackStopped()
             recognized, matches = recognize_region_with_boxes(region)
+            if str(condition.get("ocr_mode", "text")) == "number":
+                pair = parse_ocr_number_pair(recognized, str(condition.get("separator", "/")))
+                if pair is None:
+                    return False
+                left, right = pair
+                relation = str(condition.get("relation", "equal"))
+                return left == right if relation == "equal" else left != right
             expected = str(condition.get("expected_text", ""))
             mode = str(condition.get("match_mode", "contains"))
             return find_expected_match(matches, expected, mode) is not None \
                 or matches_expected(recognized, expected, mode)
-        if kind == "number_compare":
-            if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
-                raise PlaybackStopped()
-            recognized, _matches = recognize_region_with_boxes(region)
-            pair = parse_ocr_number_pair(recognized, str(condition.get("separator", "/")))
-            if pair is None:
-                return False
-            left, right = pair
-            relation = str(condition.get("relation", "equal"))
-            return left == right if relation == "equal" else left != right
         raise RuntimeError(f"多条件识图点击存在未知条件类型：{kind}")
 
     def _click_module_point(self, x: int, y: int, button: str, count: int,
