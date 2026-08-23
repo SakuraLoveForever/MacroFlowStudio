@@ -23,6 +23,7 @@ __pycache__/
 .deps/
 _meitest/
 .dsh-image-bridge/
+.worktrees/
 
 # ---- 大体积压缩包 ----
 *.zip
