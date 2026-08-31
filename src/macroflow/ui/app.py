@@ -34,13 +34,15 @@ from macroflow.ui.dialogs import (
     JsonActionDialog, JumpActionDialog, KeyActionDialog,
     RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
     RowListConditionClickDialog,
+    RowListDiagnosticResultDialog,
+    GridRowConditionClickDialog,
     ModulePickerDialog,
     MouseMoveDialog, ScheduleDialog,
     OpenAppDialog, ScriptDirectoriesDialog, TemplateRegionFormDialog,
     TemplateRegionManagerDialog, WindowPicker,
     WorkflowBatchSettingsDialog, WorkflowRepeatDialog,
     DurationDialog, DurationVar, TIME_UNITS, Tooltip, edit_action,
-    key_to_vk,
+    key_to_vk, vk_to_key_name,
     show_floating_notice, workflow_step_label,
 )
 from macroflow.core.image_match import capture_bgr, find_template, find_template_in_image
@@ -58,7 +60,9 @@ from macroflow.core.models import (
     new_action_id,
     script_ref_repeat_count,
 )
-from macroflow.input.input_guard import FocusInputGuard, RESERVED_HOTKEY_VKS
+from macroflow.input.input_guard import (
+    FocusInputGuard, KeyCapturer, MouseCapturer, RESERVED_HOTKEY_VKS,
+)
 from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
     AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
@@ -176,6 +180,7 @@ ACTION_ICONS = {
     "ocr_compare": "⇄",
     "multi_condition_click": "⊞",
     "row_list_condition_click": "▤",
+    "grid_row_condition_click": "▦",
     "notice": "i",
     "comment": "≡",
     "script_ref": "⇄",
@@ -183,6 +188,7 @@ ACTION_ICONS = {
     "close_app": "✕",
     "jump": "⇢",
     "jump_current_script_last": "⇥",
+    "block": "⏸",
 }
 
 
@@ -333,7 +339,7 @@ def _module_ref_summary(action: dict, label: str,
     direct_mode = obj.get("recognize") == "none"
     number_mode = obj.get("recognize") == "number"
     blocking = (
-        ("等待期望文字消失" if obj.get("recognize") == "text" else "等待模板图片消失")
+        ("持续执行直到期望文字消失" if obj.get("recognize") == "text" else "持续执行直到模板图片消失")
         if obj.get("wait_text_absent") else
         "阻塞直到出现" if obj.get("blocking") else "等待超时后继续"
     )
@@ -373,7 +379,7 @@ def _module_ref_summary(action: dict, label: str,
         if action.get("jump_enabled", True) and \
                 str(action.get("jump_action_id", "")).strip() == \
                 NEXT_WORKFLOW_STEP_TARGET_ID:
-            detail += " · 触发后结束当前脚本，执行工作流下一项"
+            detail += " · 触发后结束当前脚本执行（引用脚本进入下一次；顶层脚本进入工作流下一项）"
         elif action.get("jump_action_id") or action.get("jump_row"):
             target_id = str(action.get("jump_action_id", "")).strip()
             target_row = action_rows.get(target_id) if action_rows and target_id else None
@@ -389,22 +395,29 @@ def _module_ref_summary(action: dict, label: str,
 
 
 def key_action_matches(action: dict, query: str = "", state: str = "all") -> bool:
-    """Return whether a keyboard action matches a key query and press state."""
+    """Return whether an input action matches a key/mouse query and state."""
     kind = str(action.get("type", ""))
-    if kind not in {"key", "key_press"}:
+    if kind not in {"key", "key_press", "mouse_button", "click", "repeat_click"}:
         return False
     state_aliases = {
         "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
     }
     normalized_state = state_aliases.get(str(state), str(state).casefold())
-    action_state = (
-        "press" if kind == "key_press" else ("down" if bool(action.get("down")) else "up")
-    )
+    if kind in {"key_press", "click", "repeat_click"}:
+        action_state = "press"
+    else:
+        action_state = "down" if bool(action.get("down")) else "up"
     if normalized_state not in {"", "all"} and normalized_state != action_state:
         return False
     needle = str(query or "").strip().casefold()
     if not needle:
         return True
+    if kind in {"mouse_button", "click", "repeat_click"}:
+        button = str(action.get("button", "left")).strip().casefold()
+        button_name = {
+            "left": "左键", "right": "右键", "middle": "中键",
+        }.get(button, button)
+        return needle in button or needle in button_name.casefold()
     name = str(action.get("name", "")).strip().casefold()
     vk = str(action.get("vk", "")).strip().casefold()
     return needle in name or needle in vk
@@ -437,7 +450,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         return action_kind_label(kind, "键盘"), f"敲击 {action.get('name', action.get('vk'))}，按住 {action.get('hold_ms', 30)} ms", delay
     if kind == "text":
         text = str(action.get("text", "")).replace("\n", "↵")
-        return action_kind_label(kind, "文本"), f"输入 “{text[:60]}”", delay
+        return action_kind_label(kind, "文本"), f"输入 “{text}”", delay
     if kind == "mouse_move":
         if action.get("mode") == "relative":
             return action_kind_label(kind, "转向"), f"ΔX {action.get('dx', 0)}，ΔY {action.get('dy', 0)}", delay
@@ -473,7 +486,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             found_target_id = str(action.get("found_jump_action_id", "")).strip()
             found_target_row = action_rows.get(found_target_id) if action_rows and found_target_id else None
             if found_target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
-                operation = "找到后结束当前脚本，执行工作流下一项"
+                operation = "找到后结束当前脚本执行（引用脚本进入下一次；顶层脚本进入工作流下一项）"
             elif found_target_row is not None:
                 operation = f"找到后跳到第 {found_target_row} 行"
             elif found_target_id:
@@ -545,7 +558,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             target_id = str(action.get("found_jump_action_id", "")).strip()
             target_row = action_rows.get(target_id) if action_rows and target_id else None
             if target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
-                found_text = "找到后结束当前脚本，执行工作流下一项"
+                found_text = "找到后结束当前脚本执行（引用脚本进入下一次；顶层脚本进入工作流下一项）"
             elif target_row is not None:
                 found_text = f"找到后跳到第 {target_row} 行"
             elif target_id:
@@ -628,7 +641,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
                 if str(condition.get("ocr_mode", "text")) == "number":
                     detail = f"数字{condition.get('separator', '/')}数字·{condition.get('relation', 'equal')}"
                 else:
-                    detail = f"文字:{str(condition.get('expected_text', ''))[:20] or '任意文字'}"
+                    detail = f"文字:{str(condition.get('expected_text', '')) or '任意文字'}"
             else:
                 detail = "未知条件"
             condition_text.append(
@@ -670,11 +683,36 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         return (
             action_kind_label(kind, "列表逐行点击"),
             "从上到下 · "
+            f"行高 {int(action.get('row_height', 0))} 像素 · "
             f"左:{condition_summary(left if isinstance(left, dict) else {})} · "
             f"右:{condition_summary(right if isinstance(right, dict) else {})} · "
             f"首个匹配即点击，连续点击 {int(action.get('click_count', 1))} 次 · "
             f"成功后:{result_summary('on_found', 'found_jump_action_id')} · "
             f"失败后:{result_summary('on_timeout', 'timeout_jump_action_id')} · 未命中:{no_match}",
+            delay,
+        )
+    if kind == "grid_row_condition_click":
+        region_values = action.get("grid_region", [])
+        region_text = (
+            ",".join(str(int(part)) for part in region_values)
+            if isinstance(region_values, (list, tuple)) and len(region_values) == 4
+            else "未设置"
+        )
+        horizontal_count = len(action.get("horizontal_lines", []) or [])
+        vertical_count = len(action.get("vertical_lines", []) or [])
+        def grid_column_text(key):
+            value = action.get(key)
+            try:
+                return str(int(value) + 1) if value is not None else "未锁定"
+            except (TypeError, ValueError):
+                return "未锁定"
+        return (
+            action_kind_label(kind, "网格逐行点击"),
+            f"总区域 {region_text} · 横线 {horizontal_count} 条 · 竖线 {vertical_count} 条 · "
+            f"左条件列 {grid_column_text('left_column')} · "
+            f"右条件列 {grid_column_text('right_column')} · "
+            f"点击列 {grid_column_text('click_column')} · "
+            f"连续点击 {int(action.get('click_count', 1))} 次",
             delay,
         )
     if kind == "global_detect":
@@ -694,7 +732,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
                 target_id = str(action.get("jump_action_id", "")).strip()
                 target_row = action_rows.get(target_id) if action_rows and target_id else None
                 if target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
-                    jump_text = "触发后结束当前脚本，执行工作流下一项"
+                    jump_text = "触发后结束当前脚本执行（引用脚本进入下一次；顶层脚本进入工作流下一项）"
                 elif target_row is not None:
                     jump_text = f"触发后跳转到第 {target_row} 行"
                 elif target_id:
@@ -720,7 +758,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         return action_kind_label(kind, "全局"), detail, delay
     if kind == "notice":
         duration = int(action.get("duration_ms", 3000))
-        return action_kind_label(kind, "浮动提醒"), f"{str(action.get('text', ''))[:60]} · 显示 {duration} ms", delay
+        return action_kind_label(kind, "浮动提醒"), f"{str(action.get('text', ''))} · 显示 {duration} ms", delay
     if kind == "comment":
         return action_kind_label(kind, "注释"), str(action.get("text", "")), delay
     if kind == "script_ref":
@@ -762,6 +800,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             "离开模块代码段，从当前脚本实际最后一行动作继续执行",
             delay,
         )
+    if kind == "block":
+        return action_kind_label(kind, "阻塞"), "等待其他跳转离开", delay
     if kind == "jump":
         target_id = str(action.get("jump_action_id", "")).strip()
         if target_id == SCRIPT_START_TARGET_ID:
@@ -944,6 +984,8 @@ class MacroFlowApp:
         # action_id 登记，互不替换、同时生效；生命周期 = 一次执行。
         self.global_guards: dict[str, dict] = {}
         self.guards_lock = threading.Lock()
+        # 同一共享截图命中的守卫按注册顺序排队，播放器逐个执行处理段。
+        self._pending_global_guard_hits: list[dict] = []
         # 触发后跨执行保留的重新武装锁；新守卫确认图片消失后才允许再次触发。
         self.global_detect_rearm_locks: set[str] = set()
         self.global_detect_trigger_count = 0
@@ -954,6 +996,8 @@ class MacroFlowApp:
         self.workflow_restart_requested = False
         self.workflow_restart_target_row = 1
         self.workflow_test_mode_active = False
+        self._row_list_diagnostic_running = False
+        self._row_list_diagnostic_grab_window = None
         self.dirty = False
         self.mini_window: tk.Toplevel | None = None
         self.mini_elapsed_var = tk.StringVar(value="00:00")
@@ -1179,6 +1223,8 @@ class MacroFlowApp:
         self.key_search_state_var = tk.StringVar(value="全部")
         self.key_search_delay_var = tk.StringVar(value="0")
         self.key_search_match_var = tk.StringVar(value="")
+        self._key_search_capturer = None
+        self._mouse_search_capturer = None
         self.coordinate_scale_var = tk.StringVar(value=coordinate_scale_summary(
             self.script.settings.get("recorded_screen"), get_virtual_screen_rect(),
         ))
@@ -1626,6 +1672,29 @@ class MacroFlowApp:
         Tooltip(badge, text, anchor=parent)
         return badge
 
+    @staticmethod
+    def _script_action_button_specs():
+        """Return the action buttons exposed by the script editor toolbar."""
+        return (
+            ("◷ 延时", "add_delay", "ScriptTool.TButton"),
+            ("⌨ 键盘", "add_key", "ScriptTool.TButton"),
+            ("T 文本", "add_text", "ScriptTool.TButton"),
+            ("i 提醒", "add_notice", "ScriptTool.TButton"),
+            ("↖ 移动", "add_mouse_move", "ScriptTool.TButton"),
+            ("◉ 点击", "add_click", "ScriptTool.TButton"),
+            ("↺ 转向", "add_turn", "ScriptTool.TButton"),
+            ("↻ 连点", "add_repeat_click", "ScriptTool.TButton"),
+            ("⇄ 数字比较", "add_ocr_compare", "AccentScriptTool.TButton"),
+            ("⊞ 多条件识图", "add_multi_condition_click", "AccentScriptTool.TButton"),
+            ("▤ 列表逐行点击", "add_row_list_condition_click", "AccentScriptTool.TButton"),
+            ("▦ 网格逐行点击", "add_grid_row_condition_click", "AccentScriptTool.TButton"),
+            ("▶ 软件", "add_open_app", "ScriptTool.TButton"),
+            ("✕ 关闭", "add_close_app", "ScriptTool.TButton"),
+        ("▤ 模块", "add_module", "AccentScriptTool.TButton"),
+        ("⇢ 跳转", "add_jump", "AccentScriptTool.TButton"),
+        ("⏸ 阻塞", "add_block", "AccentScriptTool.TButton"),
+        )
+
     def _build_script_tab(self):
         header = ttk.Frame(self.script_tab, padding=(16, 14, 16, 8), style="Workspace.TFrame")
         header.pack(fill="x")
@@ -1697,23 +1766,9 @@ class MacroFlowApp:
         ttk.Label(add_group, text="添加动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
         add_buttons = ttk.Frame(add_group, style="Toolbar.TFrame")
         add_buttons.pack(fill="x")
-        add_button_specs = (
-            ("◷ 延时", self.add_delay, "ScriptTool.TButton"),
-            ("⌨ 键盘", self.add_key, "ScriptTool.TButton"),
-            ("T 文本", self.add_text, "ScriptTool.TButton"),
-            ("i 提醒", self.add_notice, "ScriptTool.TButton"),
-            ("↖ 移动", self.add_mouse_move, "ScriptTool.TButton"),
-            ("◉ 点击", self.add_click, "ScriptTool.TButton"),
-            ("↺ 转向", self.add_turn, "ScriptTool.TButton"),
-            ("↻ 连点", self.add_repeat_click, "ScriptTool.TButton"),
-            ("⇄ 数字比较", self.add_ocr_compare, "AccentScriptTool.TButton"),
-            ("⊞ 多条件识图", self.add_multi_condition_click, "AccentScriptTool.TButton"),
-            ("▤ 列表逐行点击", self.add_row_list_condition_click, "AccentScriptTool.TButton"),
-            ("▶ 软件", self.add_open_app, "ScriptTool.TButton"),
-            ("✕ 关闭", self.add_close_app, "ScriptTool.TButton"),
-            ("◈ 脚本全局", self.add_global_detect, "AccentScriptTool.TButton"),
-            ("▤ 识别模块", self.add_module, "AccentScriptTool.TButton"),
-            ("⇢ 跳转", self.add_jump, "AccentScriptTool.TButton"),
+        add_button_specs = tuple(
+            (text, getattr(self, command_name), style_name)
+            for text, command_name, style_name in self._script_action_button_specs()
         )
         add_button_rows = toolbar_spec_rows(add_button_specs, row_size=8)
         for row_index, row_specs in enumerate(add_button_rows):
@@ -1722,6 +1777,7 @@ class MacroFlowApp:
             for index, (text, command, style_name) in enumerate(row_specs):
                 ttk.Button(row, text=text, command=command, style=style_name).pack(
                     side="left", padx=(0 if index == 0 else 4, 0),
+                    expand=False, fill="none",
                 )
         ttk.Label(edit_group, text="编辑选中动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
         edit_buttons = ttk.Frame(edit_group, style="Toolbar.TFrame")
@@ -1784,11 +1840,21 @@ class MacroFlowApp:
         frame.pack(fill="both", expand=True)
         key_search_bar = ttk.Frame(frame, style="Surface.TFrame")
         key_search_bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(key_search_bar, text="搜索按键", style="SidebarMuted.TLabel").pack(side="left")
+        ttk.Label(key_search_bar, text="搜索键鼠", style="SidebarMuted.TLabel").pack(side="left")
         key_search_entry = ttk.Entry(
             key_search_bar, textvariable=self.key_search_var, width=18,
         )
         key_search_entry.pack(side="left", padx=(8, 5))
+        self.key_search_capture_button = ttk.Button(
+            key_search_bar, text="检测按键…", width=9,
+            command=self.start_key_search_capture, style="Ghost.TButton",
+        )
+        self.key_search_capture_button.pack(side="left", padx=(0, 5))
+        self.mouse_search_capture_button = ttk.Button(
+            key_search_bar, text="检测鼠标…", width=9,
+            command=self.start_mouse_search_capture, style="Ghost.TButton",
+        )
+        self.mouse_search_capture_button.pack(side="left", padx=(0, 5))
         key_search_entry.bind("<Return>", lambda _event: self._search_key_actions(1))
         key_search_state = ttk.Combobox(
             key_search_bar, textvariable=self.key_search_state_var,
@@ -1822,7 +1888,16 @@ class MacroFlowApp:
             key_search_bar, textvariable=self.key_search_match_var,
             style="SidebarMuted.TLabel",
         ).pack(side="left")
-        self.action_tree = ttk.Treeview(frame, columns=("index", "kind", "detail", "delay"), show="headings", selectmode="extended")
+        action_tree_shell = ttk.Frame(frame, style="Surface.TFrame")
+        action_tree_shell.pack(fill="both", expand=True)
+        action_tree_shell.columnconfigure(0, weight=1)
+        action_tree_shell.rowconfigure(0, weight=1)
+        self.action_tree = ttk.Treeview(
+            action_tree_shell,
+            columns=("index", "kind", "detail", "delay"),
+            show="headings",
+            selectmode="extended",
+        )
         for column, text, width, anchor in (
             ("index", "#", 50, "center"), ("kind", "动作", 104, "w"),
             ("detail", "参数", 590, "w"), ("delay", "执行前延时", 106, "center"),
@@ -1830,10 +1905,17 @@ class MacroFlowApp:
             self.action_tree.heading(column, text=text)
             self.action_tree.column(column, width=width, anchor=anchor, stretch=column == "detail")
         self.action_tree.column("kind", minwidth=96)
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.action_tree.yview)
-        self.action_tree.configure(yscrollcommand=scroll.set)
-        self.action_tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
+        scroll = ttk.Scrollbar(action_tree_shell, orient="vertical", command=self.action_tree.yview)
+        horizontal_scroll = ttk.Scrollbar(
+            action_tree_shell, orient="horizontal", command=self.action_tree.xview,
+        )
+        self.action_tree.configure(
+            yscrollcommand=scroll.set,
+            xscrollcommand=horizontal_scroll.set,
+        )
+        self.action_tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        horizontal_scroll.grid(row=1, column=0, sticky="ew")
         self.empty_action_hint = ttk.Label(
             frame, text="还没有动作\n按 F8 开始录制，或使用上方工具栏添加动作",
             style="Empty.TLabel", anchor="center", justify="center"
@@ -2444,6 +2526,12 @@ class MacroFlowApp:
         Registration is independent of the playback start row, so workflow
         repeats and breakpoint resumes cannot skip global actions above it.
         """
+        ensure_action_ids(actions)
+        scope_action_ids = frozenset(
+            str(action.get(ACTION_ID_KEY, "")).strip()
+            for action in actions
+            if str(action.get(ACTION_ID_KEY, "")).strip()
+        )
         keys: list[str] = []
         for action in actions:
             if str(action.get("type", "")) != "global_detect":
@@ -2455,16 +2543,35 @@ class MacroFlowApp:
             key = f"script:{action_id}"
             keys.append(key)
             self._activate_global_detect_from_config(action)
+            guards = getattr(self, "global_guards", None)
+            if guards is not None:
+                lock = getattr(self, "guards_lock", None)
+                if lock is None:
+                    guard = guards.get(key)
+                    if guard is not None:
+                        guard["scope_action_ids"] = scope_action_ids
+                else:
+                    with lock:
+                        guard = guards.get(key)
+                        if guard is not None:
+                            guard["scope_action_ids"] = scope_action_ids
         return tuple(keys)
 
     def _exit_script_global_scope(self, keys: object) -> None:
         """Remove only the script-global guards owned by the leaving script."""
         locks = getattr(self, "global_detect_rearm_locks", None)
+        key_set = {str(key) for key in tuple(keys or ())}
         with self.guards_lock:
-            for key in tuple(keys or ()):
-                self.global_guards.pop(str(key), None)
+            for key in key_set:
+                self.global_guards.pop(key, None)
                 if locks is not None:
-                    locks.discard(str(key))
+                    locks.discard(key)
+        pending = getattr(self, "_pending_global_guard_hits", None)
+        if pending and key_set:
+            pending[:] = [
+                hit for hit in pending
+                if str(hit.get("guard_key", "")) not in key_set
+            ]
 
     def _activate_global_detect_from_config(self, config: dict, module: dict | None = None,
                                             standalone_replay: dict | None = None):
@@ -2669,7 +2776,9 @@ class MacroFlowApp:
             "trigger_kind": "success",
             "was_detected": False,
             "triggered": False,
-            "awaiting_clear": key in rearm_locks,
+            "awaiting_clear": (
+                key in rearm_locks and not bool(config.get("wait_text_absent", False))
+            ),
             "awaiting_clear_logged": False,
             "match_since": None,
             "match_data": None,
@@ -2697,19 +2806,23 @@ class MacroFlowApp:
             tail = "不跳转，继续执行脚本。"
         elif guard["jump_row"] or guard.get("jump_action_id"):
             if guard.get("jump_action_id") == NEXT_WORKFLOW_STEP_TARGET_ID:
-                tail = "结束当前脚本，执行工作流下一项。"
+                tail = "结束当前脚本执行（引用脚本进入下一次；顶层脚本进入工作流下一项）。"
             else:
                 tail = "跳转到目标行执行，播放到末尾后结束。"
         else:
             tail = "执行脚本动作，再继续检测。"
         hold_text = f"持续超过 {hold} ms" if guard.get("hold_enabled", False) else "识别到立即执行"
+        repeat_text = (
+            "条件仍存在时按间隔重试，目标消失后停止 · "
+            if guard.get("wait_text_absent") else ""
+        )
         start_delay_text = (
             f" · {start_delay} ms 后开始识别" if guard.get("start_delay_ms", 0) else ""
         )
         self._ui(
             self._log,
             f"全局检测已启用：模块[{module_display_name}] · {name} · 区域 {region_text} · {hold_text}"
-            f"{start_delay_text} · "
+            f"{start_delay_text} · {repeat_text}"
             f"触发后{tail}",
         )
     @staticmethod
@@ -2749,16 +2862,24 @@ class MacroFlowApp:
         return interval / 1000.0
 
     def _evaluate_global_guards(self) -> dict | None:
-        """守卫引擎单轮评估（播放器线程调用）。返回命中守卫的处理段描述。
+        """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
 
         节流未到点的守卫跳过；至少一个守卫到点才截图一次，全部图片守卫
-        共享同一帧。触发后守卫进入 awaiting_clear，直到目标消失才重新武装。
+        共享同一帧。普通模块命中一次后等目标消失再重新武装；勾选“直到
+        目标消失”的模块则在目标持续存在时按检测间隔反复返回处理段。
+        同一帧命中的多个守卫先排队，再由播放器逐个执行。
         """
         if getattr(self, "exiting", False) or getattr(self, "_evaluating_guards", False):
             return None
         player = getattr(self, "player", None)
         if player is None or player.stop_event.is_set():
+            pending = getattr(self, "_pending_global_guard_hits", None)
+            if pending is not None:
+                pending.clear()
             return None
+        pending = getattr(self, "_pending_global_guard_hits", None)
+        if pending:
+            return pending.pop(0)
         now = time.perf_counter()
         with self.guards_lock:
             guards = [guard for guard in list(self.global_guards.values())]
@@ -2789,14 +2910,20 @@ class MacroFlowApp:
             # 全屏截图偶发会让独占全屏游戏短暂失焦：截图后立即校验并恢复绑定窗口前台。
             self._restore_workflow_scan_foreground()
         self._evaluating_guards = True
+        hits: list[dict] = []
         try:
             for guard in due:
                 hit = self._evaluate_one_guard(guard, screen, origin, now)
                 if hit is not None:
-                    return hit
+                    hits.append(hit)
         finally:
             self._evaluating_guards = False
-        return None
+        if not hits:
+            return None
+        if pending is None:
+            pending = self._pending_global_guard_hits = []
+        pending.extend(hits[1:])
+        return hits[0]
 
     def _evaluate_one_guard(self, guard: dict, screen, origin, now: float) -> dict | None:
         if guard.get("module_ref"):
@@ -2819,14 +2946,12 @@ class MacroFlowApp:
                     guard["target_absent_armed"] = True
                     self._ui(
                         self._log,
-                        f"全局检测：{self._global_monitor_subject(guard, '已识别到目标')}，开始等待消失。",
+                        f"全局检测：{self._global_monitor_subject(guard, '已识别到目标')}，开始持续执行直到消失。",
                     )
                 if match:
                     guard["last_present_match"] = dict(match)
-                detected = False
-            else:
-                detected = bool(guard.get("target_absent_armed"))
-                match = guard.get("last_present_match") if detected else None
+            elif guard.get("target_absent_armed"):
+                guard["target_absent_armed"] = False
         fallback_key = str(guard.get("fallback_module_key", "")).strip()
         if not detected and fallback_key:
             fallback_obj = registered_module_object(fallback_key)
@@ -2852,11 +2977,10 @@ class MacroFlowApp:
             if recognize == "text" else
             "无需识图" if recognize == "none" else guard["template"].name
         )
-        condition_subject = self._global_monitor_subject(
-            guard, f"{subject} 已消失" if guard.get("wait_text_absent") else subject,
-        )
+        condition_subject = self._global_monitor_subject(guard, subject)
         absent_target_name = "期望文字" if recognize == "text" else "目标模板"
-        if guard.get("awaiting_clear"):
+        repeat_while_detected = bool(guard.get("wait_text_absent"))
+        if guard.get("awaiting_clear") and not repeat_while_detected:
             if detected:
                 if not guard.get("awaiting_clear_logged"):
                     guard["awaiting_clear_logged"] = True
@@ -2879,11 +3003,13 @@ class MacroFlowApp:
         if detected:
             guard["not_found_since"] = None
             guard["timeout_triggered"] = False
+            if match:
+                # 持续重试时目标位置可能变化，每轮都使用最新命中位置。
+                guard["match_data"] = dict(match)
             if not guard.get("was_detected"):
                 guard["was_detected"] = True
                 guard["match_since"] = now
                 if match:
-                    guard["match_data"] = dict(match)
                     self._ui(
                         self._log,
                         f"全局检测：识别到 {condition_subject} @ "
@@ -2902,12 +3028,13 @@ class MacroFlowApp:
             hold_ms = guard["hold_ms"] if guard.get("hold_enabled", False) else 0
             elapsed_ms = (now - (guard["match_since"] or now)) * 1000
             if not guard.get("triggered") and elapsed_ms >= hold_ms:
-                guard["triggered"] = True
-                guard["awaiting_clear"] = True
-                locks = getattr(self, "global_detect_rearm_locks", None)
-                if locks is None:
-                    locks = self.global_detect_rearm_locks = set()
-                locks.add(str(guard.get("key", "")))
+                guard["triggered"] = not repeat_while_detected
+                if not repeat_while_detected:
+                    guard["awaiting_clear"] = True
+                    locks = getattr(self, "global_detect_rearm_locks", None)
+                    if locks is None:
+                        locks = self.global_detect_rearm_locks = set()
+                    locks.add(str(guard.get("key", "")))
                 guard["trigger_kind"] = "success"
                 self.global_detect_trigger_count += 1
                 self._ui(self._log, f"全局检测触发：{condition_subject}。")
@@ -2916,8 +3043,8 @@ class MacroFlowApp:
             if guard.get("was_detected"):
                 self._ui(
                     self._log,
-                    f"全局检测：{self._global_monitor_subject(guard, absent_target_name + '已重新出现')}，消失计时重置。"
-                    if guard.get("wait_text_absent") else
+                    f"全局检测：{self._global_monitor_subject(guard, absent_target_name + '已消失')}，持续触发完成。"
+                    if repeat_while_detected else
                     f"全局检测：{self._global_monitor_subject(guard, '图片已消失')}，计时重置。",
                 )
             guard["was_detected"] = False
@@ -3006,7 +3133,15 @@ class MacroFlowApp:
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right",
             ):
                 guard[field] = max(0, int(obj.get(field, 0)))
-            if not guard["wait_text_absent"]:
+            if guard["wait_text_absent"]:
+                # 模块对象可在运行中切换为持续重试，不能继承旧的单次触发锁。
+                guard["awaiting_clear"] = False
+                guard["awaiting_clear_logged"] = False
+                guard["triggered"] = False
+                locks = getattr(self, "global_detect_rearm_locks", None)
+                if locks is not None:
+                    locks.discard(str(guard.get("key", "")))
+            else:
                 guard["target_absent_armed"] = False
         except (TypeError, ValueError):
             pass
@@ -3189,6 +3324,7 @@ class MacroFlowApp:
         )
         hit = {
             "kind": str(guard.get("trigger_kind", "success")),
+            "guard_key": str(guard.get("key", "")),
             "log_subject": self._global_monitor_subject(guard, subject),
             "delay_ms": int(guard.get("delay_ms", 0)),
             "hwnd": hwnd,
@@ -3274,10 +3410,16 @@ class MacroFlowApp:
             if not guard.get("jump_disabled") and (jump_action_id or guard.get("jump_row")):
                 hit["jump_action_id"] = jump_action_id
                 hit["jump_row"] = max(1, int(guard.get("jump_row", 1)))
+                scope_action_ids = guard.get("scope_action_ids")
+                if scope_action_ids:
+                    hit["scope_action_ids"] = tuple(scope_action_ids)
         return hit
 
     def _clear_global_guards(self) -> None:
         """清空全部守卫（执行开始/结束/停止时）。"""
+        pending = getattr(self, "_pending_global_guard_hits", None)
+        if pending is not None:
+            pending.clear()
         guards = getattr(self, "global_guards", None)
         if guards is None:
             return
@@ -3932,6 +4074,8 @@ class MacroFlowApp:
                 for side in ("left", "right")
             ):
                 return True
+            if kind == "grid_row_condition_click":
+                return True
             # 任意动作/配置携带 recognize == "text" 都走 OCR 识别。
             if str(action.get("recognize", "")).strip() == "text":
                 return True
@@ -4313,6 +4457,19 @@ class MacroFlowApp:
         if not self._restore_saved_activation_window(signature):
             raise RuntimeError("脚本的前置窗口当前未打开。")
         return self.activation_window.hwnd
+
+    def _activate_execution_window_before_ocr(self, hwnd: int | None) -> bool:
+        """Activate a resolved pre-window before any OCR engine import begins."""
+        if not hwnd:
+            return False
+        if not is_window(hwnd):
+            self._ui(self._log, "前置窗口已关闭，已跳过前置窗口，继续执行。")
+            return False
+        if activate_window(hwnd):
+            self._ui(self._log, "已在 OCR 准备前激活前置窗口。")
+            return True
+        self._ui(self._log, "前置窗口激活失败，将在脚本开始时重试。")
+        return False
 
     def toggle_cursor_tracking(self):
         if self.cursor_tracking:
@@ -4931,7 +5088,7 @@ class MacroFlowApp:
             target=self._run_script_worker,
             args=(list(script.actions), 1, hwnd, activation_hwnd,
                   source_screen, focus_enabled, activate_target, 0),
-            kwargs={"trigger": trigger},
+            kwargs={"trigger": trigger, "script_name": script.name},
             daemon=True,
         )
         self.worker.start()
@@ -5204,6 +5361,117 @@ class MacroFlowApp:
         selected = self.action_tree.selection()
         return int(selected[0]) if selected else None
 
+    def _set_search_capture_buttons_state(self, state: str):
+        for button in (
+            getattr(self, "key_search_capture_button", None),
+            getattr(self, "mouse_search_capture_button", None),
+        ):
+            if button is not None:
+                try:
+                    button.configure(state=state)
+                except tk.TclError:
+                    pass
+
+    def start_key_search_capture(self):
+        """Capture one physical key and use its canonical name for key search."""
+        if (
+            getattr(self, "_key_search_capturer", None) is not None
+            or getattr(self, "_mouse_search_capturer", None) is not None
+        ):
+            return "break"
+        self._set_search_capture_buttons_state("disabled")
+        self.key_search_match_var.set("请按下要搜索的按键…按 Esc 取消")
+
+        def on_key(vk):
+            try:
+                self.root.after(0, self._apply_captured_search_key, int(vk))
+            except tk.TclError:
+                pass
+
+        def on_cancel():
+            try:
+                self.root.after(0, self._cancel_key_search_capture)
+            except tk.TclError:
+                pass
+
+        capturer = KeyCapturer(on_key, on_cancel)
+        self._key_search_capturer = capturer
+        if not capturer.start():
+            self._key_search_capturer = None
+            self._set_search_capture_buttons_state("normal")
+            self.key_search_match_var.set("无法捕获按键")
+        return "break"
+
+    def start_mouse_search_capture(self):
+        """Capture one physical mouse button and use it for input search."""
+        if (
+            getattr(self, "_key_search_capturer", None) is not None
+            or getattr(self, "_mouse_search_capturer", None) is not None
+        ):
+            return "break"
+        self._set_search_capture_buttons_state("disabled")
+        self.key_search_match_var.set("请按下要搜索的鼠标按键…按 Esc 取消")
+
+        def on_button(button):
+            try:
+                self.root.after(0, self._apply_captured_mouse_button, str(button))
+            except tk.TclError:
+                pass
+
+        def on_cancel():
+            try:
+                self.root.after(0, self._cancel_mouse_search_capture)
+            except tk.TclError:
+                pass
+
+        capturer = MouseCapturer(on_button, on_cancel)
+        self._mouse_search_capturer = capturer
+        if not capturer.start():
+            self._mouse_search_capturer = None
+            self._set_search_capture_buttons_state("normal")
+            self.key_search_match_var.set("无法捕获鼠标按键")
+        return "break"
+
+    def _apply_captured_search_key(self, vk: int):
+        self.key_search_var.set(vk_to_key_name(vk))
+        self._finish_search_capture()
+        self._search_key_actions(1)
+
+    def _cancel_key_search_capture(self):
+        self._finish_search_capture()
+        self.key_search_match_var.set("已取消按键检测")
+
+    def _apply_captured_mouse_button(self, button: str):
+        button_name = {
+            "left": "左键", "right": "右键", "middle": "中键",
+        }.get(str(button).strip().casefold(), str(button))
+        self.key_search_var.set(button_name)
+        self._finish_search_capture()
+        self._search_key_actions(1)
+
+    def _cancel_mouse_search_capture(self):
+        self._finish_search_capture()
+        self.key_search_match_var.set("已取消鼠标按键检测")
+
+    def _finish_search_capture(self):
+        capturers = (
+            getattr(self, "_key_search_capturer", None),
+            getattr(self, "_mouse_search_capturer", None),
+        )
+        self._key_search_capturer = None
+        self._mouse_search_capturer = None
+        for capturer in capturers:
+            if capturer is None:
+                continue
+            try:
+                capturer.stop()
+            except Exception:
+                pass
+        self._set_search_capture_buttons_state("normal")
+
+    def _finish_key_search_capture(self):
+        self._finish_search_capture()
+
     def _search_key_actions(self, direction: int = 1):
         state = {
             "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
@@ -5231,6 +5499,7 @@ class MacroFlowApp:
         return "break"
 
     def _clear_key_search(self):
+        self._finish_search_capture()
         self.key_search_var.set("")
         self.key_search_state_var.set("全部")
         self.key_search_delay_var.set("0")
@@ -5420,10 +5689,147 @@ class MacroFlowApp:
         if action:
             self._insert_action(action)
 
+    def test_row_list_condition_click(self, action: dict):
+        """Run a one-shot, non-clicking diagnostic scan for a row-list action."""
+        if getattr(self, "worker", None) and self.worker.is_alive():
+            self._notify("无法测试识别", "当前已有脚本正在执行，请先停止执行。")
+            return
+        if getattr(self, "_row_list_diagnostic_running", False):
+            self._notify("无法测试识别", "当前已有列表逐行识别诊断正在执行，请稍候。")
+            return
+        self._row_list_diagnostic_running = True
+        hwnd = self._bound_hwnd()
+        self._log("列表逐行识别诊断：开始截图并扫描全部行（不会点击）。")
+        result_lines: list[str] = []
+        hidden_states = self._hide_macroflow_windows_for_diagnostic()
+
+        def run_diagnostic():
+            error = None
+            try:
+                if action.get("type") == "grid_row_condition_click":
+                    self.player._diagnose_grid_row_condition_click(
+                        action, hwnd, result_sink=result_lines.append,
+                    )
+                else:
+                    self.player._diagnose_row_list_condition_click(
+                        action, hwnd, result_sink=result_lines.append,
+                    )
+            except Exception as exc:
+                error = exc
+            finally:
+                self._ui(
+                    self._finish_row_list_diagnostic,
+                    result_lines,
+                    error,
+                    hidden_states,
+                )
+
+        threading.Thread(target=run_diagnostic, daemon=True).start()
+
+    def _macroflow_diagnostic_window_candidates(self) -> list[tk.Misc]:
+        """Collect every Tk top-level owned by MacroFlow for a short hide cycle."""
+        windows: list[tk.Misc] = []
+        seen: set[str] = set()
+
+        def add(widget) -> None:
+            if widget is None:
+                return
+            try:
+                top = widget.winfo_toplevel()
+                if not top.winfo_exists():
+                    return
+                key = str(top.winfo_id())
+            except (AttributeError, tk.TclError):
+                return
+            if key not in seen:
+                seen.add(key)
+                windows.append(top)
+
+        def visit(widget) -> None:
+            add(widget)
+            try:
+                children = widget.winfo_children()
+            except (AttributeError, tk.TclError):
+                return
+            for child in children:
+                visit(child)
+
+        visit(self.root)
+        for attribute in ("mini_window", "execution_notice_window", "cursor_tracking_mini"):
+            add(getattr(self, attribute, None))
+        return windows
+
+    def _hide_macroflow_windows_for_diagnostic(self) -> list[tuple[tk.Misc, str]]:
+        """Hide MacroFlow windows while leaving the bound external window untouched."""
+        try:
+            self._row_list_diagnostic_grab_window = self.root.grab_current()
+        except tk.TclError:
+            self._row_list_diagnostic_grab_window = None
+        grab_window = self._row_list_diagnostic_grab_window
+        if grab_window is not None:
+            try:
+                grab_window.grab_release()
+            except tk.TclError:
+                pass
+
+        hidden_states: list[tuple[tk.Misc, str]] = []
+        for window in self._macroflow_diagnostic_window_candidates():
+            try:
+                state = str(window.state())
+                if state == "withdrawn":
+                    continue
+                hidden_states.append((window, state))
+                window.withdraw()
+            except tk.TclError:
+                continue
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+        return hidden_states
+
+    def _restore_macroflow_windows_after_diagnostic(
+            self, hidden_states: list[tuple[tk.Misc, str]]) -> None:
+        """Restore exactly the MacroFlow windows that were visible before scanning."""
+        for window, state in hidden_states:
+            try:
+                if not window.winfo_exists():
+                    continue
+                window.deiconify()
+                if state != "normal":
+                    window.state(state)
+            except tk.TclError:
+                continue
+        # The recognition dialog is still waiting in its original modal loop.
+        # Its grab was released before hiding so the new result window remains
+        # usable; the dialog itself is restored as an ordinary window.
+        self._row_list_diagnostic_grab_window = None
+        try:
+            self.root.update_idletasks()
+        except tk.TclError:
+            pass
+
+    def _finish_row_list_diagnostic(
+            self, result_lines: list[str], error: Exception | None,
+            hidden_states: list[tuple[tk.Misc, str]]) -> None:
+        """Restore the app and show the completed diagnostic in a new window."""
+        self._restore_macroflow_windows_after_diagnostic(hidden_states)
+        self._row_list_diagnostic_running = False
+        RowListDiagnosticResultDialog(
+            self.root, list(result_lines), error,
+        ).show()
+
     def add_row_list_condition_click(self):
         ensure_action_ids(self.script.actions)
-        action = RowListConditionClickDialog(
-            self.root, actions=self.script.actions,
+        dialog = RowListConditionClickDialog(self.root, actions=self.script.actions)
+        dialog.on_test = self.test_row_list_condition_click
+        action = dialog.show()
+        if action:
+            self._insert_action(action)
+
+    def add_grid_row_condition_click(self):
+        action = GridRowConditionClickDialog(
+            self.root, on_test=self.test_row_list_condition_click,
         ).show()
         if action:
             self._insert_action(action)
@@ -5437,6 +5843,9 @@ class MacroFlowApp:
         action = CloseAppDialog(self.root).show()
         if action:
             self._insert_action(action)
+
+    def add_block(self):
+        self._insert_action({"type": "block", "delay_ms": 0})
 
     def add_global_detect(self):
         # 普通脚本内嵌全局模块行：播放到该行时启用全局检测，触发后跳转到脚本第 N 行。
@@ -5455,68 +5864,67 @@ class MacroFlowApp:
     def add_module(self):
         """打开模块选择窗口，把选中的模块对象 / 特殊动作插入脚本。
 
-        全局模块引用（检测型，含 1.81 旧格式 module_category="special"）插入后
-        补上默认跳转行（否则 models.from_dict 会把无 jump_row 的全局检测行迁成
-        settings["trigger"]）。
+        支持在选择器中用 Ctrl / Shift 多选；每个模块仍单独经过自身需要的
+        行级配置窗口。多选插入时保持列表顺序，向上插入时反向调用底层插入
+        方法以抵消插入位置变化。
         """
         ensure_action_ids(self.script.actions)
-        action = ModulePickerDialog(self.root, actions=self.script.actions).show()
-        if not action:
+        selected = ModulePickerDialog(
+            self.root, actions=self.script.actions, multi_select=True,
+        ).show()
+        if not selected:
             return
-        if action.get("module_ref") and action.get("module_category") in (
-                "script_global", "global", "special") and self.script.settings.get("trigger"):
-            self._notify(
-                "不能添加",
-                "全局脚本在“触发条件”区块配置识别设置，不能添加全局模块行。",
-            )
-            return
-        module_key = str(action.get("module_key") or action.get("template", ""))
-        module_obj = registered_module_object(module_key)
-        if module_obj and module_obj.get("recognize") == "number":
-            configured = edit_action(
-                self.root, action, all_actions=self.script.actions,
-            )
-            if configured is None:
-                return
-            action = configured
-        insert_at = self._insert_action(action)
-        if action.get("module_ref") and action.get("module_category") in (
-                "script_global", "global", "special"):
-            self._default_global_jump(insert_at)
+        selected_actions = selected if isinstance(selected, list) else [selected]
+        configured_actions = []
+        for action in selected_actions:
+            if action.get("module_ref") and action.get("module_category") in (
+                    "script_global", "global", "special") and self.script.settings.get("trigger"):
+                self._notify(
+                    "不能添加",
+                    "全局脚本在“触发条件”区块配置识别设置，不能添加全局模块行。",
+                )
+                continue
+            module_key = str(action.get("module_key") or action.get("template", ""))
+            module_obj = registered_module_object(module_key)
+            if module_obj and module_obj.get("recognize") == "number":
+                configured = edit_action(
+                    self.root, action, all_actions=self.script.actions,
+                )
+                if configured is None:
+                    continue
+                action = configured
+            if action.get("module_ref") and action.get("module_category") in (
+                    "workflow_global", "script_global", "global"):
+                configured = GlobalDetectDialog(
+                    self.root, action, jump=True, actions=self.script.actions,
+                ).show()
+                if configured is None:
+                    continue
+                action = configured
+            configured_actions.append(action)
 
-    def _default_global_jump(self, insert_at: int):
-        """给刚插入的全局模块引用行补默认跳转。
-
-        中间插入：跳到下一行；末尾插入：跳转行号用越界值 len+1，触发后
-        代码段 / 动作播完脚本自然结束（不跳转）。
-        """
-        actions = self.script.actions
-        jump_row = insert_at + 2
-        jump_action_id = ""
-        if insert_at + 1 < len(actions):
-            jump_action_id = str(actions[insert_at + 1].get(ACTION_ID_KEY, "")).strip()
-        else:
-            jump_row = len(actions) + 1
-        row = actions[insert_at]
-        row["jump_row"] = jump_row
-        if jump_action_id:
-            row["jump_action_id"] = jump_action_id
-        self._mark_dirty()
-        self.rebuild_action_tree()
-        if insert_at < MAX_TREE_ROWS:
-            self.action_tree.selection_set(str(insert_at))
-            self.action_tree.see(str(insert_at))
+        position_var = getattr(self, "insert_position_var", None)
+        position = position_var.get() if position_var is not None else "below"
+        if position == "above":
+            configured_actions.reverse()
+        for action in configured_actions:
+            self._insert_action(action)
 
     def edit_selected_action(self):
         index = self._selected_action_index()
         if index is None:
             self._notify("编辑动作", "请先选择一条动作。")
             return
-        if self.script.actions[index].get("type") in ("restart_workflow", "end_current_script"):
+        if self.script.actions[index].get("type") in (
+                "restart_workflow", "end_current_script", "block",
+        ):
             self._set_status("特殊模块为固定动作，无需编辑", "success")
             return
         ensure_action_ids(self.script.actions)
-        updated = edit_action(self.root, self.script.actions[index], self.script.actions)
+        updated = edit_action(
+            self.root, self.script.actions[index], self.script.actions,
+            on_row_list_test=self.test_row_list_condition_click,
+        )
         if updated:
             self._checkpoint_action_edit()
             self.script.actions[index] = updated
@@ -5532,7 +5940,9 @@ class MacroFlowApp:
         editable = (
             index is not None
             and index < len(self.script.actions)
-            and self.script.actions[index].get("type") not in ("restart_workflow", "end_current_script")
+            and self.script.actions[index].get("type") not in (
+                "restart_workflow", "end_current_script", "block",
+            )
         )
         button.configure(state="normal" if editable else "disabled")
 
@@ -5784,7 +6194,7 @@ class MacroFlowApp:
             target=self._run_script_worker,
             args=(list(self.script.actions), repeats, hwnd, activation_hwnd,
                   source_screen, focus_enabled, activate_target, start_index),
-            kwargs={"trigger": trigger},
+            kwargs={"trigger": trigger, "script_name": self.script.name},
             daemon=True,
         )
         # 先启动执行线程再收尾 UI：输入法切换/输入锁定与托盘隐藏、提示音
@@ -5801,13 +6211,19 @@ class MacroFlowApp:
             self._append_mini_step(f"开始执行当前脚本，重复 {repeats} 次。")
 
     def _run_script_worker(self, actions, repeats, hwnd, activation_hwnd, source_screen,
-                           focus_enabled, activate_target, start_index=0, trigger=None):
+                           focus_enabled, activate_target, start_index=0, trigger=None,
+                           script_name: str = ""):
+        script_label = str(script_name).strip() or "未命名脚本"
         self._ui(self._set_status, "正在执行脚本…", "warning")
         if start_index:
-            self._ui(self._log, f"从第 {start_index + 1}/{len(actions)} 行开始执行脚本，重复 {repeats} 次。")
+            self._ui(
+                self._log,
+                f"从第 {start_index + 1}/{len(actions)} 行开始执行脚本：{script_label}，重复 {repeats} 次。",
+            )
         else:
-            self._ui(self._log, f"开始执行脚本，重复 {repeats} 次。")
+            self._ui(self._log, f"开始执行脚本：{script_label}，重复 {repeats} 次。")
         try:
+            activation_prepared = self._activate_execution_window_before_ocr(activation_hwnd)
             # 专注模式（输入法切换 + 系统输入锁）先于 OCR 等待生效：
             # 按下 F9 后输入立即锁定，不存在“提示正在执行却还能动鼠标”
             # 的窗口期。
@@ -5819,7 +6235,9 @@ class MacroFlowApp:
                 return
             self.player.play(
                 actions, repeats, hwnd, source_screen=source_screen,
+                script_name=script_label,
                 activate_target=activate_target, activation_hwnd=activation_hwnd,
+                activation_prepared=activation_prepared,
                 start_index=start_index,
                 on_repeat=lambda current, total: self._ui(
                     self._set_execution_progress,
@@ -7323,7 +7741,11 @@ class MacroFlowApp:
                 if self.workflow_stop.wait(start_delay_seconds):
                     return
                 self._ui(self._log, "工作流启动延时结束，开始执行。")
+            activation_prepared = False
             if resume_action_index is None:
+                activation_prepared = self._activate_execution_window_before_ocr(
+                    workflow_activation_hwnd,
+                )
                 # 专注模式（切换英语输入法 + 系统输入锁）只在工作流首次开始时
                 # 执行一次。全局模块中断后的断点恢复、特殊模块“重新执行工作流”
                 # 都沿用第一次建立的输入锁，不再重复切换输入法或重新锁定，
@@ -7403,6 +7825,7 @@ class MacroFlowApp:
             # “执行前置窗口”是整个工作流的一次性准备动作，只交给第一个实际
             # 执行的脚本。后续脚本以及全局模块断点恢复都直接以目标窗口为准。
             pending_activation_hwnd = workflow_activation_hwnd
+            pending_activation_prepared = activation_prepared
             activation_consumed = False
             for index in range(start_index, len(steps)):
                 step = steps[index]
@@ -7507,6 +7930,7 @@ class MacroFlowApp:
                     f"步骤 {index + 1}：{script.name}，{repeat_desc}，重复间隔 {repeat_interval} ms。",
                 )
                 step_activation = pending_activation_hwnd
+                step_activation_prepared = pending_activation_prepared
                 if not is_module and not activation_consumed and step_activation is None \
                         and workflow_activation_hwnd is None \
                         and activation_allowed \
@@ -7528,11 +7952,14 @@ class MacroFlowApp:
                         self._ui(self._append_mini_step, message)
                         self._ui(self._log, message)
                         step_activation = None
+                        step_activation_prepared = False
                 self.player.play(
                     script.actions, repeats, hwnd,
                     repeat_interval_ms=repeat_interval,
                     source_screen=dict(script.settings.get("recorded_screen", {})) or None,
+                    script_name=script.name,
                     activate_target=activate_target, activation_hwnd=step_activation,
+                    activation_prepared=step_activation_prepared,
                     start_repeat=start_repeat if index == start_index else 0,
                     resume_action_index=(
                         resume_action_index if index == start_index else None
@@ -7553,6 +7980,7 @@ class MacroFlowApp:
                 if step_activation is not None:
                     activation_consumed = True
                 pending_activation_hwnd = None
+                pending_activation_prepared = False
                 if self.workflow_stop.is_set() or self.player.stop_event.is_set():
                     return
             # 纯全局模块工作流（没有任何实际执行的脚本步骤）：守卫没有播放器
@@ -7809,6 +8237,7 @@ class MacroFlowApp:
             self._hotkey_script_running = False
 
     def on_close(self):
+        self._finish_search_capture()
         self._persist_workflow_draft()
         if self.close_action_var.get() == "tray":
             self._hide_main_to_tray()

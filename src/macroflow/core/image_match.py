@@ -31,94 +31,91 @@ def capture_bgr(region: tuple[int, int, int, int] | None = None) -> tuple[np.nda
         return cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR), origin
 
 
-def detect_row_height(region: tuple[int, int, int, int], fallback: int) -> int:
-    """Detect a repeated list-row spacing from horizontal screen boundaries.
+def stabilize_row_offsets(
+    screen: np.ndarray,
+    predicted_offsets: list[int],
+    *,
+    first_row_bottom: int,
+    tolerance: int = 3,
+) -> list[int]:
+    """Locally align predicted rows to full-width horizontal separators.
 
-    List rows in the target UI are separated by horizontal rules.  Text boxes
-    are often shorter than a complete row, so using a selected OCR box height
-    as the scan step causes every row after the first one to drift.  When the
-    screen has no stable repeated boundary, return the selection-based
-    fallback instead.
+    The configured first/second-row spacing remains authoritative.  A detected
+    separator may only make a small correction around each independently
+    predicted row, so one imperfect row never shifts every row below it.
     """
-    fallback = max(1, int(fallback))
-    try:
-        screen, _origin = capture_bgr(region)
-    except Exception:
-        return fallback
-    if not isinstance(screen, np.ndarray) or screen.ndim < 2 or screen.shape[0] < 4:
-        return fallback
+    offsets = [max(0, int(value)) for value in predicted_offsets]
+    if not offsets or not isinstance(screen, np.ndarray) or screen.ndim < 2:
+        return offsets
+    if screen.shape[0] < 3 or screen.shape[1] < 4:
+        return offsets
 
-    gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY)
-    strength = np.mean(
-        np.abs(np.diff(gray.astype(np.float32), axis=0)), axis=1,
-    )
-    if strength.size < 3 or float(np.max(strength)) <= 0:
-        return fallback
-
-    threshold = max(
-        float(np.percentile(strength, 80)),
-        float(np.max(strength)) * 0.35,
-    )
-    peaks = [
-        index + 1
-        for index in range(1, len(strength) - 1)
-        if strength[index] >= strength[index - 1]
-        and strength[index] >= strength[index + 1]
-        and strength[index] >= threshold
+    gray = cv2.cvtColor(screen, cv2.COLOR_BGR2GRAY) if screen.ndim == 3 else screen
+    differences = np.abs(np.diff(gray.astype(np.float32), axis=0))
+    edge_threshold = max(12.0, float(np.percentile(differences, 90)))
+    continuity = np.mean(differences >= edge_threshold, axis=1)
+    raw_candidates = [
+        index + 1 for index, score in enumerate(continuity)
+        if float(score) >= 0.55
     ]
-    if not peaks:
-        return fallback
+    if not raw_candidates:
+        return offsets
 
-    # Collapse the two sides of a one-pixel horizontal rule into one peak.
     grouped: list[list[int]] = []
-    for peak in peaks:
-        if grouped and peak - grouped[-1][-1] <= 2:
-            grouped[-1].append(peak)
+    for candidate in raw_candidates:
+        if grouped and candidate - grouped[-1][-1] <= 2:
+            grouped[-1].append(candidate)
         else:
-            grouped.append([peak])
-    peaks = [max(group, key=lambda value: strength[value - 1]) for group in grouped]
-    if len(peaks) < 3:
-        return fallback
+            grouped.append([candidate])
+    candidates = [group[0] for group in grouped]
+    tolerance = max(0, int(tolerance))
+    first_expected = int(first_row_bottom)
+    first_actual = min(candidates, key=lambda value: abs(value - first_expected))
+    if abs(first_actual - first_expected) > tolerance:
+        return offsets
 
-    def chain_quality(period: int) -> tuple[int, int]:
-        best = (0, 0)
-        for start in peaks:
-            length = 1
-            error = 0
-            current = start
-            while True:
-                candidates = [
-                    peak for peak in peaks
-                    if abs(peak - (current + period)) <= 1
-                ]
-                if not candidates:
-                    break
-                expected = current + period
-                current = min(candidates, key=lambda value: abs(value - expected))
-                error += abs(current - expected)
-                length += 1
-            if length > best[0] or (length == best[0] and error < best[1]):
-                best = (length, error)
-        return best
+    corrected = [offsets[0]]
+    for offset in offsets[1:]:
+        expected = first_actual + offset
+        actual = min(candidates, key=lambda value: abs(value - expected))
+        candidate_offset = offset + actual - expected
+        if abs(actual - expected) > tolerance or candidate_offset <= corrected[-1]:
+            corrected.append(offset)
+        else:
+            corrected.append(candidate_offset)
+    return corrected
 
-    best_period = fallback
-    best_chain = 0
-    best_error = 0
-    for period in range(8, min(120, len(strength) // 2) + 1):
-        chain, error = chain_quality(period)
-        if (
-            chain > best_chain
-            or (chain == best_chain and error < best_error)
-            or (
-                chain == best_chain
-                and error == best_error
-                and abs(period - fallback) < abs(best_period - fallback)
+
+def build_grid_cells(
+    region: tuple[int, int, int, int],
+    horizontal_lines: list[int] | tuple[int, ...] = (),
+    vertical_lines: list[int] | tuple[int, ...] = (),
+) -> list[list[tuple[int, int, int, int]]]:
+    """Build absolute grid cells from separator positions relative to a region."""
+    left, top, width, height = map(int, region)
+    if width <= 0 or height <= 0:
+        raise ValueError("网格区域宽高必须大于零")
+
+    def boundaries(lines, limit: int) -> list[int]:
+        values = sorted({int(value) for value in lines})
+        if any(value <= 0 or value >= limit for value in values):
+            raise ValueError("网格分隔线必须位于区域内部")
+        return [0, *values, limit]
+
+    y_boundaries = boundaries(horizontal_lines, height)
+    x_boundaries = boundaries(vertical_lines, width)
+    return [
+        [
+            (
+                left + x_boundaries[column],
+                top + y_boundaries[row],
+                x_boundaries[column + 1] - x_boundaries[column],
+                y_boundaries[row + 1] - y_boundaries[row],
             )
-        ):
-            best_period = period
-            best_chain = chain
-            best_error = error
-    return best_period if best_chain >= 3 else fallback
+            for column in range(len(x_boundaries) - 1)
+        ]
+        for row in range(len(y_boundaries) - 1)
+    ]
 
 
 def find_template(template_path: str | Path, threshold: float = 0.85,

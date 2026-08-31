@@ -9,12 +9,18 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
+import cv2
+
 from macroflow.ui.detect_overlay import show_overlay
-from macroflow.core.image_match import detect_row_height, find_template
+from macroflow.core.image_match import (
+    build_grid_cells, capture_bgr, find_template, find_template_in_image,
+    stabilize_row_offsets,
+)
 from macroflow.core.ocr import (
     extract_ocr_integer, find_expected_match, format_ocr_observation, matches_expected,
     parse_ocr_number_pair,
-    ocr_match_center, recognize_region, recognize_region_with_boxes,
+    ocr_match_center, recognize_image_with_boxes, recognize_region,
+    recognize_region_with_boxes,
 )
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
@@ -70,17 +76,25 @@ class EndCurrentScriptRequest(Exception):
     pass
 
 
+class EndCurrentScriptRepeatRequest(Exception):
+    """Finish this invocation of a nested script and continue its next repeat."""
+
+    pass
+
+
 class GuardJumpRequest(Exception):
-    """全局守卫触发「跳转到当前脚本某一行」：跳到目标行继续播放到脚本末尾。
+    """全局守卫触发脚本内跳转，并携带所属脚本的动作身份。"""
 
-    由播放器在动作边界/等待轮询消费；解析动作唯一标识发生在最外层动作序列
-    （depth == 0）里，因此这里只携带原始跳转参数。
-    """
-
-    def __init__(self, jump_action_id: str = "", jump_row: int = 1):
+    def __init__(self, jump_action_id: str = "", jump_row: int = 1,
+                 scope_action_ids: list[str] | tuple[str, ...] | None = None):
         super().__init__()
         self.jump_action_id = str(jump_action_id or "")
         self.jump_row = max(1, int(jump_row or 1))
+        self.scope_action_ids = frozenset(
+            str(action_id).strip()
+            for action_id in (scope_action_ids or ())
+            if str(action_id).strip()
+        )
 
 
 MAX_SCRIPT_REF_DEPTH = 16
@@ -250,6 +264,7 @@ class MacroPlayer:
         self._last_thief_log_time = 0.0
         self._workflow_context = False
         self._workflow_repeat_number = 0
+        self._active_script_name = ""
         self._script_scope_managed = False
         # 守卫处理段执行深度：处理段内不再评估守卫（与旧模型"模块执行期间
         # 其它检测暂停"一致），同一时刻只允许一个处理段。
@@ -284,6 +299,13 @@ class MacroPlayer:
         if self.on_log:
             self.on_log(text)
 
+    def _diagnostic_log_event(self, text: str,
+                              result_sink: Callable[[str], None] | None = None) -> None:
+        """Write a diagnostic event to the normal log and an optional result sink."""
+        self._log_event(text)
+        if result_sink is not None:
+            result_sink(text)
+
     def _wait(self, milliseconds: int) -> None:
         if milliseconds <= 0:
             if self.stop_event.is_set():
@@ -308,12 +330,77 @@ class MacroPlayer:
             raise PlaybackStopped()
 
     def _poll_guards(self) -> None:
-        """动作边界/等待片上的守卫评估：命中则内联执行处理段后继续原流程。"""
+        """动作边界/等待片上的守卫评估：依次内联执行当前轮全部命中。"""
         if self._handler_depth > 0 or self.on_guard_poll is None:
             return
-        hit = self.on_guard_poll()
-        if hit:
+        while True:
+            hit = self.on_guard_poll()
+            if not hit:
+                return
             self.handle_guard_hit(hit)
+
+    @staticmethod
+    def _guard_processing_action_description(action: object) -> str:
+        """Return a concise, parameterized description for a guard action."""
+        if not isinstance(action, dict):
+            return "未知动作"
+        kind = str(action.get("type") or "未知动作")
+        if kind == "end_current_script":
+            return END_CURRENT_SCRIPT_LABEL
+        if kind == "restart_workflow":
+            return "重新执行工作流"
+        if kind == "jump_current_script_last":
+            return "跳转到当前脚本最后一行"
+        if kind == "block":
+            return "阻塞等待其他跳转"
+        if kind == "delay":
+            return f"等待 {action.get('ms', 0)} ms"
+        if kind == "click":
+            if action.get("pos_mode") == "current":
+                target = "鼠标当前位置"
+            else:
+                target = f"({action.get('x', 0)}, {action.get('y', 0)})"
+            return f"点击 {action.get('button', 'left')} @ {target}"
+        if kind == "repeat_click":
+            return (
+                f"连续点击 {action.get('button', 'left')} @ "
+                f"({action.get('x', 0)}, {action.get('y', 0)}) × {action.get('count', 2)}"
+            )
+        if kind == "key_press":
+            return f"敲击 {action.get('name', action.get('vk'))}"
+        if kind == "key":
+            state = "按下" if bool(action.get("down", True)) else "抬起"
+            return f"{state} {action.get('name', action.get('vk'))}"
+        if kind == "text":
+            text = str(action.get("text", "")).replace("\n", "↵")
+            return f"输入文本「{text[:100]}」"
+        if kind == "script_ref":
+            return f"执行引用脚本：{action.get('script', '未设置')}"
+        if kind == "image_match":
+            template = Path(str(action.get("template", ""))).name or "未设置模板"
+            return f"识图：{template}"
+        if kind == "global_detect":
+            template = Path(str(action.get("template", ""))).name or "未设置模板"
+            return f"启用全局检测：{template}"
+        if kind == "notice":
+            return f"显示提醒：{action.get('text', '提醒')}"
+        if kind == "jump":
+            target = str(action.get("jump_action_id") or "").strip()
+            if target == NEXT_WORKFLOW_STEP_TARGET_ID:
+                return "跳转到工作流下一项"
+            return f"跳转到动作 {target or action.get('jump_row', 1)}"
+        return kind
+
+    def _log_guard_processing_actions(self, actions: object) -> None:
+        """Log each configured guard-processing action before it runs."""
+        if not isinstance(actions, (list, tuple)):
+            return
+        total = len(actions)
+        for index, action in enumerate(actions, start=1):
+            self._log_event(
+                f"全局检测处理段动作 {index}/{total}："
+                f"{self._guard_processing_action_description(action)}。"
+            )
 
     def handle_guard_hit(self, hit: dict) -> None:
         """守卫触发处理段（播放器线程内联）：延时 → 点击/二次识别 → 代码段/
@@ -325,20 +412,31 @@ class MacroPlayer:
         self._handler_depth += 1
         try:
             subject = str(hit.get("log_subject") or "守卫")
+            script_context = (
+                f"脚本[{self._active_script_name}] · "
+                if self._active_script_name else ""
+            )
             kind = str(hit.get("kind") or "success")
             if kind == "timeout":
-                self._log_event(f"全局检测超时：{subject}，执行超时处理段。")
+                self._log_event(f"全局检测超时：{script_context}{subject}，执行超时处理段。")
             else:
-                self._log_event(f"全局检测触发：{subject}，开始执行处理段。")
+                self._log_event(f"全局检测触发：{script_context}{subject}，开始执行处理段。")
             delay = max(0, int(hit.get("delay_ms", 0)))
             if delay:
+                self._log_event(f"全局检测处理动作：等待 {delay} ms。")
                 self._wait(delay)
             activation_hwnd = hit.get("activation_hwnd")
             if activation_hwnd and is_window(activation_hwnd):
+                self._log_event("全局检测处理动作：执行前置窗口激活。")
                 if not activate_window(activation_hwnd):
                     self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
             click = hit.get("click")
             if click and len(click) == 2:
+                self._log_event(
+                    f"全局检测处理动作：点击 {hit.get('button', 'left')} "
+                    f"@ ({int(click[0])}, {int(click[1])}) × "
+                    f"{max(1, int(hit.get('click_count', 1)))}。"
+                )
                 self._click_module_point(
                     int(click[0]), int(click[1]),
                     str(hit.get("button", "left")),
@@ -347,9 +445,14 @@ class MacroPlayer:
                 )
             second = hit.get("second")
             if second:
+                self._log_event(
+                    "全局检测处理动作：执行二次识别"
+                    f"（{Path(str(second.get('second_match_template', ''))).name or '未设置模板'}）。"
+                )
                 self._execute_second_match(second, hwnd, hit.get("match"))
             actions = hit.get("actions")
             if actions:
+                self._log_guard_processing_actions(actions)
                 self._play_guard_actions(
                     actions, hwnd, hit,
                     source_screen=hit.get("source_screen"),
@@ -360,6 +463,7 @@ class MacroPlayer:
                 if not script_path.is_file():
                     raise RuntimeError(f"全局模块脚本不存在：{script_value}")
                 script = load_script(script_path)
+                self._log_event(f"全局检测处理动作：执行模块脚本「{script.name}」。")
                 self._play_guard_actions(
                     script.actions, hwnd, hit,
                     source_screen=dict(script.settings.get("recorded_screen", {})) or None,
@@ -367,8 +471,16 @@ class MacroPlayer:
                 self._log_event(f"全局模块步骤已执行：{script.name}。")
             jump_action_id = str(hit.get("jump_action_id", "")).strip()
             if jump_action_id or hit.get("jump_row"):
+                target = (
+                    "工作流下一项"
+                    if jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID
+                    else f"动作 {jump_action_id}" if jump_action_id
+                    else f"第 {max(1, int(hit.get('jump_row', 1)))} 行"
+                )
+                self._log_event(f"全局检测处理动作：跳转到{target}。")
                 raise GuardJumpRequest(
                     jump_action_id, max(1, int(hit.get("jump_row", 1))),
+                    hit.get("scope_action_ids"),
                 )
         finally:
             self._handler_depth -= 1
@@ -398,8 +510,10 @@ class MacroPlayer:
     def play(self, actions: list[dict], repeats: int = 1, hwnd: int | None = None,
              repeat_interval_ms: int = 0,
              source_screen: dict | None = None,
+             script_name: str = "",
              activate_target: bool = True,
              activation_hwnd: int | None = None,
+             activation_prepared: bool = False,
              on_repeat: Callable[[int, int], None] | None = None,
              on_repeat_complete: Callable[[int, int], None] | None = None,
              start_index: int = 0, start_repeat: int = 0,
@@ -419,8 +533,10 @@ class MacroPlayer:
         self._legacy_relative_started = False
         self._source_screen = dict(source_screen) if source_screen else None
         self._target_screen = get_virtual_screen_rect() if self._source_screen else None
+        self._active_script_name = str(script_name).strip()
         self._activate_target = bool(activate_target)
         self._activation_hwnd = int(activation_hwnd) if activation_hwnd else None
+        self._activation_prepared = bool(activation_prepared and self._activation_hwnd)
         self._workflow_context = bool(workflow_context)
         self._workflow_repeat_number = 0
         self._advance_reason = ""
@@ -435,10 +551,12 @@ class MacroPlayer:
                 hwnd = None
             if self._activation_hwnd and not is_window(self._activation_hwnd):
                 self._activation_hwnd = None
+                self._activation_prepared = False
                 self._log_event("前置窗口已关闭，已跳过前置窗口，继续执行。")
             # “执行前置窗口”只在本次播放开始前激活一次，用于完成准备动作；
             # 它不是输入目标，不能在之后的相对鼠标动作中反复抢回前台。
-            if self._activation_hwnd and not activate_window(self._activation_hwnd):
+            if self._activation_hwnd and not self._activation_prepared \
+                    and not activate_window(self._activation_hwnd):
                 self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
             focus_hwnd = hwnd
             if focus_hwnd:
@@ -541,6 +659,10 @@ class MacroPlayer:
                     if on_repeat_complete:
                         on_repeat_complete(repeat_index + 1, repeat_total)
                     advanced_to_next_workflow_step = True
+                    self._log_event(
+                        f"已{END_CURRENT_SCRIPT_LABEL}；"
+                        "跳过当前脚本剩余重复，继续执行工作流下一项。"
+                    )
                     self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
                     break
                 except AdvanceToNextWorkflowStep:
@@ -603,8 +725,10 @@ class MacroPlayer:
             self._target_screen = None
             self._activate_target = True
             self._activation_hwnd = None
+            self._activation_prepared = False
             self._workflow_context = False
             self._workflow_repeat_number = 0
+            self._active_script_name = ""
             self._script_scope_managed = False
             self.running = False
         if jump_current_script_last:
@@ -632,11 +756,17 @@ class MacroPlayer:
                 self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
                 jump_target = self._execute_action(action, hwnd, script_stack, depth)
             except GuardJumpRequest as request:
-                # 嵌套执行段（引用脚本 / 模块代码段）内命中守卫时，内层帧不
-                # 解析跳转（目标行属于最外层脚本）；原样抛出交给 depth==0
-                # 的最外层动作序列解析。
-                if depth > 0:
+                # 只在守卫所属脚本帧解析行目标；模块代码段或其他脚本帧
+                # 先原样抛出，直到回到对应的脚本动作序列。
+                current_scope_ids = frozenset(action_indices_by_id)
+                if depth > 0 and (
+                        not request.scope_action_ids
+                        or request.scope_action_ids != current_scope_ids
+                ):
                     raise
+                if depth > 0 and request.scope_action_ids \
+                        and request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
+                    raise EndCurrentScriptRepeatRequest()
                 # 守卫处理段要求跳到当前脚本某一行：按动作唯一标识解析后从该行继续。
                 if request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
                     raise EndCurrentScriptRequest()
@@ -645,7 +775,13 @@ class MacroPlayer:
                     target_index = action_indices_by_id.get(str(request.jump_action_id))
                 if target_index is None:
                     target_index = max(0, min(request.jump_row - 1, max(0, len(actions) - 1)))
-                self._status(f"全局检测触发：跳转到第 {target_index + 1} 行执行")
+                script_context = (
+                    f"脚本[{self._active_script_name}]："
+                    if self._active_script_name else ""
+                )
+                self._log_event(
+                    f"{script_context}全局检测跳转到第 {target_index + 1} 行执行。"
+                )
                 index = target_index
                 continue
             except JumpToCurrentScriptLastAction as request:
@@ -666,6 +802,8 @@ class MacroPlayer:
             if target_kind == "end_current_script":
                 raise EndCurrentScriptRequest()
             if target_kind == "next_workflow_step":
+                if depth > 0:
+                    raise EndCurrentScriptRepeatRequest()
                 self._advance_reason = "已结束当前脚本，执行工作流下一项"
                 raise AdvanceToNextWorkflowStep()
             if target_kind == "action_id":
@@ -957,6 +1095,8 @@ class MacroPlayer:
             return self._execute_multi_condition_click(action, hwnd)
         elif kind == "row_list_condition_click":
             return self._execute_row_list_condition_click(action, hwnd)
+        elif kind == "grid_row_condition_click":
+            return self._execute_grid_row_condition_click(action, hwnd)
         elif kind == "global_detect":
             if self.on_global_detect_request and not self._script_scope_managed:
                 self.on_global_detect_request(action)
@@ -970,6 +1110,13 @@ class MacroPlayer:
             raise EndCurrentScriptRequest()
         elif kind == "jump_current_script_last":
             raise JumpToCurrentScriptLastAction()
+        elif kind == "block":
+            self._status("阻塞等待其他跳转")
+            while True:
+                # 用短片段等待，保证停止信号及时生效；动作边界之外也要主动
+                # 轮询全局守卫，让全局模块的跳转可以释放这个阻塞动作。
+                self._wait(100)
+                self._poll_guards()
         elif kind == "activate_window":
             self._execute_activate_window(action)
         elif kind == "jump":
@@ -1031,6 +1178,13 @@ class MacroPlayer:
                         # 因而结束信号会先穿过代码段，再结束当前最里层引用脚本。
                         self._status(f"已{END_CURRENT_SCRIPT_LABEL}（返回外层脚本）")
                         break
+                    except EndCurrentScriptRepeatRequest:
+                        # “脚本结尾”命中嵌套脚本时只结束本次引用执行，
+                        # 不能把该引用脚本剩余 repeats 一起跳过，更不能推进外层工作流。
+                        self._status(
+                            f"已结束 {referenced.name} 当前执行，进入下一次引用执行"
+                        )
+                        continue
                     except PlaybackStopped as stopped:
                         # 异常从最内层先冒泡：只保留最内层被引用脚本的信息，
                         # 嵌套更深的外层引用不覆盖。
@@ -1189,6 +1343,16 @@ class MacroPlayer:
             interval_ms = max(50, int(module_obj.get("interval_ms", 250)))
             threshold = min(1.0, max(0.1, float(module_obj.get("threshold", 0.85))))
             timeout_ms = max(0, int(module_obj.get("not_found_timeout_ms", timeout_ms)))
+        if wait_forever:
+            module_label = (
+                str((module_obj or {}).get("name", "")).strip()
+                or Path(template).name
+                or "识图模块"
+            )
+            script_context = f"脚本[{self._active_script_name}]：" if self._active_script_name else ""
+            self._log_event(
+                f"{script_context}模块 {module_label} 开始阻塞等待 {Path(template).name} 出现。"
+            )
         # OCR 单次约几百毫秒，文字和数字模式的轮询间隔不能太短。
         text_module = bool(module_obj is not None and module_obj.get("recognize") == "text")
         number_module = bool(module_obj is not None and module_obj.get("recognize") == "number")
@@ -1850,6 +2014,223 @@ class MacroPlayer:
             return "row", max(1, int(action.get(legacy_row_key, 1)))
         raise RuntimeError(f"列表逐行点击{result_text}后按设置停止全部执行")
 
+    def _diagnose_row_list_condition_click(
+            self, action: dict, hwnd: int | None,
+            result_sink: Callable[[str], None] | None = None) -> None:
+        """Scan every configured row once and log both condition observations.
+
+        This is deliberately separate from playback: it never clicks, retries,
+        or follows result routes.  A single snapshot keeps every row's output
+        tied to the same screen frame while still evaluating the right side
+        when the left side does not match.
+        """
+        regions: dict[str, tuple[int, int, int, int]] = {}
+        for key in ("list_region", "left_region", "right_region", "click_region"):
+            raw_region = action.get(key, [])
+            if not isinstance(raw_region, (list, tuple)) or len(raw_region) != 4:
+                raise RuntimeError("列表逐行条件点击的区域无效")
+            try:
+                region = tuple(map(int, raw_region))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("列表逐行条件点击的区域不是有效坐标") from exc
+            if region[2] <= 0 or region[3] <= 0:
+                raise RuntimeError("列表逐行条件点击的区域宽高必须大于零")
+            regions[key] = region
+        list_x, list_y, list_width, list_height = regions["list_region"]
+        max_child_bottom = max(
+            regions[key][1] + regions[key][3]
+            for key in ("left_region", "right_region", "click_region")
+        )
+        try:
+            row_height = int(action.get("row_height", 0))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("列表逐行条件点击的行高不是有效数值") from exc
+        if not 0 < row_height <= list_height:
+            raise RuntimeError("列表逐行条件点击的行高必须大于零且不能超过列表高度")
+        for key in ("left_region", "right_region", "click_region"):
+            x, y, width, height = regions[key]
+            if x < 0 or y < 0 or x + width > list_width or y + height > list_height:
+                raise RuntimeError("列表逐行条件点击的子区域必须位于列表区域内")
+        row_offsets = list(range(0, list_height - max_child_bottom + 1, row_height))
+        if not row_offsets:
+            raise RuntimeError("列表逐行条件点击的首行区域超出列表有效扫描范围")
+
+        target_list_region = self._scale_region(regions["list_region"])
+        snapshot = capture_bgr(target_list_region)
+        self._row_list_active_snapshot = snapshot
+        scale_y = target_list_region[3] / list_height
+        predicted = [round(offset * scale_y) for offset in row_offsets]
+        corrected = stabilize_row_offsets(
+            snapshot[0], predicted,
+            first_row_bottom=round(max_child_bottom * scale_y),
+            tolerance=max(1, round(3 * scale_y)),
+        )
+        left_condition = action.get("left_condition", {})
+        right_condition = action.get("right_condition", {})
+        if not isinstance(left_condition, dict) or not isinstance(right_condition, dict):
+            raise RuntimeError("列表逐行条件点击的条件无效")
+        self._diagnostic_log_event(
+            f"列表逐行识别诊断开始：共 {len(row_offsets)} 行，"
+            f"行高 {row_height} 像素；不执行点击",
+            result_sink,
+        )
+        try:
+            for row_index, row_offset in enumerate(row_offsets):
+                def translated(key: str) -> tuple[int, int, int, int]:
+                    x, y, width, height = regions[key]
+                    target = self._scale_region(
+                        (list_x + x, list_y + row_offset + y, width, height),
+                    )
+                    correction = corrected[row_index] - predicted[row_index]
+                    return target[0], target[1] + correction, target[2], target[3]
+
+                translated_regions = {
+                    key: translated(key)
+                    for key in ("left_region", "right_region", "click_region")
+                }
+                self._diagnostic_log_event(
+                    f"列表逐行识别诊断：第{row_index + 1}行，"
+                    f"左区域 {translated_regions['left_region']}，"
+                    f"右区域 {translated_regions['right_region']}，"
+                    f"点击区域 {translated_regions['click_region']}",
+                    result_sink,
+                )
+                target_x, target_y, target_width, target_height = target_list_region
+                if any(
+                    x < target_x or y < target_y
+                    or x + width > target_x + target_width
+                    or y + height > target_y + target_height
+                    for x, y, width, height in translated_regions.values()
+                ):
+                    self._diagnostic_log_event(
+                        f"列表逐行识别诊断：第{row_index + 1}行超出列表截图边界，跳过条件识别",
+                        result_sink,
+                    )
+                    continue
+                self._row_list_condition_label = f"第{row_index + 1}行左侧"
+                left_matched = self._row_list_condition_matches(
+                    left_condition, translated_regions["left_region"],
+                )
+                self._row_list_condition_label = f"第{row_index + 1}行右侧"
+                right_matched = self._row_list_condition_matches(
+                    right_condition, translated_regions["right_region"],
+                )
+                self._diagnostic_log_event(
+                    f"列表逐行识别诊断：第{row_index + 1}行结果："
+                    f"左侧{'命中' if left_matched else '未命中'}，"
+                    f"右侧{'命中' if right_matched else '未命中'}",
+                    result_sink,
+                )
+        finally:
+            self._row_list_active_snapshot = None
+        self._diagnostic_log_event(
+            "列表逐行识别诊断结束：已输出全部行结果，未执行点击",
+            result_sink,
+        )
+
+    @staticmethod
+    def _grid_action_cells(action: dict) -> list[list[tuple[int, int, int, int]]]:
+        raw_region = action.get("grid_region", [])
+        if not isinstance(raw_region, (list, tuple)) or len(raw_region) != 4:
+            raise RuntimeError("网格逐行条件点击的区域无效")
+        try:
+            region = tuple(map(int, raw_region))
+            horizontal = tuple(
+                int(str(value).strip()) for value in action.get("horizontal_lines", [])
+                if str(value).strip()
+            )
+            vertical = tuple(
+                int(str(value).strip()) for value in action.get("vertical_lines", [])
+                if str(value).strip()
+            )
+            cells = build_grid_cells(region, horizontal, vertical)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"网格逐行条件点击的网格配置无效：{exc}") from exc
+        if not cells or not cells[0]:
+            raise RuntimeError("网格逐行条件点击至少需要一个单元格")
+        column_count = len(cells[0])
+        for key in ("left_column", "right_column", "click_column"):
+            try:
+                column = int(action.get(key, -1))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"网格逐行条件点击的{key}无效") from exc
+            if not 0 <= column < column_count:
+                raise RuntimeError(f"网格逐行条件点击的{key}超出列范围")
+        return cells
+
+    def _execute_grid_row_condition_click(self, action: dict, hwnd: int | None):
+        """Scan a saved grid from top to bottom and click the selected column."""
+        cells = self._grid_action_cells(action)
+        left_column = int(action["left_column"])
+        right_column = int(action["right_column"])
+        click_column = int(action["click_column"])
+        left_condition = action.get("left_condition", {})
+        right_condition = action.get("right_condition", {})
+        if not isinstance(left_condition, dict) or not isinstance(right_condition, dict):
+            raise RuntimeError("网格逐行条件点击的条件无效")
+        grid_region = tuple(map(int, action["grid_region"]))
+        self._row_list_active_snapshot = capture_bgr(self._scale_region(grid_region))
+        try:
+            for row_index, row in enumerate(cells, start=1):
+                left_cell = self._scale_region(row[left_column])
+                right_cell = self._scale_region(row[right_column])
+                if not self._row_list_condition_matches(left_condition, left_cell, f"第{row_index}行左侧"):
+                    continue
+                if not self._row_list_condition_matches(right_condition, right_cell, f"第{row_index}行右侧"):
+                    continue
+                x, y, width, height = self._scale_region(row[click_column])
+                count = max(1, min(9999, int(action.get("click_count", 1))))
+                self._click_module_point(
+                    x + width // 2, y + height // 2,
+                    str(action.get("button", "left")), count, hwnd,
+                )
+                self._log_event(f"网格逐行点击：第{row_index}行命中，已点击 {count} 次")
+                return None
+            self._log_event("网格逐行点击：本轮没有满足条件的行")
+            return None
+        finally:
+            self._row_list_active_snapshot = None
+
+    def _diagnose_grid_row_condition_click(
+            self, action: dict, hwnd: int | None,
+            result_sink: Callable[[str], None] | None = None) -> None:
+        """Log every grid row's selected-column results without clicking."""
+        del hwnd
+        cells = self._grid_action_cells(action)
+        left_column = int(action["left_column"])
+        right_column = int(action["right_column"])
+        left_condition = action.get("left_condition", {})
+        right_condition = action.get("right_condition", {})
+        self._row_list_active_snapshot = capture_bgr(
+            self._scale_region(tuple(map(int, action["grid_region"])))
+        )
+        self._diagnostic_log_event(
+            f"网格逐行识别诊断开始：共 {len(cells)} 行；不执行点击",
+            result_sink,
+        )
+        try:
+            for row_index, row in enumerate(cells, start=1):
+                left_cell = self._scale_region(row[left_column])
+                right_cell = self._scale_region(row[right_column])
+                left_matched = self._row_list_condition_matches(
+                    left_condition, left_cell, f"第{row_index}行左侧",
+                )
+                right_matched = self._row_list_condition_matches(
+                    right_condition, right_cell, f"第{row_index}行右侧",
+                )
+                self._diagnostic_log_event(
+                    f"网格逐行识别诊断：第{row_index}行左区域 {left_cell}，右区域 {right_cell}；"
+                    f"左侧{'命中' if left_matched else '未命中'}，"
+                    f"右侧{'命中' if right_matched else '未命中'}",
+                    result_sink,
+                )
+        finally:
+            self._row_list_active_snapshot = None
+        self._diagnostic_log_event(
+            "网格逐行识别诊断结束：已输出全部行结果，未执行点击",
+            result_sink,
+        )
+
     def _execute_row_list_condition_click(self, action: dict, hwnd: int | None) -> tuple[str, str | int] | None:
         """Click the first list row whose left and right conditions both match."""
         regions: dict[str, tuple[int, int, int, int]] = {}
@@ -1865,23 +2246,26 @@ class MacroPlayer:
                 raise RuntimeError("列表逐行条件点击的区域宽高必须大于零")
             regions[key] = region
         list_x, list_y, list_width, list_height = regions["list_region"]
-        fallback_row_height = max(
+        max_child_bottom = max(
             regions[key][1] + regions[key][3]
             for key in ("left_region", "right_region", "click_region")
         )
-        if not 0 < fallback_row_height <= list_height:
-            raise RuntimeError("列表逐行条件点击自动识别的行高必须大于零且不能超过列表高度")
+        try:
+            row_height = int(action.get("row_height", 0))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("列表逐行条件点击的行高不是有效数值") from exc
+        if not 0 < row_height <= list_height:
+            raise RuntimeError("列表逐行条件点击的行高必须大于零且不能超过列表高度")
         for key in ("left_region", "right_region", "click_region"):
             x, y, width, height = regions[key]
             if x < 0 or y < 0 or x + width > list_width or y + height > list_height:
                 raise RuntimeError("列表逐行条件点击的子区域必须位于列表区域内")
-        target_list_region = self._scale_region(regions["list_region"])
-        scale_y = target_list_region[3] / list_height
-        target_fallback = max(1, round(fallback_row_height * scale_y))
-        detected_target_height = detect_row_height(target_list_region, target_fallback)
-        row_height = max(1, round(detected_target_height / scale_y))
-        if row_height > list_height:
-            raise RuntimeError("列表逐行条件点击自动识别的行高必须大于零且不能超过列表高度")
+        row_offsets = list(range(0, list_height - max_child_bottom + 1, row_height))
+        if not row_offsets:
+            raise RuntimeError("列表逐行条件点击的首行区域超出列表有效扫描范围")
+        self._log_event(
+            f"列表逐行点击：使用配置行高 {row_height} 像素，共扫描 {len(row_offsets)} 行",
+        )
         try:
             click_count = int(action.get("click_count", 1))
         except (TypeError, ValueError) as exc:
@@ -1895,35 +2279,94 @@ class MacroPlayer:
         while True:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
-            for row_index in range(list_height // row_height):
-                row_offset = row_index * row_height
-
-                def translated(key: str) -> tuple[int, int, int, int]:
-                    x, y, width, height = regions[key]
-                    return self._scale_region(
-                        (list_x + x, list_y + row_offset + y, width, height),
+            target_list_region = self._scale_region(regions["list_region"])
+            self._row_list_active_snapshot = capture_bgr(target_list_region)
+            scale_y = target_list_region[3] / list_height
+            predicted_target_offsets = [round(offset * scale_y) for offset in row_offsets]
+            corrected_target_offsets = stabilize_row_offsets(
+                self._row_list_active_snapshot[0], predicted_target_offsets,
+                first_row_bottom=round(max_child_bottom * scale_y),
+                tolerance=max(1, round(3 * scale_y)),
+            )
+            for index, (predicted, corrected) in enumerate(
+                zip(predicted_target_offsets, corrected_target_offsets), start=1,
+            ):
+                if predicted != corrected:
+                    self._log_event(
+                        f"列表逐行点击：第{index}行位置局部校正 {corrected - predicted:+d} 像素",
                     )
+            try:
+                for row_index, row_offset in enumerate(row_offsets):
 
-                self._row_list_condition_label = f"第{row_index + 1}行左侧"
-                if not self._row_list_condition_matches(left_condition, translated("left_region")):
-                    continue
-                self._row_list_condition_label = f"第{row_index + 1}行右侧"
-                if not self._row_list_condition_matches(right_condition, translated("right_region")):
-                    continue
-                click_x, click_y, click_width, click_height = translated("click_region")
-                self._click_module_point(
-                    click_x + click_width // 2, click_y + click_height // 2,
-                    str(action.get("button", "left")), click_count, hwnd,
-                )
-                self._log_event(
-                    f"列表逐行点击：第{row_index + 1}行命中，已连续点击 {click_count} 次",
-                )
-                return self._row_list_result_route(action, succeeded=True)
+                    def translated(key: str) -> tuple[int, int, int, int]:
+                        x, y, width, height = regions[key]
+                        target = self._scale_region(
+                            (list_x + x, list_y + row_offset + y, width, height),
+                        )
+                        correction = (
+                            corrected_target_offsets[row_index]
+                            - predicted_target_offsets[row_index]
+                        )
+                        return target[0], target[1] + correction, target[2], target[3]
+
+                    translated_regions = {
+                        key: translated(key)
+                        for key in ("left_region", "right_region", "click_region")
+                    }
+                    target_list_x, target_list_y, target_list_width, target_list_height = (
+                        target_list_region
+                    )
+                    if any(
+                        x < target_list_x or y < target_list_y
+                        or x + width > target_list_x + target_list_width
+                        or y + height > target_list_y + target_list_height
+                        for x, y, width, height in translated_regions.values()
+                    ):
+                        self._log_event(
+                            f"列表逐行点击：第{row_index + 1}行局部校正后超出列表边界，已跳过",
+                        )
+                        continue
+
+                    self._row_list_condition_label = f"第{row_index + 1}行左侧"
+                    if not self._row_list_condition_matches(
+                        left_condition, translated_regions["left_region"],
+                    ):
+                        continue
+                    self._row_list_condition_label = f"第{row_index + 1}行右侧"
+                    if not self._row_list_condition_matches(
+                        right_condition, translated_regions["right_region"],
+                    ):
+                        continue
+                    click_x, click_y, click_width, click_height = translated_regions["click_region"]
+                    self._click_module_point(
+                        click_x + click_width // 2, click_y + click_height // 2,
+                        str(action.get("button", "left")), click_count, hwnd,
+                    )
+                    self._log_event(
+                        f"列表逐行点击：第{row_index + 1}行命中，已连续点击 {click_count} 次",
+                    )
+                    return self._row_list_result_route(action, succeeded=True)
+            finally:
+                self._row_list_active_snapshot = None
             if str(action.get("no_match_action", "finish")) != "retry":
                 self._log_event("列表逐行点击：本轮没有满足条件的行，结束扫描")
                 return self._row_list_result_route(action, succeeded=False)
             self._log_event("列表逐行点击：本轮没有满足条件的行，等待后从顶部重新扫描")
             self._wait(max(0, int(action.get("retry_interval_ms", 500))))
+
+    @staticmethod
+    def _row_list_snapshot_crop(snapshot, region: tuple[int, int, int, int]):
+        screen, origin = snapshot
+        left, top, width, height = map(int, region)
+        origin_x, origin_y = map(int, origin)
+        image_height, image_width = screen.shape[:2]
+        x1 = max(0, left - origin_x)
+        y1 = max(0, top - origin_y)
+        x2 = min(image_width, left - origin_x + width)
+        y2 = min(image_height, top - origin_y + height)
+        if x2 <= x1 or y2 <= y1:
+            raise RuntimeError("列表逐行条件区域超出本轮列表截图")
+        return screen[y1:y2, x1:x2], (origin_x + x1, origin_y + y1)
 
     def _row_list_condition_matches(self, condition: dict,
                                     region: tuple[int, int, int, int],
@@ -1936,12 +2379,23 @@ class MacroPlayer:
             module = registered_module_object(module_key)
             if module is None:
                 raise RuntimeError(f"列表逐行条件点击引用的图片模块不存在：{module_key}")
-            matched = find_template(
-                resolve_path(str(module.get("template", ""))),
-                float(module.get("threshold", 0.85)), region,
-                ignore_background=bool(module.get("ignore_background", False)),
-                scale=self._template_scale(),
-            ) is not None
+            snapshot = getattr(self, "_row_list_active_snapshot", None)
+            if snapshot is None:
+                match = find_template(
+                    resolve_path(str(module.get("template", ""))),
+                    float(module.get("threshold", 0.85)), region,
+                    ignore_background=bool(module.get("ignore_background", False)),
+                    scale=self._template_scale(),
+                )
+            else:
+                screen, origin = snapshot
+                match = find_template_in_image(
+                    resolve_path(str(module.get("template", ""))), screen,
+                    float(module.get("threshold", 0.85)), origin, region,
+                    ignore_background=bool(module.get("ignore_background", False)),
+                    scale=self._template_scale(),
+                )
+            matched = match is not None
             module_label = str(module.get("name") or "").strip() or module_key or "未设置模块"
             self._log_event(
                 f"{label} 图片识别：{module_label}；"
@@ -1950,7 +2404,28 @@ class MacroPlayer:
             return matched
         if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
             raise PlaybackStopped()
-        recognized, matches = recognize_region_with_boxes(region)
+        snapshot = getattr(self, "_row_list_active_snapshot", None)
+        if snapshot is None:
+            recognized, matches = recognize_region_with_boxes(region)
+        else:
+            crop, crop_origin = self._row_list_snapshot_crop(snapshot, region)
+            recognized, matches = recognize_image_with_boxes(crop, crop_origin)
+            needs_retry = not str(recognized or "").strip()
+            if kind == "number" and not needs_retry:
+                needs_retry = parse_ocr_number_pair(
+                    recognized, str(condition.get("separator", "/")),
+                ) is None
+            if needs_retry:
+                enlarged = cv2.resize(
+                    crop, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC,
+                )
+                gray = cv2.cvtColor(enlarged, cv2.COLOR_BGR2GRAY)
+                enhanced = cv2.createCLAHE(
+                    clipLimit=2.0, tileGridSize=(4, 4),
+                ).apply(gray)
+                enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                recognized, matches = recognize_image_with_boxes(enhanced, crop_origin)
+                self._log_event(f"{label} OCR：首次未能解析，已使用同帧图像增强重试")
         recognized_text = str(recognized or "").strip() or "未识别到文字"
         if kind == "text":
             expected = str(condition.get("expected_text", ""))

@@ -21,6 +21,9 @@ WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
+WM_LBUTTONDOWN = 0x0201
+WM_RBUTTONDOWN = 0x0204
+WM_MBUTTONDOWN = 0x0207
 VK_ESCAPE = 0x1B
 VK_F8 = 0x77
 VK_F9 = 0x78
@@ -363,4 +366,115 @@ class KeyCapturer:
             if self._keyboard_hook:
                 user32.UnhookWindowsHookEx(self._keyboard_hook)
             self._keyboard_hook = None
+            self.active = False
+
+
+class MouseCapturer:
+    """Capture the next physical left, right, or middle mouse button press.
+
+    The mouse button-down event is consumed so it cannot click the underlying
+    window. Esc cancels through a companion low-level keyboard hook; injected
+    mouse and keyboard events pass through untouched.
+    """
+
+    _BUTTON_MESSAGES = {
+        WM_LBUTTONDOWN: "left",
+        WM_RBUTTONDOWN: "right",
+        WM_MBUTTONDOWN: "middle",
+    }
+
+    def __init__(self, on_button: Callable[[str], None], on_cancel: Callable[[], None] | None = None):
+        self._on_button = on_button
+        self._on_cancel = on_cancel
+        self.active = False
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._thread_id = 0
+        self._mouse_hook = None
+        self._keyboard_hook = None
+        self._mouse_proc = None
+        self._keyboard_proc = None
+        self._error: Exception | None = None
+
+    def start(self, timeout: float = 2.0) -> bool:
+        if self.active:
+            return True
+        self._ready.clear()
+        self._error = None
+        self._thread = threading.Thread(
+            target=self._run, name="MacroFlowMouseCapturer", daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            return False
+        return self.active and self._error is None
+
+    def stop(self) -> None:
+        """Stop both low-level hooks from any thread."""
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(1.0)
+        self.active = False
+        self._thread = None
+        self._thread_id = 0
+
+    def _run(self) -> None:
+        self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
+
+        @HOOKPROC
+        def keyboard_proc(code, wparam, lparam):
+            if code == HC_ACTION:
+                data = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if (
+                    int(wparam) in (WM_KEYDOWN, WM_SYSKEYDOWN)
+                    and int(data.vkCode) == VK_ESCAPE
+                    and not (int(data.flags) & LLKHF_INJECTED)
+                ):
+                    if self._on_cancel:
+                        try:
+                            self._on_cancel()
+                        except Exception:
+                            pass
+                    user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+                    return 1
+            return user32.CallNextHookEx(self._keyboard_hook, code, wparam, lparam)
+
+        @HOOKPROC
+        def mouse_proc(code, wparam, lparam):
+            if code == HC_ACTION:
+                data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                if not (int(data.flags) & LLMHF_INJECTED):
+                    button = self._BUTTON_MESSAGES.get(int(wparam))
+                    if button:
+                        if self._on_button:
+                            try:
+                                self._on_button(button)
+                            except Exception:
+                                pass
+                        user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+                        return 1
+            return user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
+
+        self._keyboard_proc = keyboard_proc
+        self._mouse_proc = mouse_proc
+        try:
+            self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, None, 0)
+            self._keyboard_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, keyboard_proc, None, 0)
+            if not self._mouse_hook or not self._keyboard_hook:
+                raise ctypes.WinError()
+            self.active = True
+            self._ready.set()
+            message = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+                pass
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            if self._mouse_hook:
+                user32.UnhookWindowsHookEx(self._mouse_hook)
+            if self._keyboard_hook:
+                user32.UnhookWindowsHookEx(self._keyboard_hook)
+            self._mouse_hook = self._keyboard_hook = None
             self.active = False

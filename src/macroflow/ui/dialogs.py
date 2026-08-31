@@ -43,9 +43,9 @@ COLOR_TEXT = "#E8EDF2"
 COLOR_MUTED = "#94A1AD"
 COLOR_BLUE_SELECTION = "#244D78"
 
-GLOBAL_SCRIPT_END_LABEL = "脚本结束（工作流中执行下一项）"
+GLOBAL_SCRIPT_END_LABEL = "脚本结束（结束当前执行）"
 SCRIPT_START_LABEL = "脚本开头（从第 1 行开始）"
-SCRIPT_END_LABEL = "脚本结尾（立即结束当前脚本）"
+SCRIPT_END_LABEL = "脚本结尾（结束当前执行）"
 SCRIPT_CATEGORY_LABELS = {
     "all": "全部", "level": "关卡", "level_pack": "关卡封装",
     "switch": "切换",
@@ -54,6 +54,15 @@ SCRIPT_CATEGORY_LABELS = {
 TIME_UNITS = ("ms", "s", "min")
 
 _UNIT_TO_MS = {"ms": 1, "s": 1000, "min": 60000}
+
+
+def _parse_grid_int_list(values):
+    """Parse saved grid line values while ignoring empty trailing entries."""
+    if values is None:
+        return []
+    if isinstance(values, str):
+        values = values.split(",")
+    return [int(str(value).strip()) for value in values if str(value).strip()]
 
 
 class DurationVar(tk.StringVar):
@@ -954,6 +963,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "close_app": "关闭软件", "jump": "跳转",
         "global_detect": "全局检测", "restart_workflow": "重启工作流",
         "end_current_script": "结束脚本", "jump_current_script_last": "跳转脚本尾",
+        "block": "阻塞",
         "activate_window": "前置窗口", "module_ref": "模块引用",
     }
     button_names = {"left": "左键", "right": "右键", "middle": "中键"}
@@ -1036,6 +1046,8 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
             detail = f"启用 {len(enabled)}/3 个条件 · 点击 {int(action.get('click_count', 1))} 次"
         elif kind == "row_list_condition_click":
             detail = "从上到下查找首个匹配项"
+        elif kind == "grid_row_condition_click":
+            detail = "网格分隔线逐行识别并点击"
         elif kind == "notice":
             detail = clip(action.get("text", ""), 16)
         elif kind == "comment":
@@ -1058,6 +1070,8 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
                 detail = f"跳到第 {max(1, int(action.get('jump_row', 1)))} 行"
         elif kind == "activate_window":
             detail = clip(action.get("title") or action.get("name", ""), 16)
+        elif kind == "block":
+            detail = "等待其他跳转"
         label = f"第 {index + 1} 行 · {row_kind_label}"
         if detail:
             label += f" · {detail}"
@@ -1066,9 +1080,9 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
 
 
 def image_found_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
-    """Successful recognition can jump to an action or finish this workflow step."""
+    """Successful recognition can jump to an action or finish this script execution."""
     return [
-        ("直接结束当前脚本，执行工作流下一项", NEXT_WORKFLOW_STEP_TARGET_ID),
+        ("结束当前脚本执行", NEXT_WORKFLOW_STEP_TARGET_ID),
         *image_jump_target_options(actions),
     ]
 
@@ -1277,6 +1291,63 @@ class ModalDialog(tk.Toplevel):
                 elif manager == "pack":
                     combo.pack(side="left", padx=(6, 0))
             self._install_duration_units_in(widget)
+
+
+class RowListDiagnosticResultDialog:
+    """Show a completed row-list recognition scan without taking a modal grab."""
+
+    def __init__(self, parent, result_lines: list[str], error: Exception | None = None):
+        self.parent = parent
+        self.result_lines = list(result_lines)
+        self.error = error
+        self.window = None
+
+    def show(self):
+        window = tk.Toplevel(self.parent)
+        self.window = window
+        window.title("列表逐行识别结果")
+        window.configure(background=COLOR_BG)
+        window.geometry("780x520")
+        window.minsize(560, 320)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+
+        body = ttk.Frame(window, padding=14)
+        body.pack(fill="both", expand=True)
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+        ttk.Label(
+            body, text="识别已完成，以下结果不会执行点击。",
+            foreground=COLOR_TEXT,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        text_frame = ttk.Frame(body)
+        text_frame.grid(row=1, column=0, sticky="nsew")
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+        output = tk.Text(
+            text_frame, wrap="word", state="normal", background=COLOR_SURFACE,
+            foreground=COLOR_TEXT, insertbackground=COLOR_TEXT,
+            selectbackground=COLOR_BLUE_SELECTION, relief="flat", bd=0,
+            font=("Consolas", 10), padx=12, pady=10,
+        )
+        scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=output.yview)
+        output.configure(yscrollcommand=scrollbar.set)
+        output.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        content = "\n".join(self.result_lines) or "没有诊断输出。"
+        if self.error is not None:
+            content = f"{content}\n\n识别失败：{self.error}"
+        output.insert("1.0", content)
+        output.configure(state="disabled")
+
+        ttk.Button(body, text="关闭", command=window.destroy).grid(
+            row=2, column=0, sticky="e", pady=(10, 0),
+        )
+        window.update_idletasks()
+        set_dark_titlebar(window.winfo_id())
+        window.lift()
+        window.focus_force()
+        return window
 
 
 class ScheduleDialog(ModalDialog):
@@ -1644,7 +1715,7 @@ class JumpActionDialog(ModalDialog):
         ttk.Label(
             body,
             text=("脚本开头会从第 1 行重新执行；指定行会跟随该动作移动；"
-                  "脚本结尾会立即结束当前脚本，工作流继续下一项。"),
+                  "脚本结尾会结束当前脚本执行；引用脚本继续下一次，顶层脚本进入工作流下一项。"),
             foreground=COLOR_MUTED, wraplength=530,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
         condition_frame = ttk.LabelFrame(body, text="跳转生效条件", padding=(12, 8))
@@ -1842,7 +1913,9 @@ class GlobalDetectDialog(ModalDialog):
                 )
                 self.jump_target_combo.pack(side="left")
                 ttk.Label(
-                    jump_row_frame, text="（也可直接结束当前脚本）", foreground=COLOR_MUTED,
+                    jump_row_frame,
+                    text="（引用脚本结束本次并进入下一次；顶层脚本进入工作流下一项）",
+                    foreground=COLOR_MUTED,
                 ).pack(side="left", padx=(6, 0))
             else:
                 # 脚本里没有可跳转的行（防御）：退回数字行号输入。
@@ -2203,6 +2276,8 @@ SEGMENT_DEPTH_LIMIT = 8
 
 def segment_action_is_blocking(action: dict) -> bool:
     """Return whether a segment row can wait indefinitely for recognition."""
+    if action.get("type") == "block":
+        return True
     if action.get("type") not in ("image_match", "global_detect"):
         return False
     if action.get("module_ref"):
@@ -2444,6 +2519,8 @@ def segment_row_label(action: dict) -> str:
         return END_CURRENT_SCRIPT_LABEL
     if kind == "jump_current_script_last":
         return "跳转到当前脚本最后一行"
+    if kind == "block":
+        return "【阻塞等待跳转】阻塞"
     if kind == "jump":
         return "跳转"
     if kind == "activate_window":
@@ -3934,6 +4011,242 @@ def configure_module_tree_styles(style) -> None:
         )
 
 
+class ModuleImageInventoryDialog(ModalDialog):
+    """Show which files in the image directory are used by module objects."""
+
+    @staticmethod
+    def _category_label(category: str) -> str:
+        return {
+            "switch": "切换",
+            "workflow_global": "工作流全局",
+            "script_global": "脚本全局",
+            "special": "特殊",
+        }.get(str(category), "—")
+
+    def __init__(self, parent):
+        super().__init__(parent, "图像采用情况", 900, 520)
+        self.objects: dict[str, dict] = load_module_objects()
+        self.images_dir = load_module_images_dir()
+        self.images_dir_var = tk.StringVar(value=str(self.images_dir))
+        self.inventory_items: dict[str, dict[str, str]] = {}
+        self.inventory_filter = "all"
+        self.sort_direction = "asc"
+        self.current = "images"
+        self.trees: dict[str, ttk.Treeview] = {}
+        self.inventory_filter_buttons: dict[str, tk.Button] = {}
+        self.module_tree_style = ttk.Style(self)
+        configure_module_tree_styles(self.module_tree_style)
+
+        body = ttk.Frame(self, padding=18)
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text="查看图片是否已被模块采用；双击已采用图片可编辑对应模块。",
+            foreground=COLOR_MUTED, wraplength=720,
+        ).pack(anchor="w")
+        directory_row = ttk.Frame(body)
+        directory_row.pack(fill="x", pady=(10, 0))
+        ttk.Label(directory_row, text="识图文件夹").pack(side="left")
+        ttk.Entry(
+            directory_row, textvariable=self.images_dir_var, state="readonly",
+        ).pack(side="left", fill="x", expand=True, padx=(10, 8))
+        ttk.Button(
+            directory_row, text="选择目录…", command=self._choose_images_dir,
+        ).pack(side="left")
+        ttk.Button(
+            directory_row, text="刷新", command=self._refresh_inventory,
+        ).pack(side="left", padx=(8, 0))
+        self.inventory_summary_var = tk.StringVar(value="")
+        ttk.Label(
+            body, textvariable=self.inventory_summary_var, foreground=COLOR_MUTED,
+        ).pack(anchor="w", pady=(5, 0))
+
+        filter_row = ttk.Frame(body)
+        filter_row.pack(fill="x", pady=(8, 2))
+        ttk.Label(filter_row, text="查看：", foreground=COLOR_MUTED).pack(side="left")
+        for value, label in (("all", "全部图片"), ("adopted", "已采用"), ("unused", "未采用")):
+            button = tk.Button(
+                filter_row, text=label,
+                command=lambda item=value: self._set_inventory_filter(item),
+                background=COLOR_BLUE_SELECTION if value == "all" else COLOR_SURFACE,
+                foreground="#FFFFFF" if value == "all" else COLOR_TEXT,
+                activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
+                relief="flat", borderwidth=0, padx=12, pady=4, cursor="hand2",
+                font=("Microsoft YaHei UI", 10),
+            )
+            button.pack(side="left", padx=(0, 6))
+            self.inventory_filter_buttons[value] = button
+
+        list_frame = ttk.Frame(body)
+        list_frame.pack(fill="both", expand=True, pady=(4, 0))
+        tree = ttk.Treeview(
+            list_frame, columns=("status", "kind"), show="tree headings", height=10,
+            style="ModuleManagerNeutral.Treeview",
+        )
+        tree.heading("#0", text="图片文件")
+        tree.heading("status", text="采用情况")
+        tree.heading("kind", text="模块类型")
+        tree.column("#0", width=480)
+        tree.column("status", width=135, anchor="center")
+        tree.column("kind", width=150, anchor="center")
+        tree.tag_configure("adopted", foreground="#7BC96F")
+        tree.tag_configure("unused", foreground="#F2B84B")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        tree.bind("<Double-1>", lambda _event: self._open_inventory_item())
+        tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
+        self.trees["images"] = tree
+        self._apply_sort_heading(tree)
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(12, 0))
+        self.add_button = ttk.Button(
+            buttons, text="采用为模块", command=lambda: self._open_inventory_item(require_unused=True),
+        )
+        self.add_button.pack(side="left")
+        self.edit_button = ttk.Button(
+            buttons, text="编辑模块", command=self._open_inventory_item,
+        )
+        self.edit_button.pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
+        self._reload_tree()
+        self._update_action_buttons()
+        fit_window_to_content(self, parent, minimum_width=900, minimum_height=500)
+
+    def _apply_sort_heading(self, tree):
+        arrow = "↑" if self.sort_direction == "asc" else "↓"
+        tree.heading(
+            "#0", text=f"图片文件 {arrow}", command=self._toggle_sort_direction,
+        )
+
+    def _reload_tree(self):
+        tree = self.trees["images"]
+        tree.delete(*tree.get_children())
+        inventory = module_image_inventory(self.images_dir, self.objects)
+        self.inventory_items = {item["path"]: item for item in inventory}
+        adopted_count = sum(bool(item["module_key"]) for item in inventory)
+        self.inventory_summary_var.set(
+            f"共 {len(inventory)} 张图片：已采用 {adopted_count}，未采用 {len(inventory) - adopted_count}"
+        )
+        current_filter = self.inventory_filter
+        visible = [
+            item for item in inventory
+            if current_filter == "all"
+            or (current_filter == "adopted" and bool(item["module_key"]))
+            or (current_filter == "unused" and not item["module_key"])
+        ]
+        if current_filter != "all":
+            self.inventory_summary_var.set(
+                self.inventory_summary_var.get() + f"；当前显示 {len(visible)} 张"
+            )
+        visible.sort(
+            key=lambda item: pinyin_sort_key(Path(item["path"].replace("\\", "/")).stem),
+            reverse=self.sort_direction == "desc",
+        )
+        for item in visible:
+            keys = item.get("module_keys") or ([item["module_key"]] if item["module_key"] else [])
+            categories = {
+                self._category_label(self.objects.get(key, {}).get("category"))
+                for key in keys
+            }
+            category = "/".join(sorted(categories)) if categories else "—"
+            tree.insert(
+                "", "end", iid=item["path"],
+                text=str(Path(item["path"].replace("\\", "/")).name),
+                values=(item["status"], category),
+                tags=("adopted" if item["module_key"] else "unused",),
+            )
+
+    def _set_inventory_filter(self, value: str):
+        if value not in ("all", "adopted", "unused"):
+            return
+        self.inventory_filter = value
+        for key, button in self.inventory_filter_buttons.items():
+            selected = key == value
+            button.configure(
+                background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
+                foreground="#FFFFFF" if selected else COLOR_TEXT,
+            )
+        self._reload_tree()
+
+    def _toggle_sort_direction(self):
+        self.sort_direction = "desc" if self.sort_direction == "asc" else "asc"
+        self._apply_sort_heading(self.trees["images"])
+        self._reload_tree()
+
+    def _choose_images_dir(self):
+        selected = filedialog.askdirectory(
+            parent=self, title="选择识图文件夹", initialdir=str(self.images_dir),
+        )
+        if not selected:
+            return
+        self.images_dir = save_module_images_dir(selected)
+        self.images_dir_var.set(str(self.images_dir))
+        self._reload_tree()
+
+    def _refresh_inventory(self):
+        self.objects = load_module_objects()
+        self._reload_tree()
+
+    def _selected_inventory_item(self) -> dict | None:
+        tree = self.trees["images"]
+        selection = tree.selection()
+        return self.inventory_items.get(selection[0]) if selection else None
+
+    def _open_inventory_item(self, require_unused: bool = False):
+        item = self._selected_inventory_item()
+        if not item:
+            show_floating_notice(self, "请先选择图片", "先在图片采用情况中选择一张图片。")
+            return
+        module_keys = list(item.get("module_keys") or [])
+        module_key = item.get("module_key", "")
+        if require_unused:
+            self._open_form(category="switch", initial_image=item["path"])
+            return
+        if len(module_keys) > 1:
+            show_floating_notice(
+                self, "图片被多个模块使用",
+                f"这张图片已被 {len(module_keys)} 个独立模块使用，请到模块对象管理中按模块名称编辑。",
+            )
+            return
+        if module_key:
+            self._open_form(module_key, self.objects.get(module_key))
+            return
+        self._open_form(category="switch", initial_image=item["path"])
+
+    def _open_form(self, key: str = "", object_dict: dict | None = None,
+                   category: str = "switch", initial_image: str = ""):
+        form_kwargs = {"object_dict": object_dict, "category": category}
+        if initial_image:
+            form_kwargs["initial_image"] = initial_image
+        if self.images_dir:
+            form_kwargs["images_dir"] = self.images_dir
+        result = TemplateRegionFormDialog(self, key, **form_kwargs).show()
+        if result is None:
+            return
+        old_key, new_key, obj = result
+        self.objects = update_module_object(new_key, obj, old_key=old_key)
+        self._reload_tree()
+        try:
+            self.trees["images"].selection_set(new_key)
+            self.trees["images"].see(new_key)
+        except tk.TclError:
+            pass
+
+    def _update_action_buttons(self, _event=None):
+        item = self._selected_inventory_item() if self.trees.get("images") else None
+        adopted = bool(item and item.get("module_key"))
+        self.add_button.configure(
+            text="采用为模块", state="normal" if item and not adopted else "disabled",
+        )
+        self.edit_button.configure(
+            text="编辑模块" if adopted else "采用并设置",
+            state="normal" if item else "disabled",
+        )
+
+
 class TemplateRegionManagerDialog(ModalDialog):
     """Manage the module-object registry (template image + region + behavior).
 
@@ -3943,9 +4256,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     :class:`TemplateRegionFormDialog`；双击普通模块可直接编辑。
     """
 
-    TAB_KEYS = (
-        "all", "images", "switch", "workflow_global", "script_global", "special",
-    )
+    TAB_KEYS = ("all", "switch", "workflow_global", "script_global", "special")
 
     def __init__(self, parent, app=None):
         super().__init__(parent, "模块对象管理", 1040, 520)
@@ -3953,9 +4264,6 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.objects: dict[str, dict] = load_module_objects()
         self.current = "all"
         self.trees: dict[str, ttk.Treeview] = {}
-        self.images_dir = load_module_images_dir()
-        self.images_dir_var = tk.StringVar(value=str(self.images_dir))
-        self.inventory_items: dict[str, dict[str, str]] = {}
         self.sort_direction = "asc"
         self.module_tree_style = ttk.Style(self)
         configure_module_tree_styles(self.module_tree_style)
@@ -3966,18 +4274,6 @@ class TemplateRegionManagerDialog(ModalDialog):
             text="双击普通模块直接编辑；特殊模块为固定动作，不提供编辑设置。",
             foreground=COLOR_MUTED, wraplength=670,
         ).pack(anchor="w")
-        directory_row = ttk.Frame(body)
-        directory_row.pack(fill="x", pady=(10, 0))
-        ttk.Label(directory_row, text="识图文件夹").pack(side="left")
-        ttk.Entry(
-            directory_row, textvariable=self.images_dir_var, state="readonly",
-        ).pack(side="left", fill="x", expand=True, padx=(10, 8))
-        ttk.Button(directory_row, text="选择目录…", command=self._choose_images_dir).pack(side="left")
-        ttk.Button(directory_row, text="刷新", command=self._refresh_inventory).pack(side="left", padx=(8, 0))
-        self.inventory_summary_var = tk.StringVar(value="")
-        ttk.Label(
-            body, textvariable=self.inventory_summary_var, foreground=COLOR_MUTED,
-        ).pack(anchor="w", pady=(5, 0))
         self.notebook = ttk.Notebook(body)
         self.notebook.pack(fill="both", expand=True, pady=(10, 0))
         for tab_key in self.TAB_KEYS:
@@ -4025,6 +4321,9 @@ class TemplateRegionManagerDialog(ModalDialog):
             buttons, text="删除全部引用", command=self._remove_all_references,
         )
         self.remove_all_references_button.pack(side="left", padx=(8, 0))
+        ttk.Button(
+            buttons, text="图像采用情况…", command=self._open_image_inventory,
+        ).pack(side="left", padx=(8, 0))
         ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
         self.bind("<Control-z>", self._undo_remove)
         self._update_action_buttons()
@@ -4046,45 +4345,15 @@ class TemplateRegionManagerDialog(ModalDialog):
     @staticmethod
     def _tab_label(tab_key: str) -> str:
         return {
-            "all": "全部模块", "images": "图片采用情况", "switch": "切换",
+            "all": "全部模块", "switch": "切换",
             "workflow_global": "工作流全局", "script_global": "脚本全局",
             "special": "特殊",
         }[tab_key]
 
     def _build_tab(self, tab_key: str, tab: ttk.Frame):
-        if tab_key == "images":
-            self.inventory_filter = "all"
-            self.inventory_filter_buttons: dict[str, tk.Button] = {}
-            filter_row = ttk.Frame(tab)
-            filter_row.pack(fill="x", padx=4, pady=(6, 2))
-            ttk.Label(filter_row, text="查看：", foreground=COLOR_MUTED).pack(side="left")
-            for value, label in (("all", "全部图片"), ("adopted", "已采用"), ("unused", "未采用")):
-                button = tk.Button(
-                    filter_row, text=label, command=lambda item=value: self._set_inventory_filter(item),
-                    background=COLOR_BLUE_SELECTION if value == "all" else COLOR_SURFACE,
-                    foreground="#FFFFFF" if value == "all" else COLOR_TEXT,
-                    activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
-                    relief="flat", borderwidth=0, padx=12, pady=4, cursor="hand2",
-                    font=("Microsoft YaHei UI", 10),
-                )
-                button.pack(side="left", padx=(0, 6))
-                self.inventory_filter_buttons[value] = button
         list_frame = ttk.Frame(tab)
         list_frame.pack(fill="both", expand=True, padx=4, pady=(4, 0))
-        if tab_key == "images":
-            tree = ttk.Treeview(
-                list_frame, columns=("status", "kind"), show="tree headings", height=10,
-                style="ModuleManagerNeutral.Treeview",
-            )
-            tree.heading("#0", text="图片文件")
-            tree.heading("status", text="采用情况")
-            tree.heading("kind", text="模块类别")
-            tree.column("#0", width=410)
-            tree.column("status", width=125, anchor="center")
-            tree.column("kind", width=105, anchor="center")
-            tree.tag_configure("adopted", foreground="#7BC96F")
-            tree.tag_configure("unused", foreground="#F2B84B")
-        elif tab_key == "special":
+        if tab_key == "special":
             tree = ttk.Treeview(
                 list_frame, columns=("kind",), show="tree headings", height=10,
                 style="ModuleManagerNeutral.Treeview",
@@ -4114,7 +4383,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         scrollbar.pack(side="right", fill="y")
         tree.bind(
             "<Double-1>",
-            lambda _event: self._open_inventory_item() if tab_key == "images" else self._open_edit(),
+            lambda _event: self._open_edit(),
         )
         tree.bind("<Button-3>", self._show_module_context_menu, add="+")
         tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
@@ -4124,7 +4393,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     @staticmethod
     def _sort_heading_label(tab_key: str) -> str:
         return {
-            "all": "模块名称", "images": "图片文件",
+            "all": "模块名称",
             "switch": "模块名称", "workflow_global": "模块名称",
             "script_global": "模块名称", "special": "名称",
         }[tab_key]
@@ -4146,47 +4415,6 @@ class TemplateRegionManagerDialog(ModalDialog):
 
     def _reload_tree(self, tab_key: str, tree: ttk.Treeview):
         tree.delete(*tree.get_children())
-        if tab_key == "images":
-            inventory = module_image_inventory(self.images_dir, self.objects)
-            self.inventory_items = {item["path"]: item for item in inventory}
-            adopted_count = sum(bool(item["module_key"]) for item in inventory)
-            self.inventory_summary_var.set(
-                f"共 {len(inventory)} 张图片：已采用 {adopted_count}，未采用 {len(inventory) - adopted_count}"
-            )
-            current_filter = getattr(self, "inventory_filter", "all")
-            visible = [
-                item for item in inventory
-                if current_filter == "all"
-                or (current_filter == "adopted" and bool(item["module_key"]))
-                or (current_filter == "unused" and not item["module_key"])
-            ]
-            if current_filter != "all":
-                self.inventory_summary_var.set(
-                    self.inventory_summary_var.get() + f"；当前显示 {len(visible)} 张"
-                )
-            visible.sort(
-                key=lambda item: pinyin_sort_key(Path(item["path"].replace("\\", "/")).stem),
-                reverse=getattr(self, "sort_direction", "asc") == "desc",
-            )
-            for item in visible:
-                keys = item.get("module_keys") or ([item["module_key"]] if item["module_key"] else [])
-                categories = {
-                    {
-                        "switch": "切换", "workflow_global": "工作流全局",
-                        "script_global": "脚本全局",
-                    }.get(
-                        self.objects.get(key, {}).get("category"), "—",
-                    )
-                    for key in keys
-                }
-                category = "/".join(sorted(categories)) if categories else "—"
-                tree.insert(
-                    "", "end", iid=item["path"],
-                    text=str(Path(item["path"].replace("\\", "/")).name),
-                    values=(item["status"], category),
-                    tags=("adopted" if item["module_key"] else "unused",),
-                )
-            return
         items = sorted(
             self.objects.items(),
             key=lambda item: pinyin_sort_key(
@@ -4230,20 +4458,6 @@ class TemplateRegionManagerDialog(ModalDialog):
                     values=("特殊",), tags=((tag,) if tag else ()),
                 )
 
-    def _set_inventory_filter(self, value: str):
-        if value not in ("all", "adopted", "unused"):
-            return
-        self.inventory_filter = value
-        for key, button in getattr(self, "inventory_filter_buttons", {}).items():
-            selected = key == value
-            button.configure(
-                background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
-                foreground="#FFFFFF" if selected else COLOR_TEXT,
-            )
-        tree = self.trees.get("images")
-        if tree is not None:
-            self._reload_tree("images", tree)
-
     def _set_sort_direction(self, value: str):
         if value not in ("asc", "desc"):
             return
@@ -4256,9 +4470,6 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._set_sort_direction("desc" if self.sort_direction == "asc" else "asc")
 
     def _open_add(self):
-        if self.current == "images":
-            self._open_inventory_item(require_unused=True)
-            return
         if self.current == "special":
             show_floating_notice(self, "固定特殊模块", "特殊模块由软件提供，不能新增或编辑。")
             return
@@ -4266,9 +4477,6 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._open_form("", category=category)
 
     def _open_edit(self):
-        if self.current == "images":
-            self._open_inventory_item()
-            return
         tree = self.trees[self.current]
         selection = tree.selection()
         if not selection:
@@ -4351,8 +4559,6 @@ class TemplateRegionManagerDialog(ModalDialog):
         form_kwargs = {"object_dict": object_dict, "category": category}
         if initial_image:
             form_kwargs["initial_image"] = initial_image
-        if getattr(self, "images_dir", None):
-            form_kwargs["images_dir"] = self.images_dir
         form = TemplateRegionFormDialog(self, key, **form_kwargs)
         result = form.show()
         if result is None:
@@ -4368,50 +4574,10 @@ class TemplateRegionManagerDialog(ModalDialog):
             # 编辑时改了类别，新条目不在当前页签树里（如 特殊→切换）。
             pass
 
-    def _choose_images_dir(self):
-        selected = filedialog.askdirectory(
-            parent=self, title="选择识图文件夹", initialdir=str(self.images_dir),
-        )
-        if not selected:
-            return
-        self.images_dir = save_module_images_dir(selected)
-        self.images_dir_var.set(str(self.images_dir))
-        self._reload_trees()
-
-    def _refresh_inventory(self):
-        self.objects = load_module_objects()
-        self._reload_trees()
-
-    def _selected_inventory_item(self) -> dict | None:
-        tree = self.trees.get("images")
-        selection = tree.selection() if tree is not None else ()
-        return self.inventory_items.get(selection[0]) if selection else None
-
-    def _open_inventory_item(self, require_unused: bool = False):
-        item = self._selected_inventory_item()
-        if not item:
-            show_floating_notice(self, "请先选择图片", "先在图片采用情况中选择一张图片。")
-            return
-        module_keys = list(item.get("module_keys") or [])
-        module_key = item.get("module_key", "")
-        if require_unused:
-            # “新增模块”允许复用已采用图片；图片只是一项属性，不再是唯一身份。
-            self._open_form(category="switch", initial_image=item["path"])
-            return
-        if len(module_keys) > 1:
-            show_floating_notice(
-                self, "图片被多个模块使用",
-                f"这张图片已被 {len(module_keys)} 个独立模块使用。请到“全部 / 切换 / 工作流全局”页按模块名称编辑。",
-            )
-            return
-        if module_key:
-            self._open_form(module_key, self.objects.get(module_key))
-            return
-        self._open_form(category="switch", initial_image=item["path"])
+    def _open_image_inventory(self):
+        ModuleImageInventoryDialog(self).show()
 
     def _remove_selected(self):
-        if self.current == "images":
-            return
         tree = self.trees[self.current]
         selection = tree.selection()
         if not selection:
@@ -4427,13 +4593,9 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._update_undo_button()
 
     def _selected_module(self) -> tuple[str, dict] | None:
-        if self.current == "images":
-            item = self._selected_inventory_item()
-            key = str(item.get("module_key", "")) if item else ""
-        else:
-            tree = self.trees.get(self.current)
-            selection = tree.selection() if tree is not None else ()
-            key = selection[0] if selection else ""
+        tree = self.trees.get(self.current)
+        selection = tree.selection() if tree is not None else ()
+        key = selection[0] if selection else ""
         obj = self.objects.get(key)
         return (key, obj) if key and obj else None
 
@@ -4633,39 +4795,6 @@ class TemplateRegionManagerDialog(ModalDialog):
         selection = tree.selection() if tree is not None else ()
         obj = self.objects.get(selection[0]) if selection else None
         editable = bool(obj) and obj.get("category") != "special" and not obj.get("pure_action")
-        if self.current == "images":
-            item = self._selected_inventory_item()
-            adopted = bool(item and item.get("module_key"))
-            selected = self._selected_module()
-            selected_obj = selected[1] if selected else None
-            self._update_selection_highlight(selected_obj)
-            editable = bool(item)
-            if getattr(self, "add_button", None) is not None:
-                self.add_button.configure(
-                    text="采用为模块", state="normal" if item and not adopted else "disabled",
-                )
-            if getattr(self, "edit_button", None) is not None:
-                self.edit_button.configure(
-                    text="编辑模块" if adopted else "采用并设置",
-                    state="normal" if item else "disabled",
-                )
-            if getattr(self, "remove_button", None) is not None:
-                self.remove_button.configure(state="disabled")
-            if getattr(self, "batch_button", None) is not None:
-                self.batch_button.configure(
-                    state="normal"
-                    if adopted and selected_obj and selected_obj.get("enabled", True)
-                    else "disabled",
-                )
-            if getattr(self, "batch_remove_button", None) is not None:
-                self.batch_remove_button.configure(state="normal" if adopted else "disabled")
-            enabled_button = getattr(self, "enabled_button", None)
-            if enabled_button is not None:
-                enabled_button.configure(
-                    text="禁用选中" if selected_obj and selected_obj.get("enabled", True) else "启用选中",
-                    state="normal" if selected_obj else "disabled",
-                )
-            return
         self._update_selection_highlight(obj)
         edit_button = getattr(self, "edit_button", None)
         if edit_button is not None:
@@ -4993,6 +5122,14 @@ class ModulePickerDialog(ModalDialog):
     ``show()`` 返回要插入的脚本动作 dict；取消返回 ``None``。
     """
 
+    @staticmethod
+    def _allowed_categories(categories: tuple[str, ...] | None = None) -> tuple[str, ...]:
+        allowed = categories or ("switch", "workflow_global", "script_global", "special")
+        return tuple(
+            category for category in allowed
+            if category in ("switch", "workflow_global", "script_global", "special")
+        ) or ("switch",)
+
     def __init__(self, parent, actions: list[dict] | None = None,
                  nested: bool = False, segment_depth: int = 0,
                  categories: tuple[str, ...] | None = None,
@@ -5000,11 +5137,7 @@ class ModulePickerDialog(ModalDialog):
                  selection_only: bool = False):
         # 附加代码段允许插入固定特殊模块（例如“重新执行工作流”）；nested
         # 仍用于限制模块代码段递归深度，不再隐藏特殊模块页签。
-        allowed = categories or ("switch", "script_global", "special")
-        self.allowed_categories = tuple(
-            category for category in allowed
-            if category in ("switch", "workflow_global", "script_global", "special")
-        ) or ("switch",)
+        self.allowed_categories = self._allowed_categories(categories)
         title = (
             "选择工作流全局模块"
             if self.allowed_categories == ("workflow_global",) else "插入模块"
@@ -5112,11 +5245,11 @@ class ModulePickerDialog(ModalDialog):
             if obj.get("recognize") == "text":
                 label += " · 识别文字"
                 if obj.get("wait_text_absent"):
-                    label += " · 等待文字消失"
+                    label += " · 持续执行至文字消失"
             elif obj.get("recognize") == "number":
                 label += " · 读取数字"
             elif obj.get("wait_text_absent"):
-                label += " · 等待模板消失"
+                label += " · 持续执行至模板消失"
             listbox.insert("end", label)
         empty_label = self.empty_labels[category]
         if keys:
@@ -8106,9 +8239,10 @@ class RowListConditionClickDialog(ModalDialog):
     NO_MATCH_ACTIONS = (("结束", "finish"), ("重试", "retry"))
 
     def __init__(self, parent, action: dict | None = None,
-                 actions: list[dict] | None = None):
+                 actions: list[dict] | None = None, on_test=None):
         super().__init__(parent, "列表逐行条件点击", 700, 640)
         action = action or {}
+        self.on_test = on_test
         self.picker = None
         self.condition_field_widgets = {}
         self.jump_target_ids = dict(image_jump_target_options(actions or []))
@@ -8119,6 +8253,7 @@ class RowListConditionClickDialog(ModalDialog):
         self.left_region = tk.StringVar(value=self._absolute_region_text(action, "left_region"))
         self.right_region = tk.StringVar(value=self._absolute_region_text(action, "right_region"))
         self.click_region = tk.StringVar(value=self._absolute_region_text(action, "click_region"))
+        self.row_height = tk.StringVar(value=str(action.get("row_height", "") or ""))
         self.button = tk.StringVar(value=str(action.get("button", "left")))
         self.click_count = tk.StringVar(value=str(action.get("click_count", 1) or 1))
         self.no_match_action = tk.StringVar(value=_option_label(
@@ -8193,6 +8328,9 @@ class RowListConditionClickDialog(ModalDialog):
         buttons.pack(fill="x", pady=(8, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(
+            buttons, text="测试识别（不点击）", command=self.test_recognition,
+        ).pack(side="left")
 
     def _absolute_region_text(self, action: dict, key: str) -> str:
         list_region = action.get("list_region", [])
@@ -8215,8 +8353,19 @@ class RowListConditionClickDialog(ModalDialog):
         self._entry_row(frame, 2, "右侧识别区域 (x,y,w,h)", self.right_region, "right", "框选首行右侧识别区域")
         self._entry_row(
             frame, 3, "点击区域 (x,y,w,h)", self.click_region, "click",
-            "框选首行点击区域，首行框选范围自动计算行距",
+            "框选首行点击区域",
         )
+        ttk.Label(frame, text="行高（像素）").grid(row=4, column=0, sticky="w", pady=3)
+        row_height_holder = ttk.Frame(frame)
+        row_height_holder.grid(row=4, column=1, sticky="ew", pady=3)
+        row_height_holder.columnconfigure(0, weight=1)
+        ttk.Entry(row_height_holder, textvariable=self.row_height).grid(
+            row=0, column=0, sticky="ew",
+        )
+        ttk.Button(
+            row_height_holder, text="框选第二行基准…",
+            command=self.start_second_row_selection,
+        ).grid(row=0, column=1, padx=(8, 0))
 
     def _build_condition_panel(self, parent, side: str, title: str):
         frame = ttk.LabelFrame(parent, text=title, padding=8)
@@ -8404,6 +8553,28 @@ class RowListConditionClickDialog(ModalDialog):
         )
         self.picker.start()
 
+    def start_second_row_selection(self):
+        self.picker = ScreenRegionPicker(
+            self, self.master, self._apply_second_row_baseline,
+            hidden_windows=self._ancestors_to_hide(),
+            tip_text="框选第二行中与首行点击区域处于相同位置的区域",
+        )
+        self.picker.start()
+
+    def _apply_second_row_baseline(self, region):
+        try:
+            first = self._parse_region(self.click_region.get(), "首行点击区域")
+            second = [int(value) for value in region]
+            first_center_y = first[1] + first[3] / 2
+            second_center_y = second[1] + second[3] / 2
+            row_height = round(second_center_y - first_center_y)
+            if row_height <= 0:
+                raise ValueError("第二行基准必须位于首行点击区域下方")
+        except (TypeError, ValueError) as exc:
+            show_floating_notice(self, "无法计算行高", str(exc))
+            return
+        self.row_height.set(str(row_height))
+
     def select_condition_module(self, side: str):
         binding = choose_module_binding(self, categories=("switch",))
         if not binding:
@@ -8466,7 +8637,7 @@ class RowListConditionClickDialog(ModalDialog):
             ),
         }
 
-    def save(self):
+    def _build_action(self):
         try:
             list_region = self._parse_region(self.list_region.get(), "列表区域")
             left_region = self._relative_first_row_region(
@@ -8478,6 +8649,9 @@ class RowListConditionClickDialog(ModalDialog):
             click_region = self._relative_first_row_region(
                 self.click_region.get(), "点击区域", list_region,
             )
+            row_height = int(self.row_height.get())
+            if not 0 < row_height <= list_region[3]:
+                raise ValueError("行高必须大于零且不能超过列表高度")
             click_count = int(self.click_count.get())
             if not 1 <= click_count <= 9999:
                 raise ValueError("连续点击次数必须是 1 到 9999 之间的整数")
@@ -8496,13 +8670,14 @@ class RowListConditionClickDialog(ModalDialog):
                 raise ValueError("请选择失败后要跳转的行对象")
         except (TypeError, ValueError) as exc:
             show_floating_notice(self, "参数错误", str(exc))
-            return
-        self.result = {
+            return None
+        return {
             "type": "row_list_condition_click",
             "list_region": list_region,
             "left_region": left_region,
             "right_region": right_region,
             "click_region": click_region,
+            "row_height": row_height,
             "left_condition": left_condition,
             "right_condition": right_condition,
             "button": self.button.get(),
@@ -8516,10 +8691,570 @@ class RowListConditionClickDialog(ModalDialog):
             "on_timeout": on_timeout,
             "timeout_jump_action_id": timeout_jump_action_id,
         }
+
+    def test_recognition(self):
+        action = self._build_action()
+        if action is not None and self.on_test is not None:
+            self.on_test(action)
+
+    def save(self):
+        action = self._build_action()
+        if action is None:
+            return
+        self.result = action
         try:
             self.master.after_idle(lambda root=self.master: activate_main_after_modal(root))
         except tk.TclError:
             pass
+        self.destroy()
+
+
+class GridLayoutEditor:
+    """Edit grid separators and lock columns by hover-preview then click."""
+
+    def __init__(self, owner, region, state, on_result, image_path=""):
+        self.owner = owner
+        self.region = tuple(region) if region else None
+        self.state = state
+        self.on_result = on_result
+        self.image_path = str(image_path or "")
+        self.window = None
+        self.canvas = None
+        self.photo = None
+        self.scale = 1.0
+        self.scale_x = 1.0
+        self.scale_y = 1.0
+        self.image_size = (0, 0)
+        self.hover_column = None
+        self.image_origin = (0, 0)
+        self.selection = None
+        self.drag_start = None
+        self.selecting_region = not bool(self.region)
+        self.toolbar = None
+        self.toolbar_drag = None
+        self.history = []
+        self.redo_history = []
+
+    def show(self):
+        try:
+            if self.image_path:
+                image = Image.open(self.image_path).convert("RGB")
+                self.state["screenshot_path"] = self.image_path
+            else:
+                screen, _origin = capture_bgr(self.region or None)
+                self.image_origin = tuple(map(int, _origin))
+                image = Image.fromarray(screen[:, :, ::-1])
+                screenshot_path = IMAGES_DIR / f"grid_{uuid.uuid4().hex}.png"
+                screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+                image.save(screenshot_path)
+                self.state["screenshot_path"] = str(screenshot_path)
+            width, height = image.size
+            screen_width = max(1, int(self.owner.winfo_screenwidth()))
+            screen_height = max(1, int(self.owner.winfo_screenheight()))
+            # The selected image is the editor background. Fill the complete
+            # fullscreen canvas instead of placing it inside a smaller panel.
+            self.scale_x = screen_width / max(1, width)
+            self.scale_y = screen_height / max(1, height)
+            self.scale = self.scale_x
+            image = image.resize((screen_width, screen_height), Image.LANCZOS)
+            self.image_size = (width, height)
+            if self.image_path and self.region:
+                left, top, region_width, region_height = map(int, self.region)
+                self.selection = (left, top, left + region_width, top + region_height)
+            elif self.region and not self.image_path:
+                self.selection = (0, 0, width, height)
+            self.window = tk.Toplevel(self.owner)
+            self.window.title("编辑网格分隔线与列")
+            self.window.transient(self.owner)
+            self.window.attributes("-fullscreen", True)
+            self.window.grab_set()
+            self.photo = ImageTk.PhotoImage(image, master=self.window)
+            self.canvas = tk.Canvas(self.window, width=screen_width, height=screen_height,
+                                    highlightthickness=0, cursor="crosshair")
+            self.canvas.pack(fill="both", expand=True)
+            self.canvas.create_image(0, 0, image=self.photo, anchor="nw", tags="base")
+            self.mode = tk.StringVar(value="select_region" if self.selection is None else "select_left")
+            self._create_floating_toolbar()
+            self.canvas.bind("<Motion>", self._on_motion)
+            self.canvas.bind("<Leave>", self._on_leave)
+            self.canvas.bind("<Button-1>", self._on_click)
+            self.canvas.bind("<B1-Motion>", self._on_drag)
+            self.canvas.bind("<ButtonRelease-1>", self._on_release)
+            self.window.bind("<F11>", self._toggle_fullscreen)
+            self.window.bind("<Control-z>", self._undo)
+            self.window.bind("<Control-y>", self._redo)
+            self.window.bind("<Control-Shift-Z>", self._redo)
+            self.window.bind("<Escape>", lambda _event: self.window.attributes("-fullscreen", False))
+            self._redraw()
+        except Exception as exc:
+            show_floating_notice(self.owner, "无法编辑网格", str(exc))
+
+    def _toggle_fullscreen(self, _event=None):
+        if self.window is not None:
+            current = bool(self.window.attributes("-fullscreen"))
+            self.window.attributes("-fullscreen", not current)
+
+    def _create_floating_toolbar(self):
+        self.toolbar = tk.Toplevel(self.window)
+        self.toolbar.overrideredirect(True)
+        self.toolbar.attributes("-topmost", True)
+        self.toolbar.attributes("-alpha", 0.86)
+        self.toolbar.configure(background="#111820")
+        body = tk.Frame(self.toolbar, background="#111820", padx=6, pady=5)
+        body.pack()
+        title = tk.Label(body, text="网格编辑", foreground="#DDE8F2", background="#111820")
+        title.pack(side="left", padx=(0, 6))
+        title.bind("<ButtonPress-1>", self._toolbar_press)
+        title.bind("<B1-Motion>", self._toolbar_move)
+        for label, value in (("框选区域", "select_region"), ("左条件列", "select_left"),
+                             ("右条件列", "select_right"), ("点击列", "select_click"),
+                             ("加横线", "horizontal"), ("加竖线", "vertical")):
+            tk.Radiobutton(
+                body, text=label, variable=self.mode, value=value,
+                indicatoron=True, selectcolor="#245A88", foreground="#E8EDF2",
+                background="#111820", activebackground="#1D3140",
+                activeforeground="#FFFFFF", relief="flat", borderwidth=0,
+                command=self._redraw,
+            ).pack(side="left", padx=2)
+        tk.Button(
+            body, text="↶", command=self._undo, foreground="#FFFFFF",
+            background="#5D4A2D", activebackground="#80643D", relief="flat",
+            borderwidth=0, padx=7, width=2,
+        ).pack(side="left", padx=(8, 0))
+        tk.Button(
+            body, text="↷", command=self._redo, foreground="#FFFFFF",
+            background="#39526A", activebackground="#4D6C89", relief="flat",
+            borderwidth=0, padx=7, width=2,
+        ).pack(side="left", padx=(4, 0))
+        tk.Button(
+            body, text="确定", command=self._accept, foreground="#FFFFFF",
+            background="#2167A3", activebackground="#3187CB", relief="flat",
+            borderwidth=0, padx=10,
+        ).pack(side="left", padx=(4, 0))
+        self.toolbar.bind("<ButtonPress-1>", self._toolbar_press)
+        self.toolbar.bind("<B1-Motion>", self._toolbar_move)
+        self.toolbar.update_idletasks()
+        x = max(8, (self.window.winfo_screenwidth() - self.toolbar.winfo_width()) // 2)
+        self.toolbar.geometry(f"+{x}+12")
+
+    def _toolbar_press(self, event):
+        self.toolbar_drag = (event.x_root, event.y_root,
+                             self.toolbar.winfo_x(), self.toolbar.winfo_y())
+
+    def _toolbar_move(self, event):
+        if self.toolbar_drag is None:
+            return
+        start_x, start_y, origin_x, origin_y = self.toolbar_drag
+        self.toolbar.geometry(
+            f"+{origin_x + event.x_root - start_x}+{origin_y + event.y_root - start_y}"
+        )
+
+    def _push_history(self):
+        self.history.append({
+            "state": copy.deepcopy(self.state),
+            "region": self.region,
+            "selection": self.selection,
+        })
+        self.redo_history.clear()
+        if len(self.history) > 50:
+            self.history.pop(0)
+
+    def _snapshot(self):
+        return {
+            "state": copy.deepcopy(self.state),
+            "region": self.region,
+            "selection": self.selection,
+        }
+
+    def _restore_snapshot(self, snapshot):
+        self.state.clear()
+        self.state.update(copy.deepcopy(snapshot["state"]))
+        self.region = snapshot["region"]
+        self.selection = snapshot["selection"]
+        self.hover_column = None
+        self._redraw()
+
+    def _undo(self, _event=None):
+        if not self.history:
+            return "break"
+        self.redo_history.append(self._snapshot())
+        previous = self.history.pop()
+        self._restore_snapshot(previous)
+        return "break"
+
+    def _redo(self, _event=None):
+        if not self.redo_history:
+            return "break"
+        self.history.append(self._snapshot())
+        next_state = self.redo_history.pop()
+        self._restore_snapshot(next_state)
+        return "break"
+
+    def _scaled(self, value):
+        return round(int(value) * self.scale_x)
+
+    def _scaled_y(self, value):
+        return round(int(value) * self.scale_y)
+
+    def _column_at(self, x):
+        if self.selection is None:
+            return None
+        start_x, _start_y, end_x, _end_y = self.selection
+        x -= start_x
+        width = end_x - start_x
+        boundaries = [0, *sorted(self.state["vertical_lines"]), width]
+        for index in range(len(boundaries) - 1):
+            if boundaries[index] <= x < boundaries[index + 1]:
+                return index
+        return None
+
+    def _on_motion(self, event):
+        if self.mode.get() == "select_region":
+            return
+        self.hover_column = self._column_at(event.x / self.scale_x)
+        self._redraw()
+
+    def _on_leave(self, _event):
+        self.hover_column = None
+        self._redraw()
+
+    def _on_click(self, event):
+        x = event.x / self.scale_x
+        y = event.y / self.scale_y
+        mode = self.mode.get()
+        if mode == "select_region":
+            self.drag_start = (x, y)
+            return
+        if self.selection is None:
+            return
+        start_x, start_y, end_x, end_y = self.selection
+        local_x, local_y = x - start_x, y - start_y
+        if mode == "horizontal":
+            _width, height = end_x - start_x, end_y - start_y
+            if 0 < local_y < height:
+                line = round(local_y)
+                if line not in self.state["horizontal_lines"]:
+                    self._push_history()
+                    self.state["horizontal_lines"] = sorted({*self.state["horizontal_lines"], line})
+        elif mode == "vertical":
+            width, _height = end_x - start_x, end_y - start_y
+            if 0 < local_x < width:
+                line = round(local_x)
+                if line not in self.state["vertical_lines"]:
+                    self._push_history()
+                    self.state["vertical_lines"] = sorted({*self.state["vertical_lines"], line})
+        else:
+            column = self._column_at(x)
+            if column is not None:
+                key = {"select_left": "left_column", "select_right": "right_column",
+                       "select_click": "click_column"}[mode]
+                if self.state.get(key) != column:
+                    self._push_history()
+                    self.state[key] = column
+        self._redraw()
+
+    def _on_drag(self, event):
+        if self.mode.get() != "select_region" or self.drag_start is None:
+            return
+        x = max(0, min(self.image_size[0], event.x / self.scale_x))
+        y = max(0, min(self.image_size[1], event.y / self.scale_y))
+        self.selection = (*self.drag_start, x, y)
+        self._redraw()
+
+    def _on_release(self, event):
+        if self.mode.get() != "select_region" or self.drag_start is None:
+            return
+        x = max(0, min(self.image_size[0], event.x / self.scale_x))
+        y = max(0, min(self.image_size[1], event.y / self.scale_y))
+        x1, y1 = self.drag_start
+        left, right = sorted((round(x1), round(x)))
+        top, bottom = sorted((round(y1), round(y)))
+        self.drag_start = None
+        if right - left > 2 and bottom - top > 2:
+            self._push_history()
+            self.selection = (left, top, right, bottom)
+            self.state["horizontal_lines"] = []
+            self.state["vertical_lines"] = []
+            self.state["left_column"] = None
+            self.state["right_column"] = None
+            self.state["click_column"] = None
+            ox, oy = self.image_origin
+            self.region = (ox + left, oy + top, right - left, bottom - top)
+        self.mode.set("select_left")
+        self._redraw()
+
+    def _redraw(self):
+        if self.canvas is None:
+            return
+        self.canvas.delete("grid")
+        width, height = self.image_size
+        if self.selection is None:
+            return
+        start_x, start_y, end_x, end_y = self.selection
+        width, height = end_x - start_x, end_y - start_y
+        columns = len(self.state["vertical_lines"]) + 1
+        locked = {
+            self.state.get("left_column"): "#3A8DDE",
+            self.state.get("right_column"): "#D98A32",
+            self.state.get("click_column"): "#50B878",
+        }
+        for column, color in locked.items():
+            if column is None:
+                continue
+            boundaries = [0, *sorted(self.state["vertical_lines"]), width]
+            self.canvas.create_rectangle(
+                self._scaled(start_x + boundaries[column]), self._scaled_y(start_y),
+                self._scaled(start_x + boundaries[column + 1]), self._scaled_y(start_y + height),
+                fill=color, stipple="gray25", outline="", tags="grid",
+            )
+        if self.hover_column is not None:
+            boundaries = [0, *sorted(self.state["vertical_lines"]), width]
+            self.canvas.create_rectangle(
+                self._scaled(start_x + boundaries[self.hover_column]), self._scaled_y(start_y),
+                self._scaled(start_x + boundaries[self.hover_column + 1]), self._scaled_y(start_y + height),
+                outline="#FFFFFF", width=3, tags="grid",
+            )
+        for line in self.state["horizontal_lines"]:
+            self.canvas.create_line(self._scaled(start_x), self._scaled_y(start_y + line),
+                                    self._scaled(start_x + width), self._scaled_y(start_y + line),
+                                    fill="#FF4F5E", width=2, tags="grid")
+        for line in self.state["vertical_lines"]:
+            self.canvas.create_line(self._scaled(start_x + line), self._scaled_y(start_y),
+                                    self._scaled(start_x + line), self._scaled_y(start_y + height),
+                                    fill="#FF4F5E", width=2, tags="grid")
+        self.canvas.create_rectangle(
+            self._scaled(start_x), self._scaled_y(start_y),
+            self._scaled(end_x), self._scaled_y(end_y),
+            outline="#59B7FF", width=2, tags="grid",
+        )
+
+    def _accept(self):
+        if self.window is not None:
+            if self.toolbar is not None:
+                self.toolbar.destroy()
+                self.toolbar = None
+            self.window.grab_release()
+            self.window.destroy()
+            self.window = None
+        if self.selection is not None and self.region is None:
+            ox, oy = self.image_origin
+            left, top, right, bottom = self.selection
+            self.region = (ox + round(left), oy + round(top), round(right - left), round(bottom - top))
+        self.state["selected_region"] = list(self.region) if self.region else []
+        self.on_result(self.state)
+
+
+class GridRowConditionClickDialog(ModalDialog):
+    """Configure a grid-split row scanner with hover-and-click column locking."""
+
+    CONDITION_TYPES = (("图片匹配", "image"), ("文字识别", "text"), ("数字比较", "number"))
+    MATCH_MODES = (("包含", "contains"), ("完全相等", "equals"))
+    RELATIONS = (("相等", "equal"), ("不相等", "not_equal"))
+
+    def __init__(self, parent, action=None, on_test=None):
+        super().__init__(parent, "网格逐行条件点击", 680, 620)
+        action = action or {}
+        self.on_test = on_test
+        region = action.get("grid_region", [])
+        self.grid_region = tk.StringVar(value=",".join(map(str, region)) if len(region) == 4 else "")
+        self.source_image = tk.StringVar(value=str(action.get("screenshot_path", "")))
+        self.condition_widgets = {}
+        for side in ("left", "right"):
+            condition = action.get(f"{side}_condition") or {}
+            setattr(self, f"{side}_type", tk.StringVar(value=_option_label(
+                str(condition.get("type", "number" if side == "left" else "image")),
+                self.CONDITION_TYPES, "数字比较",
+            )))
+            setattr(self, f"{side}_module_key", tk.StringVar(value=str(condition.get("module_key", ""))))
+            setattr(self, f"{side}_module_name", tk.StringVar(value=module_display_name(str(condition.get("module_key", "")))))
+            setattr(self, f"{side}_expected", tk.StringVar(value=str(condition.get("expected_text", ""))))
+            setattr(self, f"{side}_match", tk.StringVar(value=_option_label(str(condition.get("match_mode", "contains")), self.MATCH_MODES, "包含")))
+            setattr(self, f"{side}_separator", tk.StringVar(value=str(condition.get("separator", "/"))))
+            setattr(self, f"{side}_relation", tk.StringVar(value=_option_label(str(condition.get("relation", "not_equal")), self.RELATIONS, "不相等")))
+        self.button = tk.StringVar(value=str(action.get("button", "left")))
+        self.click_count = tk.StringVar(value=str(action.get("click_count", 1)))
+        self.state = {
+            "horizontal_lines": _parse_grid_int_list(action.get("horizontal_lines", [])),
+            "vertical_lines": _parse_grid_int_list(action.get("vertical_lines", [])),
+            "left_column": action.get("left_column"),
+            "right_column": action.get("right_column"),
+            "click_column": action.get("click_column"),
+        }
+        frame = ttk.Frame(self, padding=14)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(1, weight=1)
+        ttk.Label(frame, text="总区域 (x,y,w,h)").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=self.grid_region).grid(row=0, column=1, sticky="ew", pady=5)
+        ttk.Button(frame, text="框选总区域", command=self._pick_region).grid(row=0, column=2, padx=6)
+        ttk.Button(frame, text="选择图片", command=self._choose_image).grid(row=0, column=3, padx=6)
+        self.grid_status = tk.StringVar(value=self._state_text())
+        ttk.Label(frame, textvariable=self.grid_status, foreground=COLOR_MUTED).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=5,
+        )
+        ttk.Label(frame, textvariable=self.source_image, foreground=COLOR_MUTED).grid(
+            row=2, column=0, columnspan=4, sticky="w", pady=(2, 4),
+        )
+        ttk.Button(frame, text="编辑截图网格…", command=self._edit_grid).grid(
+            row=3, column=0, columnspan=4, sticky="w", pady=8,
+        )
+        self._build_condition_panel(frame, "left", 4, "左条件")
+        self._build_condition_panel(frame, "right", 10, "右条件")
+        ttk.Label(frame, text="点击按钮").grid(row=16, column=0, sticky="w", pady=5)
+        ttk.Combobox(frame, textvariable=self.button, values=("left", "right", "middle"),
+                     state="readonly", width=10).grid(row=16, column=1, sticky="w", pady=5)
+        ttk.Label(frame, text="连续点击次数").grid(row=17, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=self.click_count, width=10).grid(row=17, column=1, sticky="w", pady=5)
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=18, column=0, columnspan=4, sticky="ew", pady=(22, 0))
+        ttk.Button(buttons, text="测试识别（不点击）", command=self._test).pack(side="left")
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+
+    def _state_text(self):
+        return (f"横线 {len(self.state['horizontal_lines'])} 条，竖线 {len(self.state['vertical_lines'])} 条；"
+                f"左列={self.state.get('left_column')}，右列={self.state.get('right_column')}，"
+                f"点击列={self.state.get('click_column')}")
+
+    def _pick_region(self):
+        ScreenRegionPicker(self, self.master,
+                           lambda region: self.grid_region.set(",".join(map(str, region))),
+                           hidden_windows=[], tip_text="框选网格总区域").start()
+
+    def _choose_image(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="选择网格底图",
+            filetypes=(("图片文件", "*.png;*.jpg;*.jpeg;*.bmp"), ("所有文件", "*.*")),
+        )
+        if path:
+            self.source_image.set(path)
+            self.state["screenshot_path"] = path
+
+    def _edit_grid(self):
+        try:
+            raw = [int(value.strip()) for value in self.grid_region.get().split(",")] if self.grid_region.get().strip() else []
+            region = raw if len(raw) == 4 and raw[2] > 0 and raw[3] > 0 else None
+            if region is None and not self.source_image.get().strip():
+                # No prior region is needed: the editor will capture the full screen
+                # and let the user drag-select the total area inside the screenshot.
+                region = None
+            GridLayoutEditor(
+                self, region, self.state, self._apply_grid,
+                image_path=self.source_image.get().strip(),
+            ).show()
+        except (TypeError, ValueError):
+            show_floating_notice(self, "参数错误", "请先填写有效的网格总区域")
+
+    def _apply_grid(self, state):
+        self.state = state
+        selected_region = state.get("selected_region")
+        if isinstance(selected_region, list) and len(selected_region) == 4 and selected_region[2] > 0:
+            self.grid_region.set(",".join(map(str, selected_region)))
+        self.grid_status.set(self._state_text())
+
+    def _build_condition_panel(self, parent, side, row, title):
+        box = ttk.LabelFrame(parent, text=title, padding=8)
+        box.grid(row=row, column=0, columnspan=3, sticky="ew", pady=6)
+        box.columnconfigure(1, weight=1)
+        type_var = getattr(self, f"{side}_type")
+        ttk.Label(box, text="类型").grid(row=0, column=0, sticky="w", pady=3)
+        combo = ttk.Combobox(box, textvariable=type_var,
+                             values=tuple(label for label, _value in self.CONDITION_TYPES),
+                             state="readonly", width=12)
+        combo.grid(row=0, column=1, sticky="w", pady=3)
+        fields = {}
+        module_row = ttk.Frame(box)
+        ttk.Label(box, text="图片模块").grid(row=1, column=0, sticky="w", pady=3)
+        module_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
+        module_row.columnconfigure(0, weight=1)
+        ttk.Entry(module_row, textvariable=getattr(self, f"{side}_module_name"), state="readonly").grid(row=0, column=0, sticky="ew")
+        ttk.Button(module_row, text="选择模块…", command=lambda: self._select_module(side)).grid(row=0, column=1, padx=6)
+        fields["module"] = (box.grid_slaves(row=1),)
+        ttk.Label(box, text="期望文字").grid(row=2, column=0, sticky="w", pady=3)
+        expected = ttk.Entry(box, textvariable=getattr(self, f"{side}_expected"))
+        expected.grid(row=2, column=1, columnspan=2, sticky="ew", pady=3)
+        fields["text"] = (box.grid_slaves(row=2),)
+        ttk.Label(box, text="匹配方式").grid(row=3, column=0, sticky="w", pady=3)
+        match = ttk.Combobox(box, textvariable=getattr(self, f"{side}_match"), values=tuple(label for label, _value in self.MATCH_MODES), state="readonly", width=12)
+        match.grid(row=3, column=1, sticky="w", pady=3)
+        fields["match"] = (box.grid_slaves(row=3),)
+        ttk.Label(box, text="数字分隔符").grid(row=4, column=0, sticky="w", pady=3)
+        separator = ttk.Entry(box, textvariable=getattr(self, f"{side}_separator"), width=10)
+        separator.grid(row=4, column=1, sticky="w", pady=3)
+        fields["separator"] = (box.grid_slaves(row=4),)
+        ttk.Label(box, text="数字关系").grid(row=5, column=0, sticky="w", pady=3)
+        relation = ttk.Combobox(box, textvariable=getattr(self, f"{side}_relation"), values=tuple(label for label, _value in self.RELATIONS), state="readonly", width=12)
+        relation.grid(row=5, column=1, sticky="w", pady=3)
+        fields["relation"] = (box.grid_slaves(row=5),)
+        self.condition_widgets[side] = fields
+        combo.bind("<<ComboboxSelected>>", lambda _event, current=side: self._refresh_condition(current))
+        self._refresh_condition(side)
+
+    def _refresh_condition(self, side):
+        kind = _option_value(getattr(self, f"{side}_type").get(), self.CONDITION_TYPES, "number")
+        visible = {"module": kind == "image", "text": kind == "text", "match": kind == "text", "separator": kind == "number", "relation": kind == "number"}
+        for key, groups in self.condition_widgets[side].items():
+            for group in groups:
+                for widget in group:
+                    (widget.grid if visible[key] else widget.grid_remove)()
+
+    def _select_module(self, side):
+        binding = choose_module_binding(self, categories=("switch",))
+        if binding:
+            key = str(binding["module_key"])
+            getattr(self, f"{side}_module_key").set(key)
+            getattr(self, f"{side}_module_name").set(module_display_name(key, registered_module_object(key)))
+
+    def _condition_value(self, side):
+        kind = _option_value(getattr(self, f"{side}_type").get(), self.CONDITION_TYPES, "number")
+        if kind == "image":
+            key = getattr(self, f"{side}_module_key").get().strip()
+            if not key:
+                raise ValueError(f"请选择{side}侧图片模块")
+            return {"type": "image", "module_key": key}
+        if kind == "text":
+            return {"type": "text", "expected_text": getattr(self, f"{side}_expected").get(),
+                    "match_mode": _option_value(getattr(self, f"{side}_match").get(), self.MATCH_MODES, "contains")}
+        return {"type": "number", "separator": getattr(self, f"{side}_separator").get().strip() or "/",
+                "relation": _option_value(getattr(self, f"{side}_relation").get(), self.RELATIONS, "not_equal")}
+
+    def _build_action(self):
+        try:
+            region = _parse_grid_int_list(self.grid_region.get())
+            if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
+                raise ValueError("请先在图片上框选总区域")
+            if any(value is None for value in (self.state.get("left_column"), self.state.get("right_column"), self.state.get("click_column"))):
+                raise ValueError("请在截图网格中锁定左条件列、右条件列和点击列")
+            count = int(self.click_count.get())
+            if not 1 <= count <= 9999:
+                raise ValueError("连续点击次数必须是 1 到 9999")
+            left_condition = self._condition_value("left")
+            right_condition = self._condition_value("right")
+        except (TypeError, ValueError) as exc:
+            show_floating_notice(self, "参数错误", str(exc))
+            return None
+        return {
+            "type": "grid_row_condition_click", "grid_region": region,
+            "screenshot_path": self.state.get("screenshot_path", ""),
+            "horizontal_lines": list(self.state["horizontal_lines"]),
+            "vertical_lines": list(self.state["vertical_lines"]),
+            "left_column": int(self.state["left_column"]),
+            "right_column": int(self.state["right_column"]),
+            "click_column": int(self.state["click_column"]),
+            "left_condition": left_condition,
+            "right_condition": right_condition,
+            "button": self.button.get(), "click_count": count,
+        }
+
+    def _test(self):
+        action = self._build_action()
+        if action and self.on_test:
+            self.on_test(action)
+
+    def save(self):
+        action = self._build_action()
+        if action is None:
+            return
+        self.result = action
         self.destroy()
 
 
@@ -8553,7 +9288,7 @@ class JsonActionDialog(ModalDialog):
 
 
 def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
-                segment_depth: int = 0) -> dict | None:
+                segment_depth: int = 0, on_row_list_test=None) -> dict | None:
     def preserve_identity(updated: dict | None) -> dict | None:
         if updated is not None and action.get("action_id"):
             updated["action_id"] = action["action_id"]
@@ -8566,11 +9301,13 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
                 parent, action, default_row=_app_workflow_default_row(parent),
             ).show(),
         )
-    if kind in ("end_current_script", "jump_current_script_last"):
+    if kind in ("end_current_script", "jump_current_script_last", "block"):
         message = (
             f"{END_CURRENT_SCRIPT_LABEL}，无需配置。"
             if kind == "end_current_script" else
             "执行到这里时会离开模块代码段，并从当前脚本最后一行继续，无需配置。"
+            if kind == "jump_current_script_last" else
+            "执行到这里时会一直等待，只有其他跳转才能离开，无需配置。"
         )
         show_floating_notice(parent, "特殊模块", message)
         return None
@@ -8587,7 +9324,13 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
             "process_path": selected.process_path,
         }
         return preserve_identity(updated)
-    if kind in ("image_match", "global_detect") and action.get("module_ref"):
+    if kind == "global_detect" and action.get("module_ref"):
+        return preserve_identity(
+            GlobalDetectDialog(
+                parent, action, jump=True, actions=all_actions,
+            ).show(),
+        )
+    if kind == "image_match" and action.get("module_ref"):
         return preserve_identity(
             ModuleReferenceDelayDialog(parent, action, actions=all_actions).show(),
         )
@@ -8616,8 +9359,15 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
             MultiConditionClickDialog(parent, action).show(),
         )
     if kind == "row_list_condition_click":
+        dialog_kwargs = {"on_test": on_row_list_test} if on_row_list_test is not None else {}
         return preserve_identity(
-            RowListConditionClickDialog(parent, action, actions=all_actions).show(),
+            RowListConditionClickDialog(
+                parent, action, actions=all_actions, **dialog_kwargs,
+            ).show(),
+        )
+    if kind == "grid_row_condition_click":
+        return preserve_identity(
+            GridRowConditionClickDialog(parent, action, on_test=on_row_list_test).show(),
         )
     if kind == "global_detect":
         return preserve_identity(

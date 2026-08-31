@@ -19,6 +19,7 @@ SPECIAL_ACTION_LABELS = {
     "restart_workflow": "重新执行工作流",
     "end_current_script": END_CURRENT_SCRIPT_LABEL,
     "jump_current_script_last": "跳转到当前脚本最后一行",
+    "block": "阻塞等待跳转",
 }
 
 

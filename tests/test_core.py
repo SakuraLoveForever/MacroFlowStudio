@@ -24,6 +24,8 @@ from unittest.mock import Mock, call, patch
 
 import cv2
 import numpy as np
+import macroflow.core.image_match as image_match_module
+import macroflow.input.input_guard as input_guard_module
 import macroflow.ui.dialogs as dialog_module
 
 from macroflow.core.alerts import play_alert
@@ -61,7 +63,7 @@ from macroflow.ui.dialogs import (
     segment_action_is_blocking, segment_row_label,
     selectable_target_windows,
 )
-from macroflow.core.image_match import detect_row_height, find_template, find_template_in_image
+from macroflow.core.image_match import find_template, find_template_in_image
 from macroflow.core.ocr import (
     extract_ocr_integer, find_expected_match, format_ocr_observation, matches_expected,
     parse_ocr_number_pair, recognize_image_with_boxes,
@@ -69,7 +71,8 @@ from macroflow.core.ocr import (
 from macroflow.input.input_guard import (
     FocusInputGuard, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED,
     LLMHF_INJECTED, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F12, VK_F9,
-    WM_KEYDOWN, WM_SYSKEYDOWN, should_block_keyboard, should_block_mouse,
+    MSLLHOOKSTRUCT, MouseCapturer, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_SYSKEYDOWN, should_block_keyboard, should_block_mouse,
 )
 from macroflow.core.models import (
     ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
@@ -940,6 +943,51 @@ class StartupVisibilityTests(unittest.TestCase):
 
 
 class ScriptEditingTests(unittest.TestCase):
+    def test_script_editor_add_actions_use_one_module_entry(self):
+        labels = [label for label, _command, _style in MacroFlowApp._script_action_button_specs()]
+
+        self.assertIn("▤ 模块", labels)
+        self.assertNotIn("◈ 脚本全局", labels)
+        self.assertNotIn("▤ 识别模块", labels)
+
+    def test_script_editor_exposes_block_action(self):
+        specs = MacroFlowApp._script_action_button_specs()
+
+        self.assertIn(("⏸ 阻塞", "add_block", "AccentScriptTool.TButton"), specs)
+
+    def test_add_block_inserts_special_action(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._insert_action = Mock()
+
+        app.add_block()
+
+        app._insert_action.assert_called_once_with({"type": "block", "delay_ms": 0})
+
+    def test_run_script_worker_logs_and_passes_script_name(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._enter_focus_mode = Mock()
+        app._leave_focus_mode = Mock()
+        app._ui = Mock()
+        app._sound = Mock()
+        app._finish_execution_visibility = Mock()
+        app.global_guards = {}
+        app.guards_lock = threading.Lock()
+        app.ocr_engine_ready = True
+        app.player = Mock()
+        app.player.stop_event = threading.Event()
+
+        app._run_script_worker(
+            [{"type": "delay", "delay_ms": 10}], 1, None, None, False, None, False, 0,
+            script_name="经典团战",
+        )
+
+        texts = [
+            str(call.args[1]) if len(call.args) > 1 else ""
+            for call in app._ui.call_args_list
+        ]
+        self.assertIn("开始执行脚本：经典团战，重复 1 次。", texts)
+        self.assertEqual(app.player.play.call_args.kwargs["script_name"], "经典团战")
+
     def test_key_action_search_matches_key_and_state(self):
         self.assertTrue(key_action_matches(
             {"type": "key", "name": "A", "vk": 65, "down": True}, "a", "down",
@@ -955,6 +1003,17 @@ class ScriptEditingTests(unittest.TestCase):
         ))
         self.assertFalse(key_action_matches(
             {"type": "key_press", "name": "ENTER", "vk": 13}, "enter", "down",
+        ))
+
+    def test_key_action_search_matches_mouse_button_and_state(self):
+        self.assertTrue(key_action_matches(
+            {"type": "click", "button": "left"}, "左键", "Press",
+        ))
+        self.assertTrue(key_action_matches(
+            {"type": "mouse_button", "button": "right", "down": False}, "right", "抬起",
+        ))
+        self.assertFalse(key_action_matches(
+            {"type": "mouse_button", "button": "right", "down": True}, "右键", "抬起",
         ))
 
     def test_set_matching_key_action_delays_changes_only_search_matches(self):
@@ -1090,6 +1149,7 @@ class ScriptEditingTests(unittest.TestCase):
     def test_row_list_condition_click_summary_describes_scan_and_conditions(self):
         kind, detail, _delay = action_summary({
             "type": "row_list_condition_click",
+            "row_height": 27,
             "left_condition": {
                 "type": "number", "separator": "/", "relation": "not_equal",
             },
@@ -1101,6 +1161,7 @@ class ScriptEditingTests(unittest.TestCase):
 
         self.assertEqual(kind, "▤  列表逐行点击")
         self.assertIn("从上到下", detail)
+        self.assertIn("行高 27", detail)
         self.assertIn("左:数字/数字（不相等）", detail)
         self.assertIn("右:文字:刚开始（完全相等）", detail)
         self.assertIn("首个匹配即点击", detail)
@@ -1147,7 +1208,7 @@ class ScriptEditingTests(unittest.TestCase):
             dialog_class.return_value.show.return_value = result
             app.add_row_list_condition_click()
 
-        dialog_class.assert_called_once_with(app.root)
+        dialog_class.assert_called_once_with(app.root, actions=app.script.actions)
         self.assertEqual(app.script.actions, [{
             "type": "row_list_condition_click",
             "left_condition": {"type": "image"},
@@ -1169,7 +1230,7 @@ class ScriptEditingTests(unittest.TestCase):
             }
             updated = edit_action(None, original)
 
-        dialog_class.assert_called_once_with(None, original)
+        dialog_class.assert_called_once_with(None, original, actions=None)
         self.assertEqual(updated["action_id"], "stable-row-list")
         self.assertEqual(updated["left_condition"]["type"], "text")
 
@@ -1674,10 +1735,64 @@ class ScriptEditingTests(unittest.TestCase):
         with patch("macroflow.ui.app.ModulePickerDialog") as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_module()
-        picker_class.assert_called_once_with(app.root, actions=app.script.actions)
+        picker_class.assert_called_once_with(
+            app.root, actions=app.script.actions, multi_select=True,
+        )
         app._insert_action.assert_called_once_with(action)
         app._default_global_jump.assert_not_called()
         app._notify.assert_not_called()
+
+    def test_add_module_inserts_multiple_selected_modules_in_order(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script = MacroScript(actions=[])
+        app.root = Mock()
+        app._insert_action = Mock()
+        app._notify = Mock()
+        first = {
+            "type": "image_match", "template": "images/first.png",
+            "module_ref": True, "module_category": "switch",
+        }
+        second = {
+            "type": "image_match", "template": "images/second.png",
+            "module_ref": True, "module_category": "switch",
+        }
+        with patch("macroflow.ui.app.ModulePickerDialog") as picker_class:
+            picker_class.return_value.show.return_value = [first, second]
+            app.add_module()
+
+        picker_class.assert_called_once_with(
+            app.root, actions=app.script.actions, multi_select=True,
+        )
+        self.assertEqual(
+            app._insert_action.call_args_list,
+            [call(first), call(second)],
+        )
+        app._notify.assert_not_called()
+
+    def test_add_module_global_ref_configures_jump_per_inserted_action(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script = MacroScript(actions=[{"type": "delay", "ms": 1, "action_id": "target"}])
+        app.root = Mock()
+        app._insert_action = Mock(return_value=0)
+        app._default_global_jump = Mock()
+        app._notify = Mock()
+        raw_action = {
+            "type": "global_detect", "template": "images/g.png",
+            "module_ref": True, "module_category": "script_global",
+            "region_mode": "template", "region": [], "delay_ms": 0,
+        }
+        configured = dict(raw_action, jump_enabled=True, jump_row=2, jump_action_id="target")
+        with patch("macroflow.ui.app.ModulePickerDialog") as picker_class, \
+             patch("macroflow.ui.app.GlobalDetectDialog") as dialog_class:
+            picker_class.return_value.show.return_value = raw_action
+            dialog_class.return_value.show.return_value = configured
+            app.add_module()
+
+        dialog_class.assert_called_once_with(
+            app.root, raw_action, jump=True, actions=app.script.actions,
+        )
+        app._insert_action.assert_called_once_with(configured)
+        app._default_global_jump.assert_not_called()
 
     def test_add_number_module_configures_comparison_before_inserting(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1704,8 +1819,8 @@ class ScriptEditingTests(unittest.TestCase):
         edit.assert_called_once_with(app.root, raw_action, all_actions=app.script.actions)
         app._insert_action.assert_called_once_with(configured)
 
-    def test_add_module_global_middle_insert_sets_default_jump(self):
-        # 全局模块引用中间插入：默认跳到下一行（jump_row=insert_at+2，1 基行号）。
+    def test_add_module_special_insert_does_not_add_global_jump(self):
+        # 特殊模块是固定动作，不应被当作全局识别模块自动补跳转。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
         app.script = MacroScript(actions=[
@@ -1726,12 +1841,12 @@ class ScriptEditingTests(unittest.TestCase):
             picker_class.return_value.show.return_value = action
             app.add_module()
         inserted = app.script.actions[1]
-        self.assertEqual(inserted["jump_row"], 3)
-        self.assertEqual(inserted["jump_action_id"], "a2")
+        self.assertNotIn("jump_row", inserted)
+        self.assertNotIn("jump_action_id", inserted)
         self.assertEqual(inserted["template"], "images/g.png")
 
-    def test_add_module_global_end_insert_uses_out_of_range_jump(self):
-        # 全局模块引用末尾插入：跳转行号用越界值 len+1，触发后段/动作播完脚本结束。
+    def test_add_module_special_end_insert_does_not_add_global_jump(self):
+        # 特殊模块在脚本末尾插入也不应生成识别跳转字段。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
         app.script = MacroScript(actions=[
@@ -1751,7 +1866,7 @@ class ScriptEditingTests(unittest.TestCase):
             picker_class.return_value.show.return_value = action
             app.add_module()
         inserted = app.script.actions[2]
-        self.assertEqual(inserted["jump_row"], 4)
+        self.assertNotIn("jump_row", inserted)
         self.assertNotIn("jump_action_id", inserted)
 
     def test_add_module_refuses_global_module_in_global_script(self):
@@ -2733,6 +2848,32 @@ class WorkflowDisplayTests(unittest.TestCase):
 
 
 class WorkflowDeleteUndoTests(unittest.TestCase):
+    def test_workflow_player_receives_current_step_script_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script_path = Path(folder) / "team.json"
+            save_script(MacroScript(name="经典团战", actions=[{"type": "delay", "ms": 0}]), script_path)
+
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.workflow_stop = threading.Event()
+            app.player = Mock()
+            app.player.stop_event = threading.Event()
+            app._enter_focus_mode = Mock()
+            app._set_status = Mock()
+            app._set_execution_progress = Mock()
+            app._append_mini_step = Mock()
+            app._log = Mock()
+            app._sound = Mock()
+            app._handle_worker_error = Mock()
+            app._finish_execution_visibility = Mock()
+            app._ui = lambda callback, *args: callback(*args)
+
+            app._run_workflow_worker(
+                [{"script": str(script_path), "repeats": 1, "before_ms": 0}],
+                None, None, False,
+            )
+
+            self.assertEqual(app.player.play.call_args.kwargs["script_name"], "经典团战")
+
     def _app(self) -> MacroFlowApp:
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.workflow_tree = Mock()
@@ -3978,6 +4119,33 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(hit["kind"], "success")
         self.assertEqual(hit["actions"], segment)
 
+    def test_script_global_guard_hit_carries_owning_script_actions(self):
+        app = self._make_guard_app()
+        app._activate_global_detect_from_config = MacroFlowApp._activate_global_detect_from_config.__get__(
+            app, MacroFlowApp,
+        )
+        actions = [
+            {
+                "type": "global_detect",
+                "template": "images/g.png",
+                "jump_enabled": True,
+            },
+            {"type": "notice"},
+        ]
+        with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")):
+            keys = app._enter_script_global_scope(actions)
+        guard = app.global_guards[keys[0]]
+        guard["jump_action_id"] = NEXT_WORKFLOW_STEP_TARGET_ID
+        guard["jump_row"] = 3
+        app._bound_hwnd = Mock(return_value=None)
+
+        hit = app._build_guard_hit(guard)
+
+        self.assertEqual(
+            set(hit["scope_action_ids"]),
+            {action["action_id"] for action in actions},
+        )
+
     def test_guard_template_scale_uses_player_screens(self):
         # 守卫图片匹配必须带上播放器当前脚本的录制屏 → 当前屏缩放系数，
         # 否则截图尺寸不同时全局检测的匹配度同样下降。
@@ -4338,7 +4506,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["match_data"]["center_x"], 220)
         self.assertEqual(guard["match_data"]["center_y"], 95)
 
-    def test_guard_text_absent_waits_for_present_then_disappeared_edge(self):
+    def test_guard_text_absent_repeats_while_target_present_and_rearms_after_disappear(self):
         app = self._make_guard_app()
         guard = self._make_guard(
             "module-x.png", recognize="text", expected_text="加载中",
@@ -4354,28 +4522,40 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
              patch("macroflow.ui.app.show_overlay"):
             self.assertIsNone(app._evaluate_global_guards())
         self.assertFalse(guard["target_absent_armed"])
-        # 出现：武装等待消失。
+        # 出现：第一次触发成功动作，并进入持续重试状态。
         guard["last_check_time"] = 0.0
+        found = {
+            "text": "加载中", "x": 180, "y": 80, "width": 80, "height": 30,
+            "center_x": 220, "center_y": 95,
+        }
         with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
              patch("macroflow.ui.app.recognize_image_with_boxes", return_value=(
                  "加载中",
-                 [{"text": "加载中", "x": 180, "y": 80, "width": 80, "height": 30,
-                   "center_x": 220, "center_y": 95}],
+                 [found],
              )), \
              patch("macroflow.ui.app.show_overlay"):
-            self.assertIsNone(app._evaluate_global_guards())
+            first_hit = app._evaluate_global_guards()
+        self.assertIsNotNone(first_hit)
         self.assertTrue(guard["target_absent_armed"])
-        # 已消失：满足"先出现后消失"条件，触发。
+        # 目标仍在：下一轮继续触发，不能被 awaiting_clear 吞掉。
+        guard["last_check_time"] = 0.0
+        with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
+             patch("macroflow.ui.app.recognize_image_with_boxes",
+                   return_value=("加载中", [found])), \
+             patch("macroflow.ui.app.show_overlay"):
+            second_hit = app._evaluate_global_guards()
+        self.assertIsNotNone(second_hit)
+        self.assertEqual(second_hit["kind"], "success")
+        # 目标消失：结束本轮重试，之后再次出现可以重新触发。
         guard["last_check_time"] = 0.0
         with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
              patch("macroflow.ui.app.recognize_image_with_boxes",
                    return_value=("已完成", [{"text": "已完成"}])), \
              patch("macroflow.ui.app.show_overlay"):
-            hit = app._evaluate_global_guards()
-        self.assertIsNotNone(hit)
-        self.assertEqual(hit["kind"], "success")
+            self.assertIsNone(app._evaluate_global_guards())
+        self.assertFalse(guard["target_absent_armed"])
 
-    def test_guard_template_absent_waits_for_present_then_disappeared_edge(self):
+    def test_guard_template_absent_repeats_while_target_present_and_rearms_after_disappear(self):
         with tempfile.TemporaryDirectory() as folder:
             template = Path(folder) / "target.png"
             template.write_bytes(b"x")
@@ -4393,16 +4573,54 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
                  patch("macroflow.ui.app.find_template_in_image", return_value=found) as find, \
                  patch("macroflow.ui.app.show_overlay"):
-                self.assertIsNone(app._evaluate_global_guards())
+                first_hit = app._evaluate_global_guards()
+            self.assertIsNotNone(first_hit)
             self.assertTrue(guard["target_absent_armed"])
             self.assertEqual(find.call_count, 1)
+            # 目标仍在：下一轮继续触发。
+            guard["last_check_time"] = 0.0
+            with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
+                 patch("macroflow.ui.app.find_template_in_image", return_value=found), \
+                 patch("macroflow.ui.app.show_overlay"):
+                second_hit = app._evaluate_global_guards()
+            self.assertIsNotNone(second_hit)
+            self.assertEqual(guard["match_data"]["center_x"], 220)
+            # 目标消失：结束本轮重试。
             guard["last_check_time"] = 0.0
             with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (0, 0))), \
                  patch("macroflow.ui.app.find_template_in_image", return_value=None), \
                  patch("macroflow.ui.app.show_overlay"):
-                hit = app._evaluate_global_guards()
-            self.assertIsNotNone(hit)
-            self.assertEqual(guard["match_data"]["center_x"], 220)
+                self.assertIsNone(app._evaluate_global_guards())
+            self.assertFalse(guard["target_absent_armed"])
+
+    def test_global_guard_hits_share_one_screenshot_and_are_queued_in_order(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first_template = Path(folder) / "first.png"
+            second_template = Path(folder) / "second.png"
+            first_template.write_bytes(b"1")
+            second_template.write_bytes(b"2")
+            app = self._make_guard_app()
+            first = self._make_guard(
+                first_template, key="first", module_display_name="first", hold_ms=0,
+            )
+            second = self._make_guard(
+                second_template, key="second", module_display_name="second", hold_ms=0,
+            )
+            app.global_guards[first["key"]] = first
+            app.global_guards[second["key"]] = second
+            match = {
+                "x": 10, "y": 20, "width": 30, "height": 40,
+                "center_x": 25, "center_y": 40, "score": 0.9,
+            }
+            screen = np.zeros((60, 80, 3), dtype=np.uint8)
+            with patch("macroflow.ui.app.capture_bgr", return_value=(screen, (-20, 0))) as capture, \
+                 patch("macroflow.ui.app.find_template_in_image", return_value=match), \
+                 patch("macroflow.ui.app.show_overlay"):
+                first_hit = app._evaluate_global_guards()
+                second_hit = app._evaluate_global_guards()
+            self.assertIn("模块[first]", first_hit["log_subject"])
+            self.assertIn("模块[second]", second_hit["log_subject"])
+            self.assertEqual(capture.call_count, 1)
 
     def test_guard_text_module_not_found_triggers_timeout_branch(self):
         app = self._make_guard_app()
@@ -5981,11 +6199,11 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.region_mode = Mock()
         dialog.region_mode.get.return_value = "screen"
         dialog.jump_target_ids = {
-            "脚本结束（工作流中执行下一项）": NEXT_WORKFLOW_STEP_TARGET_ID,
+            "脚本结束（结束当前执行）": NEXT_WORKFLOW_STEP_TARGET_ID,
         }
-        dialog.jump_row_numbers = {"脚本结束（工作流中执行下一项）": 4}
+        dialog.jump_row_numbers = {"脚本结束（结束当前执行）": 4}
         dialog.jump_row = Mock()
-        dialog.jump_row.get.return_value = "脚本结束（工作流中执行下一项）"
+        dialog.jump_row.get.return_value = "脚本结束（结束当前执行）"
         dialog.destroy = Mock()
 
         with patch("macroflow.ui.dialogs.registered_module_object", return_value={
@@ -6185,6 +6403,48 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
 
 class RecordingDisplayTests(unittest.TestCase):
+    def test_row_list_diagnostic_completion_restores_windows_before_showing_results(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        hidden_states = [(Mock(), "normal")]
+        app._restore_macroflow_windows_after_diagnostic = Mock()
+
+        with patch("macroflow.ui.app.RowListDiagnosticResultDialog") as result_dialog:
+            app._finish_row_list_diagnostic(
+                ["第1行结果：左侧命中；右侧未命中"],
+                None,
+                hidden_states,
+            )
+
+        app._restore_macroflow_windows_after_diagnostic.assert_called_once_with(hidden_states)
+        result_dialog.assert_called_once_with(
+            app.root,
+            ["第1行结果：左侧命中；右侧未命中"],
+            None,
+        )
+        result_dialog.return_value.show.assert_called_once()
+
+    def test_test_row_list_condition_click_collects_diagnostic_results_for_window(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app._bound_hwnd = Mock(return_value=123)
+        app._hide_macroflow_windows_for_diagnostic = Mock(return_value=[])
+        app._log = Mock()
+        app._ui = lambda callback, *args: callback(*args)
+        app._finish_row_list_diagnostic = Mock()
+        app.player = Mock()
+        action = {"type": "row_list_condition_click"}
+
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app.test_row_list_condition_click(action)
+            target = thread_class.call_args.kwargs["target"]
+            target()
+
+        app.player._diagnose_row_list_condition_click.assert_called_once()
+        diagnose_kwargs = app.player._diagnose_row_list_condition_click.call_args.kwargs
+        self.assertIn("result_sink", diagnose_kwargs)
+        app._finish_row_list_diagnostic.assert_called_once()
+
     def test_floating_notice_positions_cover_all_six_choices(self):
         self.assertEqual(floating_notice_xy("左上", 1920, 1080), (18, 18))
         self.assertEqual(floating_notice_xy("顶部居中", 1920, 1080), (780, 18))
@@ -6250,6 +6510,45 @@ class RecordingDisplayTests(unittest.TestCase):
         })
         self.assertIn("浮动提醒", notice[0])
         self.assertIn("3000 ms", notice[1])
+
+    def test_text_summary_keeps_full_parameter_content(self):
+        long_text = "这是必须完整显示的文本参数：" + "竞技结算确认" * 12
+
+        _kind, detail, _delay = action_summary({
+            "type": "text", "text": long_text,
+        })
+
+        self.assertIn(long_text, detail)
+
+    def test_notice_summary_keeps_full_parameter_content(self):
+        long_text = "这是必须完整显示的提醒参数：" + "请确认退出" * 12
+
+        _kind, detail, _delay = action_summary({
+            "type": "notice", "text": long_text,
+        })
+
+        self.assertIn(long_text, detail)
+
+    def test_block_summary_explains_that_only_a_jump_can_release_it(self):
+        kind, detail, _delay = action_summary({"type": "block"})
+
+        self.assertIn("阻塞", kind)
+        self.assertEqual(detail, "等待其他跳转离开")
+
+    def test_multi_condition_summary_keeps_full_ocr_parameter(self):
+        long_text = "这是必须完整显示的 OCR 参数：" + "竞技结算确认" * 8
+
+        _kind, detail, _delay = action_summary({
+            "type": "multi_condition_click",
+            "conditions": [{
+                "enabled": True,
+                "type": "ocr",
+                "expected_text": long_text,
+                "region": [1, 2, 30, 40],
+            }],
+        })
+
+        self.assertIn(long_text, detail)
 
     def test_coordinate_scale_status_is_useful(self):
         self.assertEqual(
@@ -7161,7 +7460,7 @@ class ImageTests(unittest.TestCase):
         actions = [{"type": "comment", "text": "目标", ACTION_ID_KEY: "target"}]
         options = image_found_jump_target_options(actions)
         self.assertEqual(options[0], (
-            "直接结束当前脚本，执行工作流下一项",
+            "结束当前脚本执行",
             NEXT_WORKFLOW_STEP_TARGET_ID,
         ))
         self.assertEqual(options[1][1], "target")
@@ -7532,15 +7831,41 @@ class ImageTests(unittest.TestCase):
 
 class OcrTests(unittest.TestCase):
 
-    def test_detect_row_height_finds_repeated_horizontal_boundaries(self):
-        screen = np.full((140, 80, 3), 45, dtype=np.uint8)
-        for y in (19, 46, 73, 100, 127):
-            screen[y:y + 1, :] = 180
+    def test_grid_lines_build_complete_row_and_column_cells(self):
+        build_grid = getattr(image_match_module, "build_grid_cells", None)
+        self.assertIsNotNone(build_grid, "缺少网格分隔线单元格计算函数")
+        self.assertEqual(
+            build_grid((100, 200, 300, 200), [50, 120], [80, 210]),
+            [
+                [
+                    (100, 200, 80, 50),
+                    (180, 200, 130, 50),
+                    (310, 200, 90, 50),
+                ],
+                [
+                    (100, 250, 80, 70),
+                    (180, 250, 130, 70),
+                    (310, 250, 90, 70),
+                ],
+                [
+                    (100, 320, 80, 80),
+                    (180, 320, 130, 80),
+                    (310, 320, 90, 80),
+                ],
+            ],
+        )
 
-        with patch(
-            "macroflow.core.image_match.capture_bgr", return_value=(screen, (0, 0)),
-        ):
-            self.assertEqual(detect_row_height((0, 0, 80, 140), 18), 27)
+    def test_row_offsets_are_locally_corrected_without_accumulating_drift(self):
+        stabilize = getattr(image_match_module, "stabilize_row_offsets", None)
+        self.assertIsNotNone(stabilize, "缺少逐行局部分隔线校正算法")
+        screen = np.full((100, 80, 3), 35, dtype=np.uint8)
+        for y in (25, 50, 75):
+            screen[y:y + 1, :] = 190
+
+        self.assertEqual(
+            stabilize(screen, [0, 26, 52], first_row_bottom=26, tolerance=3),
+            [0, 25, 50],
+        )
 
     def test_parse_ocr_number_pair_accepts_full_width_separator_and_spaces(self):
         self.assertEqual(parse_ocr_number_pair("当前 １２ ／ １２", "/"), (12, 12))
@@ -7735,6 +8060,7 @@ class OcrTests(unittest.TestCase):
         form.left_region = Mock(); form.left_region.get.return_value = "100,200,70,26"
         form.right_region = Mock(); form.right_region.get.return_value = "180,200,80,26"
         form.click_region = Mock(); form.click_region.get.return_value = "190,200,60,26"
+        form.row_height = Mock(); form.row_height.get.return_value = "26"
         form.left_condition_type = Mock(); form.left_condition_type.get.return_value = "number"
         form.right_condition_type = Mock(); form.right_condition_type.get.return_value = "text"
         form.left_module_key = Mock(); form.left_module_key.get.return_value = ""
@@ -7772,6 +8098,7 @@ class OcrTests(unittest.TestCase):
             "left_region": [0, 0, 70, 26],
             "right_region": [80, 0, 80, 26],
             "click_region": [90, 0, 60, 26],
+            "row_height": 26,
             "left_condition": {
                 "type": "number", "separator": "/", "relation": "not_equal",
             },
@@ -7804,18 +8131,19 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.result["on_timeout"], "end_current_script")
         self.assertEqual(form.result["timeout_jump_action_id"], "")
 
-    def test_row_list_dialog_auto_derives_row_height_and_saves_click_count(self):
+    def test_row_list_dialog_saves_explicit_row_height_and_click_count(self):
         form = self._row_list_dialog_form()
         form.left_region.get.return_value = "100,205,70,20"
         form.right_region.get.return_value = "180,205,80,20"
         form.click_region.get.return_value = "190,200,60,26"
+        form.row_height.get.return_value = "27"
         form.click_count.get.return_value = "3"
 
         with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
             form.save()
 
         notice.assert_not_called()
-        self.assertNotIn("row_height", form.result)
+        self.assertEqual(form.result["row_height"], 27)
         self.assertEqual(form.result["click_count"], 3)
         self.assertEqual(form.result["left_region"], [0, 5, 70, 20])
         self.assertEqual(form.result["right_region"], [80, 5, 80, 20])
@@ -8140,6 +8468,192 @@ class AlertTests(unittest.TestCase):
 
 
 class PlayerTests(unittest.TestCase):
+    def test_poll_guards_executes_all_hits_from_one_evaluation_in_order(self):
+        hits = [
+            {"kind": "success", "log_subject": "模块[first]"},
+            {"kind": "success", "log_subject": "模块[second]"},
+        ]
+        player = MacroPlayer(
+            on_guard_poll=lambda: hits.pop(0) if hits else None,
+        )
+        player.handle_guard_hit = Mock()
+
+        player._poll_guards()
+
+        self.assertEqual(
+            [call.args[0]["log_subject"] for call in player.handle_guard_hit.call_args_list],
+            ["模块[first]", "模块[second]"],
+        )
+
+    def test_block_action_can_only_be_released_by_a_jump(self):
+        notices = []
+        hits = iter([None, {
+            "jump_action_id": "after-block",
+            "jump_row": 2,
+        }])
+        player = MacroPlayer(
+            on_guard_poll=lambda: next(hits, None),
+            on_notice=lambda text, _duration: notices.append(text),
+        )
+
+        advanced = player.play([
+            {"type": "block", "action_id": "block-row"},
+            {"type": "notice", "action_id": "after-block", "text": "已跳过阻塞"},
+        ])
+
+        self.assertFalse(advanced)
+        self.assertEqual(notices, ["已跳过阻塞"])
+
+    def test_block_action_can_be_released_by_workflow_global_jump(self):
+        notices = []
+        hits = iter([None, {
+            "log_subject": "模块[工作流全局] · 结算完成.png",
+            "jump_action_id": "after-block",
+            "jump_row": 2,
+        }])
+        player = MacroPlayer(
+            on_guard_poll=lambda: next(hits, None),
+            on_notice=lambda text, _duration: notices.append(text),
+        )
+
+        player.play([
+            {"type": "block", "action_id": "block-row"},
+            {"type": "notice", "action_id": "after-block", "text": "工作流全局已跳过"},
+        ])
+
+        self.assertEqual(notices, ["工作流全局已跳过"])
+
+    def test_block_action_can_be_released_by_script_global_jump(self):
+        notices = []
+        hits = iter([None, {
+            "log_subject": "模块[脚本全局] · 结算完成.png",
+            "scope_action_ids": ("block-row", "after-block"),
+            "jump_action_id": "after-block",
+            "jump_row": 2,
+        }])
+        player = MacroPlayer(
+            on_guard_poll=lambda: next(hits, None),
+            on_notice=lambda text, _duration: notices.append(text),
+        )
+
+        player.play([
+            {"type": "block", "action_id": "block-row"},
+            {"type": "notice", "action_id": "after-block", "text": "脚本全局已跳过"},
+        ])
+
+        self.assertEqual(notices, ["脚本全局已跳过"])
+
+    def test_nested_script_global_end_target_advances_only_current_reference_repeat(self):
+        notices = []
+        nested = MacroScript(
+            name="脚本B",
+            actions=[{"type": "notice", "text": "B本次完成", "action_id": "b-body"}],
+        )
+        hits = iter([
+            None,  # 外层脚本进入 script_ref 前，不触发 B 的守卫。
+            {
+                "jump_action_id": NEXT_WORKFLOW_STEP_TARGET_ID,
+                "jump_row": 2,
+                "scope_action_ids": ["b-body"],
+            },
+            None, None, None,
+        ])
+        player = MacroPlayer(
+            on_guard_poll=lambda: next(hits, None),
+            on_notice=lambda text, _duration: notices.append(text),
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            script_path = Path(folder) / "script_b.json"
+            script_path.write_text("{}", encoding="utf-8")
+            with patch("macroflow.execution.player.resolve_path", return_value=script_path), \
+                 patch("macroflow.execution.player.load_script", return_value=nested):
+                advanced = player.play([
+                    {"type": "script_ref", "script": "script_b.json", "repeats": 3},
+                    {"type": "notice", "text": "A继续执行"},
+                ])
+
+        self.assertFalse(advanced)
+        self.assertEqual(notices, ["B本次完成", "B本次完成", "A继续执行"])
+
+    def test_global_guard_log_includes_active_script_name(self):
+        logs = []
+        hits = iter([{
+            "kind": "success",
+            "log_subject": "模块[天降神器关闭] · 天降神器关闭.png",
+        }])
+        player = MacroPlayer(on_log=logs.append, on_guard_poll=lambda: next(hits, None))
+
+        player.play([{"type": "comment"}], script_name="经典团战")
+
+        self.assertIn(
+            "全局检测触发：脚本[经典团战] · 模块[天降神器关闭] · 天降神器关闭.png，开始执行处理段。",
+            logs,
+        )
+
+    def test_global_guard_logs_each_processing_action_before_execution(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+
+        with self.assertRaises(EndCurrentScriptRequest):
+            player.handle_guard_hit({
+                "kind": "success",
+                "log_subject": "模块[看到主线模式结束脚本] · 主线模式.png",
+                "actions": [{"type": "end_current_script"}],
+            })
+
+        self.assertIn(
+            "全局检测处理段动作 1/1：结束当前最里层脚本，继续执行。",
+            logs,
+        )
+
+    def test_global_guard_jump_log_includes_active_script_name(self):
+        logs = []
+        hits = iter([{
+            "kind": "success",
+            "log_subject": "模块[天降神器关闭] · 天降神器关闭.png",
+            "jump_action_id": "settlement",
+            "jump_row": 2,
+        }, None])
+        player = MacroPlayer(
+            on_log=logs.append,
+            on_guard_poll=lambda: next(hits),
+        )
+
+        player.play(
+            [
+                {"type": "comment", "action_id": "before"},
+                {"type": "comment", "action_id": "settlement"},
+            ],
+            script_name="经典团战",
+        )
+
+        self.assertIn("脚本[经典团战]：全局检测跳转到第 2 行执行。", logs)
+
+    def test_blocking_module_log_includes_active_script_name(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        module = {
+            "name": "竞技结算确定", "template": "unused.png", "region": [1, 2, 30, 40],
+            "blocking": True, "interval_ms": 50, "threshold": 0.85,
+            "after_action": "click_match",
+        }
+
+        def miss_then_stop(*_args, **_kwargs):
+            player.stop_event.set()
+            return None
+
+        with patch("macroflow.execution.player.registered_module_object", return_value=module), \
+             patch("macroflow.execution.player.find_template", side_effect=miss_then_stop):
+            player.play([{
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:settlement", "region_mode": "template", "delay_ms": 0,
+            }], script_name="经典团战")
+
+        self.assertIn(
+            "脚本[经典团战]：模块 竞技结算确定 开始阻塞等待 unused.png 出现。",
+            logs,
+        )
+
     def test_missing_module_reference_does_not_run_stale_template(self):
         player = MacroPlayer()
         with patch(
@@ -8376,12 +8890,15 @@ class PlayerTests(unittest.TestCase):
         patcher = patch("macroflow.execution.player.show_overlay")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self._row_height_detector = patch(
-            "macroflow.execution.player.detect_row_height",
-            side_effect=lambda _region, fallback: fallback,
+        self._row_list_capture = patch(
+            "macroflow.execution.player.capture_bgr",
+            side_effect=lambda region: (
+                np.zeros((region[3], region[2], 3), dtype=np.uint8),
+                (region[0], region[1]),
+            ),
         )
-        self._row_height_detector.start()
-        self.addCleanup(self._row_height_detector.stop)
+        self._row_list_capture.start()
+        self.addCleanup(self._row_list_capture.stop)
 
     def test_script_scope_reentered_on_each_repeat(self):
         # 关卡封装"执行 x 次"时，每次重复都要重新进入脚本全局作用域，
@@ -8895,6 +9412,81 @@ class PlayerTests(unittest.TestCase):
         ])
         player._click_module_point.assert_called_once_with(220, 239, "left", 1, None)
 
+    def test_row_list_diagnostic_scans_and_logs_both_conditions_for_every_row(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        player._row_list_condition_matches = Mock(return_value=False)
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number", "separator": "/", "relation": "not_equal"},
+            "right_condition": {"type": "text", "expected_text": "游戏中"},
+        }
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(np.zeros((78, 160, 3), dtype=np.uint8), (100, 200)),
+        ):
+            player._diagnose_row_list_condition_click(action, None)
+
+        self.assertEqual(player._row_list_condition_matches.call_count, 6)
+        for row_number in (1, 2, 3):
+            self.assertTrue(any(f"第{row_number}行结果" in text for text in logs), logs)
+        self.assertTrue(any("识别诊断" in text for text in logs), logs)
+
+    def test_row_list_diagnostic_can_send_results_to_a_separate_sink(self):
+        logs = []
+        results = []
+        player = MacroPlayer(on_log=logs.append)
+        player._row_list_condition_matches = Mock(return_value=False)
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number", "separator": "/", "relation": "not_equal"},
+            "right_condition": {"type": "text", "expected_text": "游戏中"},
+        }
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(np.zeros((26, 160, 3), dtype=np.uint8), (100, 200)),
+        ):
+            player._diagnose_row_list_condition_click(action, None, result_sink=results.append)
+
+        self.assertEqual(results, logs)
+        self.assertTrue(any("第1行结果" in text for text in results), results)
+
+    def test_grid_row_click_uses_selected_columns_and_clicks_matching_row(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, False, True, True])
+        player._click_module_point = Mock()
+        action = {
+            "type": "grid_row_condition_click",
+            "grid_region": [100, 200, 300, 100],
+            "horizontal_lines": [50], "vertical_lines": [80, 210],
+            "left_column": 1, "right_column": 2, "click_column": 0,
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "image"},
+            "button": "left", "click_count": 1,
+        }
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(np.zeros((100, 300, 3), dtype=np.uint8), (100, 200)),
+        ):
+            player._execute_grid_row_condition_click(action, None)
+
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (180, 200, 130, 50), "第1行左侧"),
+            call({"type": "image"}, (310, 200, 90, 50), "第1行右侧"),
+            call({"type": "number"}, (180, 250, 130, 50), "第2行左侧"),
+            call({"type": "image"}, (310, 250, 90, 50), "第2行右侧"),
+        ])
+        player._click_module_point.assert_called_once_with(140, 275, "left", 1, None)
+
     def test_row_list_success_can_end_current_inner_script(self):
         player = MacroPlayer()
         player._row_list_condition_matches = Mock(side_effect=[True, True])
@@ -9062,6 +9654,84 @@ class PlayerTests(unittest.TestCase):
 
         self.assertEqual(logs, ["第1行右侧 图片识别：右侧条件模块；命中"])
 
+    def test_row_list_uses_one_list_snapshot_for_ocr_and_image_conditions(self):
+        player = MacroPlayer()
+        player._click_module_point = Mock()
+        screen = np.zeros((26, 160, 3), dtype=np.uint8)
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number", "separator": "/", "relation": "not_equal"},
+            "right_condition": {"type": "image", "module_key": "module:game"},
+            "no_match_action": "finish",
+        }
+        module = {
+            "name": "游戏中", "template": "images/game.png",
+            "threshold": 0.9, "ignore_background": False,
+        }
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(screen, (100, 200)), create=True,
+        ) as capture, patch(
+            "macroflow.execution.player.recognize_image_with_boxes",
+            return_value=("11/12", [{"text": "11/12", "score": 0.98}]), create=True,
+        ), patch(
+            "macroflow.execution.player.find_template_in_image",
+            return_value={"center_x": 220, "center_y": 213}, create=True,
+        ), patch(
+            "macroflow.execution.player.registered_module_object", return_value=module,
+        ), patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            side_effect=AssertionError("逐行扫描不得重新截图做 OCR"),
+        ), patch(
+            "macroflow.execution.player.find_template",
+            side_effect=AssertionError("逐行扫描不得重新截图识图"),
+        ):
+            player._execute_row_list_condition_click(action, None)
+
+        capture.assert_called_once_with((100, 200, 160, 26))
+        player._click_module_point.assert_called_once_with(220, 213, "left", 1, None)
+
+    def test_row_list_retries_empty_ocr_with_enhanced_same_frame_crop(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        player._click_module_point = Mock()
+        screen = np.zeros((26, 160, 3), dtype=np.uint8)
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number", "separator": "/", "relation": "not_equal"},
+            "right_condition": {"type": "image", "module_key": "module:game"},
+            "no_match_action": "finish",
+        }
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(screen, (100, 200)), create=True,
+        ), patch(
+            "macroflow.execution.player.recognize_image_with_boxes",
+            side_effect=[("", []), ("11/12", [{"text": "11/12", "score": 0.91}])],
+            create=True,
+        ) as recognize, patch(
+            "macroflow.execution.player.find_template_in_image",
+            return_value={"center_x": 220, "center_y": 213}, create=True,
+        ), patch("macroflow.execution.player.registered_module_object", return_value={
+            "name": "游戏中", "template": "images/game.png", "threshold": 0.9,
+        }), patch(
+            "macroflow.execution.player.recognize_region_with_boxes",
+            side_effect=AssertionError("不得为 OCR 重试重新截图"),
+        ):
+            player._execute_row_list_condition_click(action, None)
+
+        self.assertEqual(recognize.call_count, 2)
+        self.assertTrue(any("增强重试" in message for message in logs), logs)
+        player._click_module_point.assert_called_once()
+
     def test_row_list_finishes_without_waiting_or_clicking_when_no_row_matches(self):
         player = MacroPlayer()
         player._wait = Mock()
@@ -9117,7 +9787,7 @@ class PlayerTests(unittest.TestCase):
 
         player._execute_row_list_condition_click({
             "type": "row_list_condition_click",
-            "list_region": [100, 200, 160, 52],
+            "list_region": [100, 200, 160, 52], "row_height": 26,
             "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
             "click_region": [90, 0, 60, 26], "click_count": 4,
             "left_condition": {"type": "number"},
@@ -9127,29 +9797,102 @@ class PlayerTests(unittest.TestCase):
 
         player._click_module_point.assert_called_once_with(220, 213, "left", 4, None)
 
-    def test_row_list_uses_detected_spacing_when_text_boxes_are_shorter(self):
+    def test_row_list_uses_configured_row_height_as_authoritative_spacing(self):
         player = MacroPlayer()
-        player._row_list_condition_matches = Mock(side_effect=[True, True])
+        player._row_list_condition_matches = Mock(side_effect=[False, True, True])
         player._click_module_point = Mock()
 
-        with patch(
-            "macroflow.execution.player.detect_row_height", return_value=27,
-        ) as detect:
-            player._execute_row_list_condition_click({
-                "type": "row_list_condition_click",
-                "list_region": [100, 200, 160, 54],
-                "left_region": [0, 4, 70, 18], "right_region": [80, 4, 80, 18],
-                "click_region": [90, 4, 60, 18],
-                "left_condition": {"type": "number"},
-                "right_condition": {"type": "text"},
-                "button": "left", "no_match_action": "finish",
-            }, None)
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 60], "row_height": 30,
+            "left_region": [0, 4, 70, 18], "right_region": [80, 4, 80, 18],
+            "click_region": [90, 4, 60, 18],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "button": "left", "no_match_action": "finish",
+        }, None)
 
-        detect.assert_called_once_with((100, 200, 160, 54), 22)
         self.assertEqual(player._row_list_condition_matches.call_args_list, [
             call({"type": "number"}, (100, 204, 70, 18)),
-            call({"type": "text"}, (180, 204, 80, 18)),
+            call({"type": "number"}, (100, 234, 70, 18)),
+            call({"type": "text"}, (180, 234, 80, 18)),
         ])
+
+    def test_row_list_scans_only_rows_whose_child_regions_fit_inside_list(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(return_value=False)
+        player._click_module_point = Mock()
+
+        player._execute_row_list_condition_click({
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 20, 70, 20], "right_region": [80, 20, 80, 20],
+            "click_region": [90, 20, 60, 20],
+            "left_condition": {"type": "number"},
+            "right_condition": {"type": "text"},
+            "no_match_action": "finish",
+        }, None)
+
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (100, 220, 70, 20)),
+            call({"type": "number"}, (100, 246, 70, 20)),
+        ])
+
+    def test_row_list_applies_independent_local_separator_corrections(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[False, False, True, True])
+        player._click_module_point = Mock()
+        screen = np.full((78, 160, 3), 35, dtype=np.uint8)
+        for y in (25, 50, 75):
+            screen[y:y + 1, :] = 190
+
+        with patch(
+            "macroflow.execution.player.capture_bgr", return_value=(screen, (100, 200)),
+        ):
+            player._execute_row_list_condition_click({
+                "type": "row_list_condition_click",
+                "list_region": [100, 200, 160, 78], "row_height": 26,
+                "left_region": [0, 0, 70, 25], "right_region": [80, 0, 80, 25],
+                "click_region": [90, 0, 60, 25],
+                "left_condition": {"type": "number"},
+                "right_condition": {"type": "text"},
+                "no_match_action": "finish",
+            }, None)
+
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (100, 200, 70, 25)),
+            call({"type": "number"}, (100, 225, 70, 25)),
+            call({"type": "number"}, (100, 250, 70, 25)),
+            call({"type": "text"}, (180, 250, 80, 25)),
+        ])
+        player._click_module_point.assert_called_once_with(220, 262, "left", 1, None)
+
+    def test_row_list_skips_last_row_when_local_correction_moves_it_outside_list(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(return_value=False)
+        player._click_module_point = Mock()
+        screen = np.full((78, 160, 3), 35, dtype=np.uint8)
+        for y in (23, 49, 77):
+            screen[y:y + 1, :] = 190
+
+        with patch(
+            "macroflow.execution.player.capture_bgr", return_value=(screen, (100, 200)),
+        ):
+            player._execute_row_list_condition_click({
+                "type": "row_list_condition_click",
+                "list_region": [100, 200, 160, 78], "row_height": 26,
+                "left_region": [0, 0, 70, 25], "right_region": [80, 0, 80, 25],
+                "click_region": [90, 0, 60, 25],
+                "left_condition": {"type": "number"},
+                "right_condition": {"type": "text"},
+                "no_match_action": "finish",
+            }, None)
+
+        self.assertEqual(player._row_list_condition_matches.call_args_list, [
+            call({"type": "number"}, (100, 200, 70, 25)),
+            call({"type": "number"}, (100, 226, 70, 25)),
+        ])
+        player._click_module_point.assert_not_called()
 
     def test_row_list_rejects_child_regions_outside_list(self):
         action = {
@@ -10842,6 +11585,18 @@ class PlayerTests(unittest.TestCase):
         # 重弹“点击游戏画面继续操作”），只激活执行前置窗口一次。
         self.assertEqual(activate.call_args_list, [call(456)])
 
+    def test_prepared_activation_window_is_not_activated_again_by_player(self):
+        player = MacroPlayer()
+        with patch("macroflow.execution.player.is_window", return_value=True), \
+             patch("macroflow.execution.player.is_window_process_foreground", return_value=True), \
+             patch("macroflow.execution.player.activate_window", return_value=True) as activate:
+            player.play(
+                [{"type": "comment"}], hwnd=123,
+                activation_hwnd=456, activation_prepared=True,
+            )
+        # 应用层已在 OCR 等待前完成前置激活，播放器只负责继续播放，不能重复抢焦点。
+        activate.assert_not_called()
+
     def test_play_start_raises_target_only_when_not_foreground(self):
         player = MacroPlayer()
         with patch("macroflow.execution.player.is_window", return_value=True), \
@@ -11802,7 +12557,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         self.assertEqual(worker_args[1], 1)
         self.assertEqual(worker_args[0], list(load_script(ref).actions))
         self.assertEqual(thread_class.call_args.kwargs["kwargs"],
-                         {"trigger": {}})
+                         {"trigger": {}, "script_name": "Ref"})
         thread_class.return_value.start.assert_called_once()
         app._notify.assert_not_called()
 
@@ -12294,6 +13049,47 @@ class ActivationWindowToggleTests(unittest.TestCase):
                 app.player.play.call_args.kwargs["activation_hwnd"], 789,
             )
 
+    def test_workflow_worker_activates_prewindow_before_ocr_wait(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script_path = Path(folder) / "plain.json"
+            save_script(MacroScript(
+                name="普通脚本", actions=[{"type": "delay", "ms": 1}],
+            ), script_path)
+
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.workflow_stop = threading.Event()
+            app.player = Mock()
+            app.player.stop_event = threading.Event()
+            app._enter_focus_mode = Mock()
+            app._leave_focus_mode = Mock()
+            app._set_status = Mock()
+            app._set_execution_progress = Mock()
+            app._append_mini_step = Mock()
+            app._log = Mock()
+            app._sound = Mock()
+            app._handle_worker_error = Mock()
+            app._finish_execution_visibility = Mock()
+            app.current_workflow_step_index = None
+            app._ui = lambda callback, *args: callback(*args)
+            order = []
+            app._activate_execution_window_before_ocr = Mock(
+                side_effect=lambda hwnd: order.append(("activate", hwnd)) or True,
+            )
+            app._workflow_needs_ocr = Mock(return_value=True)
+            app._ensure_ocr_ready = Mock(
+                side_effect=lambda: order.append("ocr") or True,
+            )
+            app.player.play.side_effect = lambda *args, **kwargs: order.append(
+                ("play", kwargs["activation_prepared"]),
+            )
+
+            app._run_workflow_worker(
+                [{"script": str(script_path), "repeats": 1}],
+                None, None, False, workflow_activation_hwnd=789,
+            )
+
+            self.assertEqual(order, [("activate", 789), "ocr", ("play", True)])
+
     def test_workflow_step_own_prewindow_suppressed_when_sidebar_disabled(self):
         with tempfile.TemporaryDirectory() as folder:
             with_front = Path(folder) / "with_front.json"
@@ -12467,9 +13263,143 @@ class FocusModeTests(unittest.TestCase):
                 app._enter_focus_mode(123)
         app.input_guard.stop.assert_called_once()
 
+    def test_script_worker_activates_prewindow_before_ocr_wait(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.player = Mock()
+        app.player.stop_event = threading.Event()
+        app._ui = lambda callback, *args: callback(*args)
+        app._set_status = Mock()
+        app._log = Mock()
+        app._enter_focus_mode = Mock()
+        app._leave_focus_mode = Mock()
+        app._clear_global_guards = Mock()
+        app._finish_execution_visibility = Mock()
+        app._handle_worker_error = Mock()
+        app._script_needs_ocr = Mock(return_value=True)
+        order = []
+        app._activate_execution_window_before_ocr = Mock(
+            side_effect=lambda hwnd: order.append(("activate", hwnd)) or True,
+        )
+        app._ensure_ocr_ready = Mock(
+            side_effect=lambda: order.append("ocr") or True,
+        )
+        app.player.play.side_effect = lambda *args, **kwargs: order.append(
+            ("play", kwargs["activation_prepared"]),
+        )
+
+        app._run_script_worker(
+            [{"type": "text_ocr"}], 1, 123, 456, None, False, True,
+        )
+
+        self.assertEqual(order, [("activate", 456), "ocr", ("play", True)])
+
+
 
 class KeyCaptureTests(unittest.TestCase):
     """KeyCapturer hook + KeyActionDialog capture flow."""
+
+    def test_mouse_capturer_is_available(self):
+        self.assertTrue(hasattr(input_guard_module, "MouseCapturer"))
+
+    def test_search_mouse_capture_sets_button_name_and_searches(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
+        app.key_search_var = Mock()
+        app.key_search_match_var = Mock()
+        app.key_search_capture_button = Mock()
+        app.mouse_search_capture_button = Mock()
+        app._key_search_capturer = None
+        app._mouse_search_capturer = None
+        app._search_key_actions = Mock()
+
+        with patch("macroflow.ui.app.MouseCapturer", create=True) as capturer_class:
+            capturer_class.return_value.start.return_value = True
+            app.start_mouse_search_capture()
+            on_button = capturer_class.call_args.args[0]
+            on_button("right")
+
+        app.key_search_var.set.assert_called_once_with("右键")
+        app._search_key_actions.assert_called_once_with(1)
+        app.mouse_search_capture_button.configure.assert_any_call(state="disabled")
+        app.mouse_search_capture_button.configure.assert_any_call(state="normal")
+        capturer_class.return_value.stop.assert_called_once()
+
+    def test_mouse_capturer_captures_next_left_button_down(self):
+        events, release, captured = [], threading.Event(), {}
+
+        def fake_set_hook(kind, proc, _inst, _tid):
+            captured[kind] = proc
+            return ctypes.c_void_p(kind)
+
+        def fake_get_message(*_):
+            release.wait(3)
+            return 0
+
+        patches = [
+            patch("macroflow.input.input_guard.user32.SetWindowsHookExW", side_effect=fake_set_hook),
+            patch("macroflow.input.input_guard.user32.GetMessageW", side_effect=fake_get_message),
+            patch("macroflow.input.input_guard.user32.PostThreadMessageW"),
+            patch("macroflow.input.input_guard.user32.CallNextHookEx", return_value=0),
+            patch("macroflow.input.input_guard.user32.UnhookWindowsHookEx"),
+        ]
+        for patch_ in patches:
+            patch_.start()
+        capturer = MouseCapturer(on_button=events.append)
+        self.assertTrue(capturer.start(timeout=1.0))
+        try:
+            data = MSLLHOOKSTRUCT()
+            result = captured[WH_MOUSE_LL](0, WM_LBUTTONDOWN, ctypes.addressof(data))
+        finally:
+            release.set()
+            capturer.stop()
+            for patch_ in patches:
+                patch_.stop()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(events, ["left"])
+
+    def test_search_key_capture_sets_name_and_searches(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
+        app.key_search_var = Mock()
+        app.key_search_match_var = Mock()
+        app.key_search_capture_button = Mock()
+        app._key_search_capturer = None
+        app._search_key_actions = Mock()
+
+        with patch("macroflow.ui.app.KeyCapturer") as capturer_class:
+            capturer_class.return_value.start.return_value = True
+            app.start_key_search_capture()
+            on_key = capturer_class.call_args.args[0]
+            on_key(0x41)
+
+        app.key_search_var.set.assert_called_once_with("A")
+        app._search_key_actions.assert_called_once_with(1)
+        app.key_search_capture_button.configure.assert_any_call(state="disabled")
+        app.key_search_capture_button.configure.assert_any_call(state="normal")
+        capturer_class.return_value.stop.assert_called_once()
+
+    def test_search_key_capture_cancel_stops_without_search(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
+        app.key_search_var = Mock()
+        app.key_search_match_var = Mock()
+        app.key_search_capture_button = Mock()
+        app._key_search_capturer = None
+        app._search_key_actions = Mock()
+
+        with patch("macroflow.ui.app.KeyCapturer") as capturer_class:
+            capturer_class.return_value.start.return_value = True
+            app.start_key_search_capture()
+            on_cancel = capturer_class.call_args.args[1]
+            on_cancel()
+
+        app._search_key_actions.assert_not_called()
+        app.key_search_match_var.set.assert_called_with("已取消按键检测")
+        capturer_class.return_value.stop.assert_called_once()
 
     def test_key_dialog_can_open_for_new_action_without_existing_action(self):
         widgets = ("Frame", "Label", "Entry", "Button", "Combobox")
@@ -12645,6 +13575,26 @@ class KeyCaptureTests(unittest.TestCase):
 
 
 class TemplateRegionTests(unittest.TestCase):
+    def test_image_inventory_is_a_separate_dialog_not_a_manager_tab(self):
+        self.assertEqual(
+            TemplateRegionManagerDialog.TAB_KEYS,
+            ("all", "switch", "workflow_global", "script_global", "special"),
+        )
+        self.assertEqual(
+            dialog_module.ModuleImageInventoryDialog._category_label("script_global"),
+            "脚本全局",
+        )
+        self.assertEqual(
+            dialog_module.ModuleImageInventoryDialog._category_label("special"),
+            "特殊",
+        )
+
+    def test_module_picker_defaults_to_all_module_categories(self):
+        self.assertEqual(
+            ModulePickerDialog._allowed_categories(),
+            ("switch", "workflow_global", "script_global", "special"),
+        )
+
     def test_live_module_binding_refreshes_saved_action_for_edit(self):
         stale = {
             "type": "image_match", "module_ref": True,
@@ -12872,17 +13822,17 @@ class TemplateRegionTests(unittest.TestCase):
         dialog._set_sort_direction.assert_called_once_with("desc")
 
     def test_inventory_filter_switches_visible_group_and_reloads(self):
-        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog = dialog_module.ModuleImageInventoryDialog.__new__(
+            dialog_module.ModuleImageInventoryDialog,
+        )
         dialog.inventory_filter = "all"
         dialog.inventory_filter_buttons = {
             "all": Mock(), "adopted": Mock(), "unused": Mock(),
         }
-        tree = Mock()
-        dialog.trees = {"images": tree}
         dialog._reload_tree = Mock()
         dialog._set_inventory_filter("unused")
         self.assertEqual(dialog.inventory_filter, "unused")
-        dialog._reload_tree.assert_called_once_with("images", tree)
+        dialog._reload_tree.assert_called_once_with()
         self.assertEqual(
             dialog.inventory_filter_buttons["unused"].configure.call_args.kwargs["background"],
             "#244D78",
@@ -13165,6 +14115,12 @@ class TemplateRegionTests(unittest.TestCase):
         with patch("macroflow.ui.dialogs.registered_module_object", return_value={"blocking": True}):
             self.assertTrue(segment_action_is_blocking(action))
             self.assertEqual(segment_row_label(action), "【阻塞等待】识图 wait")
+
+    def test_block_action_has_visible_waiting_marker_in_segments(self):
+        action = {"type": "block"}
+
+        self.assertTrue(segment_action_is_blocking(action))
+        self.assertEqual(segment_row_label(action), "【阻塞等待跳转】阻塞")
 
     def test_segment_text_absent_module_is_also_marked_blocking(self):
         action = {
@@ -14642,16 +15598,18 @@ class TemplateRegionTests(unittest.TestCase):
         save.assert_not_called()
         delay_dialog.assert_called_once_with(None, action, actions=None)
 
-    def test_edit_action_global_module_ref_uses_same_delay_dialog(self):
+    def test_edit_action_global_module_ref_uses_global_config_dialog(self):
         action = {"type": "global_detect", "template": "images/m.png", "module_ref": True,
                   "module_category": "global", "action_id": "abc"}
         with patch("macroflow.ui.dialogs.TemplateRegionFormDialog") as form_class, \
-             patch("macroflow.ui.dialogs.ModuleReferenceDelayDialog") as delay_dialog:
-            delay_dialog.return_value.show.return_value = None
+             patch("macroflow.ui.dialogs.ModuleReferenceDelayDialog") as delay_dialog, \
+             patch("macroflow.ui.dialogs.GlobalDetectDialog") as global_dialog:
+            global_dialog.return_value.show.return_value = dict(action, jump_enabled=True)
             updated = edit_action(None, action)
-        self.assertIsNone(updated)
+        self.assertTrue(updated["jump_enabled"])
         form_class.assert_not_called()
-        delay_dialog.assert_called_once_with(None, action, actions=None)
+        delay_dialog.assert_not_called()
+        global_dialog.assert_called_once_with(None, action, jump=True, actions=None)
 
     def test_module_reference_dialog_saves_timing_and_result_branches(self):
         dialog = ModuleReferenceDelayDialog.__new__(ModuleReferenceDelayDialog)
