@@ -177,8 +177,7 @@ The "Open" button can load JSON scripts from other directories; put templates un
 
 ## 📸 Screenshots
 
-<!-- Add screenshots here: main window, script editor, module object manager, workflow page, execution mini window -->
-(To be added)
+![MacroFlow Studio workflow preview](docs/screenshots/macroflow-studio-preview.png)
 
 ## 🏗️ Run from Source & Build
 

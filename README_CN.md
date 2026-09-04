@@ -176,8 +176,7 @@ MacroFlowStudio/
 
 ## 📸 界面预览
 
-<!-- 在此放置截图：主界面、脚本编辑页、模块对象管理、工作流页、执行小窗 -->
-（截图待补充）
+![MacroFlow Studio 工作流界面预览](docs/screenshots/macroflow-studio-preview.png)
 
 ## 🏗️ 从源码运行与打包
 
