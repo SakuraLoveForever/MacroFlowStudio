@@ -478,3 +478,136 @@ class MouseCapturer:
                 user32.UnhookWindowsHookEx(self._keyboard_hook)
             self._mouse_hook = self._keyboard_hook = None
             self.active = False
+
+
+class InputCapturer:
+    """Capture the next physical keyboard key or mouse button press.
+
+    Keyboard and mouse hooks share one message-loop thread so a single
+    capture session can accept either kind of input. The first non-injected
+    supported event wins and is reported as ``(kind, value)`` where kind is
+    ``"key"`` or ``"mouse"``.
+    """
+
+    _BUTTON_MESSAGES = MouseCapturer._BUTTON_MESSAGES
+
+    def __init__(
+        self,
+        on_input: Callable[[str, int | str], None],
+        on_cancel: Callable[[], None] | None = None,
+    ):
+        self._on_input = on_input
+        self._on_cancel = on_cancel
+        self.active = False
+        self._ready = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._thread_id = 0
+        self._keyboard_hook = None
+        self._mouse_hook = None
+        self._keyboard_proc = None
+        self._mouse_proc = None
+        self._error: Exception | None = None
+        self._event_lock = threading.Lock()
+        self._event_claimed = False
+
+    def start(self, timeout: float = 2.0) -> bool:
+        if self.active:
+            return True
+        self._ready.clear()
+        self._error = None
+        self._event_claimed = False
+        self._thread = threading.Thread(
+            target=self._run, name="MacroFlowInputCapturer", daemon=True,
+        )
+        self._thread.start()
+        if not self._ready.wait(timeout):
+            return False
+        return self.active and self._error is None
+
+    def stop(self) -> None:
+        """Stop both low-level hooks from any thread."""
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(1.0)
+        self.active = False
+        self._thread = None
+        self._thread_id = 0
+
+    def _claim_event(self) -> bool:
+        with self._event_lock:
+            if self._event_claimed:
+                return False
+            self._event_claimed = True
+            return True
+
+    def _run(self) -> None:
+        self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
+
+        @HOOKPROC
+        def keyboard_proc(code, wparam, lparam):
+            if code == HC_ACTION:
+                data = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                vk = int(data.vkCode)
+                if int(wparam) in (WM_KEYDOWN, WM_SYSKEYDOWN) and not (
+                    int(data.flags) & LLKHF_INJECTED
+                ):
+                    if vk == VK_ESCAPE:
+                        if self._claim_event():
+                            if self._on_cancel:
+                                try:
+                                    self._on_cancel()
+                                except Exception:
+                                    pass
+                            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+                            return 1
+                    elif vk not in RESERVED_HOTKEY_VKS and self._claim_event():
+                        try:
+                            self._on_input("key", vk)
+                        except Exception:
+                            pass
+                        user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+                        return 1
+            return user32.CallNextHookEx(self._keyboard_hook, code, wparam, lparam)
+
+        @HOOKPROC
+        def mouse_proc(code, wparam, lparam):
+            if code == HC_ACTION:
+                data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                if not (int(data.flags) & LLMHF_INJECTED):
+                    button = self._BUTTON_MESSAGES.get(int(wparam))
+                    if button and self._claim_event():
+                        try:
+                            self._on_input("mouse", button)
+                        except Exception:
+                            pass
+                        user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+                        return 1
+            return user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
+
+        self._keyboard_proc = keyboard_proc
+        self._mouse_proc = mouse_proc
+        try:
+            self._keyboard_hook = user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL, keyboard_proc, None, 0,
+            )
+            self._mouse_hook = user32.SetWindowsHookExW(
+                WH_MOUSE_LL, mouse_proc, None, 0,
+            )
+            if not self._keyboard_hook or not self._mouse_hook:
+                raise ctypes.WinError()
+            self.active = True
+            self._ready.set()
+            message = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+                pass
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
+        finally:
+            if self._keyboard_hook:
+                user32.UnhookWindowsHookEx(self._keyboard_hook)
+            if self._mouse_hook:
+                user32.UnhookWindowsHookEx(self._mouse_hook)
+            self._keyboard_hook = self._mouse_hook = None
+            self.active = False

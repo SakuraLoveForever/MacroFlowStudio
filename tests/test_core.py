@@ -69,9 +69,10 @@ from macroflow.core.ocr import (
     parse_ocr_number_pair, recognize_image_with_boxes,
 )
 from macroflow.input.input_guard import (
-    FocusInputGuard, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED,
+    FocusInputGuard, InputCapturer, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED,
     LLMHF_INJECTED, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F12, VK_F9,
-    MSLLHOOKSTRUCT, MouseCapturer, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN,
+    MSLLHOOKSTRUCT, MouseCapturer, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+    WM_LBUTTONDOWN, WM_RBUTTONDOWN,
     WM_SYSKEYDOWN, should_block_keyboard, should_block_mouse,
 )
 from macroflow.core.models import (
@@ -551,6 +552,8 @@ class StorageTests(unittest.TestCase):
             with patch("macroflow.core.storage.SETTINGS_PATH", path):
                 loaded = load_app_settings()
         self.assertEqual(loaded["last_script_path"], "")
+        self.assertEqual(loaded["main_window_geometry"], "")
+        self.assertIsNone(loaded["editor_draft"])
 
     def test_backup_interval_is_limited_to_three_fixed_choices(self):
         self.assertEqual(BACKUP_INTERVAL_CHOICES, ("1h", "1天", "1周"))
@@ -1015,6 +1018,56 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertFalse(key_action_matches(
             {"type": "mouse_button", "button": "right", "down": True}, "右键", "抬起",
         ))
+
+    def test_captured_search_type_does_not_cross_match_keyboard_and_mouse(self):
+        key_release = {"type": "key", "name": "E", "vk": 69, "down": False}
+        mouse_release = {"type": "mouse_button", "button": "left", "down": False}
+
+        self.assertTrue(key_action_matches(
+            key_release, "E", "抬起", query_kind="key",
+        ))
+        self.assertFalse(key_action_matches(
+            mouse_release, "E", "抬起", query_kind="key",
+        ))
+        self.assertTrue(key_action_matches(
+            mouse_release, "left", "抬起", query_kind="mouse",
+        ))
+        self.assertFalse(key_action_matches(
+            key_release, "left", "抬起", query_kind="mouse",
+        ))
+
+    def test_captured_search_type_is_used_by_unified_delay_setting(self):
+        actions = [
+            {"type": "mouse_button", "button": "left", "down": False, "delay_ms": 10},
+            {"type": "key", "name": "E", "vk": 69, "down": False, "delay_ms": 20},
+        ]
+
+        changed = set_matching_key_action_delays(
+            actions, "E", "抬起", 120, query_kind="key",
+        )
+
+        self.assertEqual(changed, [1])
+        self.assertEqual([action["delay_ms"] for action in actions], [10, 120])
+
+    def test_captured_query_navigation_ignores_other_input_type(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script = MacroScript(actions=[
+            {"type": "mouse_button", "button": "left", "down": False},
+            {"type": "key", "name": "E", "vk": 69, "down": False},
+        ])
+        app.key_search_state_var = Mock()
+        app.key_search_state_var.get.return_value = "抬起"
+        app.key_search_var = Mock()
+        app.key_search_var.get.return_value = "E"
+        app.key_search_match_var = Mock()
+        app.action_tree = Mock()
+        app._key_search_query_kind = "key"
+        app._selected_action_index = Mock(return_value=None)
+
+        app._search_key_actions(1)
+
+        app.key_search_match_var.set.assert_called_once_with("匹配 1 项")
+        app.action_tree.selection_set.assert_called_once_with("1")
 
     def test_set_matching_key_action_delays_changes_only_search_matches(self):
         actions = [
@@ -5040,6 +5093,54 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             ["before", "after"],
         )
 
+    def test_script_scope_restarts_module_start_delay_from_each_script_start(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.global_guards = {}
+        app.guards_lock = threading.Lock()
+        app.global_detect_rearm_locks = set()
+        app._log = Mock()
+        app._ui = lambda callback, *args: callback(*args)
+        module_obj = {
+            "enabled": True,
+            "category": "script_global",
+            "template": "images/g.png",
+            "start_delay_ms": 125000,
+        }
+        actions = [
+            {
+                "type": "global_detect",
+                "module_ref": True,
+                "module_key": "module:g",
+                "action_id": "row-a",
+            },
+            {
+                "type": "global_detect",
+                "module_ref": True,
+                "module_key": "module:g",
+                "action_id": "row-b",
+            },
+        ]
+        clock = iter((
+            100.0, 101.0, 102.0, 103.0, 104.0,
+            200.0, 201.0, 202.0, 203.0, 204.0,
+        ))
+        with patch("macroflow.ui.app.registered_module_object", return_value=module_obj), \
+             patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")), \
+             patch("macroflow.ui.app.time.perf_counter", side_effect=clock):
+            app._enter_script_global_scope(actions)
+            first_starts = [
+                app.global_guards[f"script:row-{suffix}"]["start_delay_since"]
+                for suffix in ("a", "b")
+            ]
+            app._enter_script_global_scope(actions)
+            second_starts = [
+                app.global_guards[f"script:row-{suffix}"]["start_delay_since"]
+                for suffix in ("a", "b")
+            ]
+
+        self.assertEqual(first_starts, [100.0, 100.0])
+        self.assertEqual(second_starts, [200.0, 200.0])
+
     def test_scope_exit_removes_only_script_guards(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {
@@ -8575,6 +8676,28 @@ class PlayerTests(unittest.TestCase):
         self.assertFalse(advanced)
         self.assertEqual(notices, ["B本次完成", "B本次完成", "A继续执行"])
 
+    def test_global_guard_end_current_script_repeats_nested_script_invocation(self):
+        nested = MacroScript(name="脚本B", actions=[{"type": "comment"}])
+        hit = {
+            "kind": "success",
+            "log_subject": "模块[看到主线模式结束脚本] · 主线模式.png",
+            "actions": [{"type": "end_current_script"}],
+        }
+        hits = iter([None, hit, hit, hit, None])
+        player = MacroPlayer(on_guard_poll=lambda: next(hits, None))
+
+        with tempfile.TemporaryDirectory() as folder:
+            script_path = Path(folder) / "script_b.json"
+            script_path.write_text("{}", encoding="utf-8")
+            with patch("macroflow.execution.player.resolve_path", return_value=script_path), \
+                 patch("macroflow.execution.player.load_script", return_value=nested) as load:
+                advanced = player.play([
+                    {"type": "script_ref", "script": "script_b.json", "repeats": 3},
+                ])
+
+        self.assertFalse(advanced)
+        self.assertEqual(load.call_count, 3)
+
     def test_global_guard_log_includes_active_script_name(self):
         logs = []
         hits = iter([{
@@ -8605,6 +8728,31 @@ class PlayerTests(unittest.TestCase):
             "全局检测处理段动作 1/1：结束当前最里层脚本，继续执行。",
             logs,
         )
+
+    def test_global_guard_end_current_script_only_finishes_current_repeat(self):
+        repeat_completions = []
+        waits = []
+        hit = {
+            "kind": "success",
+            "log_subject": "模块[看到主线模式结束脚本] · 主线模式.png",
+            "actions": [{"type": "end_current_script"}],
+        }
+        hits = iter([hit, hit, hit])
+        player = MacroPlayer(on_guard_poll=lambda: next(hits, None))
+        player._wait = lambda milliseconds: waits.append(milliseconds)
+
+        advanced = player.play(
+            [{"type": "comment"}],
+            repeats=3,
+            repeat_interval_ms=25,
+            on_repeat_complete=lambda current, total: repeat_completions.append(
+                (current, total)
+            ),
+        )
+
+        self.assertFalse(advanced)
+        self.assertEqual(repeat_completions, [(1, 3), (2, 3), (3, 3)])
+        self.assertEqual(waits.count(25), 2)
 
     def test_global_guard_jump_log_includes_active_script_name(self):
         logs = []
@@ -10749,6 +10897,29 @@ class PlayerTests(unittest.TestCase):
             f"日志应包含模块超时原因，实际：{logs}",
         )
 
+    def test_blocking_module_reference_timeout_override_skips_current_row(self):
+        player = MacroPlayer()
+        # 旧实现会继续无限等待；让测试中的等待主动停止播放器，避免红灯阶段挂死。
+        player._wait = lambda _milliseconds: player.stop()
+        module = {
+            "name": "等待登录", "template": "images/login.png", "region": [],
+            "blocking": True, "interval_ms": 250, "threshold": 0.85,
+            "run_code_on_timeout": False,
+        }
+        action = {
+            "type": "image_match", "module_ref": True,
+            "module_key": "module:login", "template": "images/login.png",
+            "region_mode": "template", "blocking_timeout_enabled": True,
+            "blocking_timeout_ms": 0,
+        }
+        with patch("macroflow.execution.player.registered_module_object", return_value=module), \
+             patch("macroflow.execution.player.find_template", return_value=None):
+            try:
+                result = player._execute_image(action, None)
+            except PlaybackStopped:
+                result = "still blocking"
+        self.assertIsNone(result)
+
     def test_module_success_signal_jumps_to_stable_row_object(self):
         logs = []
         notices = []
@@ -12711,6 +12882,7 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.mini_window_enabled_var = _FakeSettingVar(True)
         app.execution_mini_enabled_var = _FakeSettingVar(True)
         app.execution_mini_position = []
+        app.playback_speed_var = _FakeSettingVar(1.0)
         app.close_action_var = _FakeSettingVar("exit")
         app.focus_mode_enabled_var = _FakeSettingVar(False)
         app.activate_target_enabled_var = _FakeSettingVar(True)
@@ -12729,6 +12901,7 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.level_scripts_dir_var = _FakeSettingVar("scripts/关卡")
         app.level_pack_scripts_dir_var = _FakeSettingVar("scripts/关卡封装")
         app.switch_scripts_dir_var = _FakeSettingVar("scripts/切换")
+        app.direction_scripts_dir_var = _FakeSettingVar("scripts/方向")
 
         app.script_path = Path("C:/x/A.json")
         self.assertEqual(
@@ -12737,6 +12910,124 @@ class LastScriptRestoreTests(unittest.TestCase):
         )
         app.script_path = None
         self.assertEqual(app._collect_sidebar_settings()["last_script_path"], "")
+
+    def test_sidebar_settings_capture_window_geometry_and_editor_draft(self):
+        app = self._app()
+        app.root = Mock()
+        app.root.geometry.return_value = "1600x900+40+50"
+        app.interval_var = _FakeSettingVar("125")
+        app.repeat_var = _FakeSettingVar("1")
+        app.backup_interval_var = _FakeSettingVar("1h")
+        app.sound_enabled_var = _FakeSettingVar(True)
+        app.mini_window_enabled_var = _FakeSettingVar(True)
+        app.execution_mini_enabled_var = _FakeSettingVar(True)
+        app.execution_mini_position = []
+        app.playback_speed_var = _FakeSettingVar(1.0)
+        app.close_action_var = _FakeSettingVar("exit")
+        app.focus_mode_enabled_var = _FakeSettingVar(False)
+        app.activate_target_enabled_var = _FakeSettingVar(True)
+        app.floating_notice_position_var = _FakeSettingVar("顶部居中")
+        app.saved_window_signature = None
+        app.activation_draft_enabled = True
+        app.activation_enabled_var = _FakeSettingVar(True)
+        app.saved_activation_signature = {
+            "title": "前置窗口", "class_name": "Front", "process_path": "C:/Game/front.exe",
+        }
+        app.activation_draft_signature = dict(app.saved_activation_signature)
+        app._workflow_snapshot = Mock(return_value={})
+        app.workflow_path = None
+        app.timed_backup_enabled_var = _FakeSettingVar(False)
+        app.windows_startup_enabled_var = _FakeSettingVar(False)
+        app.start_minimized_to_tray_var = _FakeSettingVar(False)
+        app.startup_run_workflow_var = _FakeSettingVar(False)
+        app.startup_workflow_path_var = _FakeSettingVar("")
+        app.level_scripts_dir_var = _FakeSettingVar("scripts/关卡")
+        app.level_pack_scripts_dir_var = _FakeSettingVar("scripts/关卡封装")
+        app.switch_scripts_dir_var = _FakeSettingVar("scripts/切换")
+        app.direction_scripts_dir_var = _FakeSettingVar("scripts/方向")
+        app.script = MacroScript(
+            name="录制脚本",
+            actions=[{"type": "key_press", "vk": 74, "name": "J"}],
+            settings={"recorded_screen": {"width": 1920, "height": 1080}},
+        )
+        app.script_name_var = _FakeSettingVar("录制脚本")
+        app.script_category_var = _FakeSettingVar("关卡")
+        app.script_path = Path("scripts/关卡/录制脚本.json")
+        app.script_requires_new_file = False
+        app.dirty = True
+
+        settings = app._collect_sidebar_settings()
+
+        self.assertEqual(settings["main_window_geometry"], "1600x900+40+50")
+        self.assertEqual(settings["editor_draft"]["script"]["actions"], app.script.actions)
+        self.assertTrue(settings["editor_draft"]["dirty"])
+        self.assertEqual(
+            settings["editor_draft"]["script"]["settings"]["activation_window"]["title"],
+            "前置窗口",
+        )
+
+    def test_restore_editor_draft_restores_unsaved_actions_and_prewindow(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script_name_var = _FakeSettingVar("")
+        app.record_mode_var = _FakeSettingVar("")
+        app.interval_var = _FakeSettingVar(20)
+        app.script_category_var = _FakeSettingVar("")
+        app._clear_action_undo = Mock()
+        app._update_undo_open_button = Mock()
+        app.rebuild_action_tree = Mock()
+        app._refresh_coordinate_scale_status = Mock()
+        app._sync_activation_ui_from_script = Mock()
+        app._set_status = Mock()
+        app._log = Mock()
+        app.app_settings = {}
+        path = BASE_DIR / "scripts" / "关卡" / "录制脚本.json"
+        draft = {
+            "script": MacroScript(
+                name="录制脚本",
+                actions=[{"type": "mouse_button", "button": "right", "down": True}],
+                settings={
+                    "move_interval_ms": 125,
+                    "activation_window_enabled": True,
+                    "activation_window": {
+                        "title": "前置窗口", "class_name": "Front", "process_path": "C:/Game/front.exe",
+                    },
+                },
+            ).to_dict(),
+            "script_path": display_path(path),
+            "script_requires_new_file": False,
+            "dirty": True,
+        }
+
+        app._restore_editor_draft(draft)
+
+        self.assertEqual(app.script.name, "录制脚本")
+        self.assertEqual(app.script.actions[0]["button"], "right")
+        self.assertEqual(app.script_path, path)
+        self.assertTrue(app.dirty)
+        self.assertEqual(app.interval_var.get(), 125)
+        self.assertEqual(app.script_category_var.get(), "关卡")
+        app._sync_activation_ui_from_script.assert_called_once_with()
+
+    def test_restore_last_editor_state_prefers_editor_draft(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        draft = {"script": MacroScript(name="未保存").to_dict()}
+        app.app_settings = {"editor_draft": draft}
+        app._restore_editor_draft = Mock()
+        app._load_last_script = Mock()
+
+        app._restore_last_editor_state()
+
+        app._restore_editor_draft.assert_called_once_with(draft)
+        app._load_last_script.assert_not_called()
+
+    def test_restore_main_window_geometry_uses_saved_value(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.app_settings = {"main_window_geometry": "1600x900+40+50"}
+        app.root = Mock()
+
+        app._restore_main_window_geometry()
+
+        app.root.geometry.assert_called_once_with("1600x900+40+50")
 
 
 class ActivationWindowToggleTests(unittest.TestCase):
@@ -12906,6 +13197,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
         app = self._app()
         app.script.settings["activation_window"] = None
         app.script.settings["activation_window_enabled"] = False
+        app.script.settings["activation_window_configured"] = True
         app._restore_saved_activation_window = Mock()
         app._sync_activation_ui_from_script()
         self.assertFalse(app.activation_enabled_var.get())
@@ -12924,6 +13216,20 @@ class ActivationWindowToggleTests(unittest.TestCase):
         self.assertTrue(app.activation_enabled_var.get())
         self.assertEqual(app.saved_activation_signature, self.SIGNATURE)
         self.assertEqual(app.activation_draft_signature, self.SIGNATURE)
+        app._restore_saved_activation_window.assert_called_once_with(self.SIGNATURE)
+
+    def test_saved_script_with_empty_legacy_prewindow_inherits_saved_draft(self):
+        app = self._app()
+        app.activation_draft_enabled = True
+        app.activation_draft_signature = dict(self.SIGNATURE)
+        app.script.settings["activation_window_enabled"] = False
+        app.script.settings["activation_window"] = None
+        app._restore_saved_activation_window = Mock(return_value=True)
+
+        app._sync_activation_ui_from_script()
+
+        self.assertTrue(app.activation_enabled_var.get())
+        self.assertEqual(app.saved_activation_signature, self.SIGNATURE)
         app._restore_saved_activation_window.assert_called_once_with(self.SIGNATURE)
 
     def test_toggle_updates_persistent_activation_draft(self):
@@ -13301,28 +13607,118 @@ class KeyCaptureTests(unittest.TestCase):
     def test_mouse_capturer_is_available(self):
         self.assertTrue(hasattr(input_guard_module, "MouseCapturer"))
 
-    def test_search_mouse_capture_sets_button_name_and_searches(self):
+    def test_input_capturer_registers_keyboard_and_mouse_hooks(self):
+        events, release, captured = [], threading.Event(), {}
+
+        def fake_set_hook(kind, proc, _inst, _tid):
+            captured[kind] = proc
+            return ctypes.c_void_p(kind)
+
+        def fake_get_message(*_):
+            release.wait(3)
+            return 0
+
+        patches = [
+            patch("macroflow.input.input_guard.user32.SetWindowsHookExW", side_effect=fake_set_hook),
+            patch("macroflow.input.input_guard.user32.GetMessageW", side_effect=fake_get_message),
+            patch("macroflow.input.input_guard.user32.PostThreadMessageW"),
+            patch("macroflow.input.input_guard.user32.CallNextHookEx", return_value=0),
+            patch("macroflow.input.input_guard.user32.UnhookWindowsHookEx"),
+        ]
+        for patch_ in patches:
+            patch_.start()
+        capturer = InputCapturer(on_input=lambda kind, value: events.append((kind, value)))
+        self.assertTrue(capturer.start(timeout=1.0))
+        try:
+            self.assertEqual(set(captured), {WH_KEYBOARD_LL, WH_MOUSE_LL})
+            data = MSLLHOOKSTRUCT()
+            result = captured[WH_MOUSE_LL](0, WM_RBUTTONDOWN, ctypes.addressof(data))
+        finally:
+            release.set()
+            capturer.stop()
+            for patch_ in patches:
+                patch_.stop()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(events, [("mouse", "right")])
+
+    def test_input_capturer_reports_keyboard_input_from_same_capture(self):
+        events, release, captured = [], threading.Event(), {}
+
+        def fake_set_hook(kind, proc, _inst, _tid):
+            captured[kind] = proc
+            return ctypes.c_void_p(kind)
+
+        def fake_get_message(*_):
+            release.wait(3)
+            return 0
+
+        patches = [
+            patch("macroflow.input.input_guard.user32.SetWindowsHookExW", side_effect=fake_set_hook),
+            patch("macroflow.input.input_guard.user32.GetMessageW", side_effect=fake_get_message),
+            patch("macroflow.input.input_guard.user32.PostThreadMessageW"),
+            patch("macroflow.input.input_guard.user32.CallNextHookEx", return_value=0),
+            patch("macroflow.input.input_guard.user32.UnhookWindowsHookEx"),
+        ]
+        for patch_ in patches:
+            patch_.start()
+        capturer = InputCapturer(on_input=lambda kind, value: events.append((kind, value)))
+        self.assertTrue(capturer.start(timeout=1.0))
+        try:
+            data = KBDLLHOOKSTRUCT()
+            data.vkCode = 0x41
+            result = captured[WH_KEYBOARD_LL](0, WM_KEYDOWN, ctypes.addressof(data))
+        finally:
+            release.set()
+            capturer.stop()
+            for patch_ in patches:
+                patch_.stop()
+
+        self.assertEqual(result, 1)
+        self.assertEqual(events, [("key", 0x41)])
+
+    def test_search_input_capture_sets_mouse_name_and_searches(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
         app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
         app.key_search_var = Mock()
         app.key_search_match_var = Mock()
-        app.key_search_capture_button = Mock()
-        app.mouse_search_capture_button = Mock()
-        app._key_search_capturer = None
-        app._mouse_search_capturer = None
+        app.input_search_capture_button = Mock()
+        app._input_search_capturer = None
         app._search_key_actions = Mock()
 
-        with patch("macroflow.ui.app.MouseCapturer", create=True) as capturer_class:
+        with patch("macroflow.ui.app.InputCapturer") as capturer_class:
             capturer_class.return_value.start.return_value = True
-            app.start_mouse_search_capture()
-            on_button = capturer_class.call_args.args[0]
-            on_button("right")
+            app.start_input_search_capture()
+            on_input = capturer_class.call_args.args[0]
+            on_input("mouse", "right")
 
         app.key_search_var.set.assert_called_once_with("右键")
         app._search_key_actions.assert_called_once_with(1)
-        app.mouse_search_capture_button.configure.assert_any_call(state="disabled")
-        app.mouse_search_capture_button.configure.assert_any_call(state="normal")
+        app.input_search_capture_button.configure.assert_any_call(state="disabled")
+        app.input_search_capture_button.configure.assert_any_call(state="normal")
+        capturer_class.return_value.stop.assert_called_once()
+
+    def test_search_input_capture_sets_key_name_and_searches(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
+        app.key_search_var = Mock()
+        app.key_search_match_var = Mock()
+        app.input_search_capture_button = Mock()
+        app._input_search_capturer = None
+        app._search_key_actions = Mock()
+
+        with patch("macroflow.ui.app.InputCapturer") as capturer_class:
+            capturer_class.return_value.start.return_value = True
+            app.start_input_search_capture()
+            on_input = capturer_class.call_args.args[0]
+            on_input("key", 0x41)
+
+        app.key_search_var.set.assert_called_once_with("A")
+        app._search_key_actions.assert_called_once_with(1)
+        app.input_search_capture_button.configure.assert_any_call(state="disabled")
+        app.input_search_capture_button.configure.assert_any_call(state="normal")
         capturer_class.return_value.stop.assert_called_once()
 
     def test_mouse_capturer_captures_next_left_button_down(self):
@@ -13359,46 +13755,24 @@ class KeyCaptureTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(events, ["left"])
 
-    def test_search_key_capture_sets_name_and_searches(self):
+    def test_search_input_capture_cancel_stops_without_search(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
         app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
         app.key_search_var = Mock()
         app.key_search_match_var = Mock()
-        app.key_search_capture_button = Mock()
-        app._key_search_capturer = None
+        app.input_search_capture_button = Mock()
+        app._input_search_capturer = None
         app._search_key_actions = Mock()
 
-        with patch("macroflow.ui.app.KeyCapturer") as capturer_class:
+        with patch("macroflow.ui.app.InputCapturer") as capturer_class:
             capturer_class.return_value.start.return_value = True
-            app.start_key_search_capture()
-            on_key = capturer_class.call_args.args[0]
-            on_key(0x41)
-
-        app.key_search_var.set.assert_called_once_with("A")
-        app._search_key_actions.assert_called_once_with(1)
-        app.key_search_capture_button.configure.assert_any_call(state="disabled")
-        app.key_search_capture_button.configure.assert_any_call(state="normal")
-        capturer_class.return_value.stop.assert_called_once()
-
-    def test_search_key_capture_cancel_stops_without_search(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.root = Mock()
-        app.root.after.side_effect = lambda _delay, callback, *args: callback(*args)
-        app.key_search_var = Mock()
-        app.key_search_match_var = Mock()
-        app.key_search_capture_button = Mock()
-        app._key_search_capturer = None
-        app._search_key_actions = Mock()
-
-        with patch("macroflow.ui.app.KeyCapturer") as capturer_class:
-            capturer_class.return_value.start.return_value = True
-            app.start_key_search_capture()
+            app.start_input_search_capture()
             on_cancel = capturer_class.call_args.args[1]
             on_cancel()
 
         app._search_key_actions.assert_not_called()
-        app.key_search_match_var.set.assert_called_with("已取消按键检测")
+        app.key_search_match_var.set.assert_called_with("已取消键鼠检测")
         capturer_class.return_value.stop.assert_called_once()
 
     def test_key_dialog_can_open_for_new_action_without_existing_action(self):
@@ -15598,6 +15972,45 @@ class TemplateRegionTests(unittest.TestCase):
         save.assert_not_called()
         delay_dialog.assert_called_once_with(None, action, actions=None)
 
+    def test_new_blocking_module_reference_defaults_to_timeout_skip_off(self):
+        action = module_action_for_key(
+            "module:blocking", "switch",
+            {"template": "images/blocking.png", "blocking": True},
+        )
+
+        self.assertFalse(action.get("blocking_timeout_enabled", False))
+        self.assertEqual(action.get("blocking_timeout_ms", 5000), 5000)
+
+    def test_blocking_timeout_editor_uses_switchable_time_unit(self):
+        duration_values = []
+
+        def fake_duration_var(value=0):
+            duration_values.append(value)
+            return Mock()
+
+        widgets = ("Frame", "Button", "Spinbox", "Checkbutton")
+        label_mock = Mock(return_value=Mock())
+        with patch("macroflow.ui.dialogs.ModalDialog.__init__", return_value=None), \
+             patch("macroflow.ui.dialogs.registered_module_object", return_value={
+                 "name": "阻塞模块", "blocking": True,
+             }), \
+             patch("macroflow.ui.dialogs.image_jump_target_options", return_value=[]), \
+             patch("macroflow.ui.dialogs.tk.BooleanVar", side_effect=lambda **_: Mock()), \
+             patch("macroflow.ui.dialogs.tk.StringVar", side_effect=lambda **_: Mock()), \
+             patch("macroflow.ui.dialogs.duration_var", side_effect=fake_duration_var), \
+             patch("macroflow.ui.dialogs.ttk.Label", label_mock), \
+             patch.multiple("macroflow.ui.dialogs.ttk", **{
+                 name: Mock(return_value=Mock()) for name in widgets
+             }):
+            ModuleReferenceDelayDialog(object(), {
+                "type": "module_ref", "module_ref": True,
+                "module_key": "module:blocking",
+            })
+
+        self.assertEqual(duration_values, [0, 0, 5000])
+        label_texts = [call.kwargs.get("text") for call in label_mock.call_args_list]
+        self.assertNotIn("ms", label_texts)
+
     def test_edit_action_global_module_ref_uses_global_config_dialog(self):
         action = {"type": "global_detect", "template": "images/m.png", "module_ref": True,
                   "module_category": "global", "action_id": "abc"}
@@ -15614,13 +16027,17 @@ class TemplateRegionTests(unittest.TestCase):
     def test_module_reference_dialog_saves_timing_and_result_branches(self):
         dialog = ModuleReferenceDelayDialog.__new__(ModuleReferenceDelayDialog)
         dialog.action = {
-            "type": "image_match", "template": "images/m.png",
-            "module_ref": True, "threshold": 0.91, "action_id": "stable",
+            "type": "image_match", "template": "images/m.png", "module_ref": True,
+            "threshold": 0.91, "blocking": True, "action_id": "stable",
         }
         dialog.delay = Mock()
         dialog.delay.get.return_value = "600"
         dialog.after_delay = Mock()
         dialog.after_delay.get.return_value = "900"
+        dialog.blocking_timeout_enabled_var = Mock()
+        dialog.blocking_timeout_enabled_var.get.return_value = True
+        dialog.blocking_timeout_var = Mock()
+        dialog.blocking_timeout_var.get.return_value = "4200"
         dialog.result_routes_enabled = True
         dialog.on_success = Mock()
         dialog.on_success.get.return_value = "jump"
@@ -15641,6 +16058,8 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(dialog.result["found_jump_action_id"], "success-target")
         self.assertEqual(dialog.result["on_timeout"], "end_current_script")
         self.assertEqual(dialog.result["timeout_jump_action_id"], "failure-target")
+        self.assertTrue(dialog.result.get("blocking_timeout_enabled"))
+        self.assertEqual(dialog.result.get("blocking_timeout_ms"), 4200)
         self.assertEqual(dialog.result["threshold"], 0.91)
         self.assertEqual(dialog.result["action_id"], "stable")
         dialog.destroy.assert_called_once()

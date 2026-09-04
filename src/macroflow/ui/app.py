@@ -61,7 +61,7 @@ from macroflow.core.models import (
     script_ref_repeat_count,
 )
 from macroflow.input.input_guard import (
-    FocusInputGuard, KeyCapturer, MouseCapturer, RESERVED_HOTKEY_VKS,
+    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS,
 )
 from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
@@ -341,6 +341,8 @@ def _module_ref_summary(action: dict, label: str,
     blocking = (
         ("持续执行直到期望文字消失" if obj.get("recognize") == "text" else "持续执行直到模板图片消失")
         if obj.get("wait_text_absent") else
+        f"阻塞 {int(action.get('blocking_timeout_ms', DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS))} ms 后跳过当前行"
+        if obj.get("blocking") and action.get("blocking_timeout_enabled", False) else
         "阻塞直到出现" if obj.get("blocking") else "等待超时后继续"
     )
     delay_a = int(obj.get("delay_ms", 0))
@@ -394,10 +396,25 @@ def _module_ref_summary(action: dict, label: str,
     return action_kind_label(kind, label), detail, f"{int(action.get('delay_ms', 0))} ms"
 
 
-def key_action_matches(action: dict, query: str = "", state: str = "all") -> bool:
-    """Return whether an input action matches a key/mouse query and state."""
+def key_action_matches(
+    action: dict, query: str = "", state: str = "all", query_kind: str = "",
+) -> bool:
+    """Return whether an input action matches a key/mouse query and state.
+
+    ``query_kind`` is set for values captured by the combined key/mouse
+    detector. Captured values must stay within their input type and match
+    exactly; an empty kind keeps the fuzzy matching used for manual searches.
+    """
     kind = str(action.get("type", ""))
     if kind not in {"key", "key_press", "mouse_button", "click", "repeat_click"}:
+        return False
+    normalized_kind = str(query_kind or "").strip().casefold()
+    if normalized_kind not in {"", "key", "mouse"}:
+        normalized_kind = ""
+    is_mouse_action = kind in {"mouse_button", "click", "repeat_click"}
+    if normalized_kind == "key" and is_mouse_action:
+        return False
+    if normalized_kind == "mouse" and not is_mouse_action:
         return False
     state_aliases = {
         "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
@@ -417,14 +434,18 @@ def key_action_matches(action: dict, query: str = "", state: str = "all") -> boo
         button_name = {
             "left": "左键", "right": "右键", "middle": "中键",
         }.get(button, button)
+        if normalized_kind == "mouse":
+            return needle in {button, button_name.casefold()}
         return needle in button or needle in button_name.casefold()
     name = str(action.get("name", "")).strip().casefold()
     vk = str(action.get("vk", "")).strip().casefold()
+    if normalized_kind == "key":
+        return needle in {name, vk}
     return needle in name or needle in vk
 
 
 def set_matching_key_action_delays(
-    actions: list[dict], query: str, state: str, delay_ms: int,
+    actions: list[dict], query: str, state: str, delay_ms: int, query_kind: str = "",
 ) -> list[int]:
     """Set delay_ms for matching key actions and return their indices."""
     if not str(query or "").strip():
@@ -432,7 +453,7 @@ def set_matching_key_action_delays(
     delay = max(0, int(delay_ms))
     changed: list[int] = []
     for index, action in enumerate(actions):
-        if key_action_matches(action, query, state):
+        if key_action_matches(action, query, state, query_kind=query_kind):
             action["delay_ms"] = delay
             changed.append(index)
     return changed
@@ -870,6 +891,7 @@ class MacroFlowApp:
         set_dark_titlebar(self.root.winfo_id())
 
         self.app_settings = load_app_settings()
+        self._restore_main_window_geometry()
         # 游戏设置说明（用户可编辑的使用前参数清单）：随 app_settings 持久化。
         self._game_setup_note = self.app_settings.get("game_setup_note")
         # 快捷键脚本绑定：录制与执行过程中按快捷键立即执行绑定的脚本。
@@ -1067,8 +1089,8 @@ class MacroFlowApp:
         if self.startup_run_workflow_var.get() and not explicit_editor_start:
             self.root.after(700, self._run_configured_startup_workflow)
         if not explicit_editor_start:
-            # 恢复上次关闭时脚本编辑页正在编辑的脚本。
-            self.root.after(400, self._load_last_script)
+            # 恢复上次关闭时脚本编辑页的完整状态（含未保存动作）。
+            self.root.after(400, self._restore_last_editor_state)
 
     def _configure_dark_theme(self):
         style = self.root.style
@@ -1220,11 +1242,12 @@ class MacroFlowApp:
         self.cursor_tracking_mini_var = tk.StringVar(value="X: 0    Y: 0")
         self.status_var = tk.StringVar(value="就绪")
         self.key_search_var = tk.StringVar(value="")
+        self._key_search_query_kind = ""
+        self.key_search_var.trace_add("write", self._clear_captured_search_query_kind)
         self.key_search_state_var = tk.StringVar(value="全部")
         self.key_search_delay_var = tk.StringVar(value="0")
         self.key_search_match_var = tk.StringVar(value="")
-        self._key_search_capturer = None
-        self._mouse_search_capturer = None
+        self._input_search_capturer = None
         self.coordinate_scale_var = tk.StringVar(value=coordinate_scale_summary(
             self.script.settings.get("recorded_screen"), get_virtual_screen_rect(),
         ))
@@ -1845,16 +1868,11 @@ class MacroFlowApp:
             key_search_bar, textvariable=self.key_search_var, width=18,
         )
         key_search_entry.pack(side="left", padx=(8, 5))
-        self.key_search_capture_button = ttk.Button(
-            key_search_bar, text="检测按键…", width=9,
-            command=self.start_key_search_capture, style="Ghost.TButton",
+        self.input_search_capture_button = ttk.Button(
+            key_search_bar, text="检测键鼠…", width=10,
+            command=self.start_input_search_capture, style="Ghost.TButton",
         )
-        self.key_search_capture_button.pack(side="left", padx=(0, 5))
-        self.mouse_search_capture_button = ttk.Button(
-            key_search_bar, text="检测鼠标…", width=9,
-            command=self.start_mouse_search_capture, style="Ghost.TButton",
-        )
-        self.mouse_search_capture_button.pack(side="left", padx=(0, 5))
+        self.input_search_capture_button.pack(side="left", padx=(0, 5))
         key_search_entry.bind("<Return>", lambda _event: self._search_key_actions(1))
         key_search_state = ttk.Combobox(
             key_search_bar, textvariable=self.key_search_state_var,
@@ -2261,6 +2279,53 @@ class MacroFlowApp:
             }
         return script
 
+    def _restore_main_window_geometry(self) -> None:
+        """Restore the main window size and position saved at the last close."""
+        geometry = str(getattr(self, "app_settings", {}).get("main_window_geometry", "") or "").strip()
+        if not geometry:
+            return
+        try:
+            self.root.geometry(geometry)
+        except (AttributeError, tk.TclError, ValueError):
+            # Ignore stale monitor coordinates or a malformed setting and keep
+            # the safe default geometry assigned during window creation.
+            return
+
+    def _current_main_window_geometry(self) -> str:
+        root = getattr(self, "root", None)
+        if root is None:
+            return str(getattr(self, "app_settings", {}).get("main_window_geometry", "") or "").strip()
+        try:
+            geometry = str(root.geometry()).strip()
+        except (AttributeError, tk.TclError, ValueError):
+            geometry = ""
+        return geometry or str(
+            getattr(self, "app_settings", {}).get("main_window_geometry", "") or "",
+        ).strip()
+
+    def _editor_draft_snapshot(self) -> dict | None:
+        """Capture the complete current editor state without overwriting its file."""
+        script = getattr(self, "script", None)
+        if not isinstance(script, MacroScript):
+            return None
+        snapshot = copy.deepcopy(script)
+        name_var = getattr(self, "script_name_var", None)
+        if name_var is not None:
+            name = str(name_var.get()).strip()
+            if name:
+                snapshot.name = name
+        snapshot.settings = self._current_script_settings()
+        category_var = getattr(self, "script_category_var", None)
+        category_label = category_var.get() if category_var is not None else "关卡"
+        snapshot.settings["category"] = script_category_key(category_label)
+        snapshot.is_global = is_global_script(snapshot.to_dict())
+        return {
+            "script": snapshot.to_dict(),
+            "script_path": display_path(self.script_path) if self.script_path else "",
+            "script_requires_new_file": bool(getattr(self, "script_requires_new_file", False)),
+            "dirty": bool(getattr(self, "dirty", False)),
+        }
+
     def _remember_activation_draft(self) -> None:
         """Remember an explicit sidebar change independently from script loading."""
         self.activation_draft_enabled = bool(self.activation_enabled_var.get())
@@ -2289,6 +2354,7 @@ class MacroFlowApp:
             "execution_mini_enabled": bool(self.execution_mini_enabled_var.get()),
             "playback_speed": round(float(self.playback_speed_var.get()), 1),
             "execution_mini_position": list(getattr(self, "execution_mini_position", [])),
+            "main_window_geometry": self._current_main_window_geometry(),
             "close_action": self.close_action_var.get(),
             "record_mode": "auto",
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
@@ -2318,6 +2384,7 @@ class MacroFlowApp:
             # 脚本编辑页当前打开的脚本：每次持久化（含关闭应用）都记录，
             # 下次启动时自动恢复；编辑器无脚本（新建/关闭/录制分离）时记为 ""。
             "last_script_path": display_path(self.script_path) if self.script_path else "",
+            "editor_draft": self._editor_draft_snapshot(),
             "hotkey_scripts": list(getattr(self, "hotkey_scripts", [])),
             "game_setup_note": getattr(self, "_game_setup_note", None),
         }
@@ -2527,6 +2594,7 @@ class MacroFlowApp:
         repeats and breakpoint resumes cannot skip global actions above it.
         """
         ensure_action_ids(actions)
+        scope_started_at = time.perf_counter()
         scope_action_ids = frozenset(
             str(action.get(ACTION_ID_KEY, "")).strip()
             for action in actions
@@ -2555,6 +2623,26 @@ class MacroFlowApp:
                         guard = guards.get(key)
                         if guard is not None:
                             guard["scope_action_ids"] = scope_action_ids
+        # All script-global module delays belong to the calling script's start,
+        # not to the order in which individual guards finish registering.
+        guards = getattr(self, "global_guards", None)
+        if guards is not None:
+            lock = getattr(self, "guards_lock", None)
+            if lock is None:
+                guarded_items = ((key, guards.get(key)) for key in keys)
+                for _key, guard in guarded_items:
+                    if guard is not None:
+                        guard["start_delay_since"] = scope_started_at
+                        guard["start_delay_done"] = False
+                        guard["not_found_since"] = scope_started_at
+            else:
+                with lock:
+                    for key in keys:
+                        guard = guards.get(key)
+                        if guard is not None:
+                            guard["start_delay_since"] = scope_started_at
+                            guard["start_delay_done"] = False
+                            guard["not_found_since"] = scope_started_at
         return tuple(keys)
 
     def _exit_script_global_scope(self, keys: object) -> None:
@@ -4347,13 +4435,19 @@ class MacroFlowApp:
         self.script.settings["activation_window"] = (
             dict(self.saved_activation_signature) if self.saved_activation_signature else None
         )
+        self.script.settings["activation_window_configured"] = True
         self._mark_dirty()
 
     def _sync_activation_ui_from_script(self):
         """Refresh the sidebar pre-window controls from the current script."""
+        configured = self.script.settings.get("activation_window_configured")
         has_script_config = (
-            "activation_window_enabled" in self.script.settings
-            or "activation_window" in self.script.settings
+            bool(configured)
+            if configured is not None
+            else bool(
+                self.script.settings.get("activation_window_enabled")
+                or self.script.settings.get("activation_window")
+            )
         )
         if has_script_config:
             enabled, signature = self._activation_settings_from_script()
@@ -5101,6 +5195,52 @@ class MacroFlowApp:
             return
         self.load_script_into_editor(path)
 
+    def _restore_editor_draft(self, draft: dict) -> bool:
+        """Restore an editor snapshot captured during the previous shutdown."""
+        raw_script = draft.get("script") if isinstance(draft, dict) else None
+        if not isinstance(raw_script, dict):
+            return False
+        try:
+            script = MacroScript.from_dict(raw_script)
+            ensure_action_ids(script.actions)
+        except (TypeError, ValueError, KeyError):
+            return False
+
+        self.script = script
+        raw_path = str(draft.get("script_path", "") or "").strip()
+        self.script_path = resolve_path(raw_path) if raw_path else None
+        self.script_requires_new_file = bool(draft.get("script_requires_new_file", False))
+        self.script_name_var.set(script.name)
+        self.record_mode_var.set("auto")
+        try:
+            interval = max(10, min(500, int(script.settings.get(
+                "move_interval_ms", DEFAULT_MOUSE_MOVE_INTERVAL_MS,
+            ))))
+        except (TypeError, ValueError):
+            interval = DEFAULT_MOUSE_MOVE_INTERVAL_MS
+        self.interval_var.set(interval)
+        category_key = str(script.settings.get("category", "level"))
+        self.script_category_var.set({
+            "level": "关卡", "level_pack": "关卡封装",
+            "switch": "切换", "direction": "方向",
+        }.get(category_key, "关卡"))
+        self.dirty = bool(draft.get("dirty", False))
+        self._clear_action_undo()
+        self.undo_open_stack = []
+        self._update_undo_open_button()
+        self.rebuild_action_tree()
+        self._refresh_coordinate_scale_status()
+        self._sync_activation_ui_from_script()
+        self._set_status(f"已恢复上次编辑状态：{script.name}", "success")
+        self._log(f"已恢复上次关闭时的编辑状态：{script.name}")
+        return True
+
+    def _restore_last_editor_state(self) -> None:
+        draft = self.app_settings.get("editor_draft")
+        if isinstance(draft, dict) and self._restore_editor_draft(draft):
+            return
+        self._load_last_script()
+
     def _load_last_script(self):
         """启动时恢复上次关闭时脚本编辑页正在编辑的脚本。
 
@@ -5118,6 +5258,9 @@ class MacroFlowApp:
 
     def _current_script_settings(self, recorded_screen: dict | None = None) -> dict:
         settings = dict(self.script.settings)
+        configured = settings.get("activation_window_configured")
+        if configured is None:
+            configured = bool(self.activation_enabled_var.get() or self.saved_activation_signature)
         settings.update({
             "record_mode": "auto",
             "move_interval_ms": int(self.interval_var.get()),
@@ -5125,6 +5268,7 @@ class MacroFlowApp:
             "activation_window": (
                 dict(self.saved_activation_signature) if self.saved_activation_signature else None
             ),
+            "activation_window_configured": bool(configured),
         })
         if recorded_screen:
             settings["recorded_screen"] = dict(recorded_screen)
@@ -5361,125 +5505,83 @@ class MacroFlowApp:
         selected = self.action_tree.selection()
         return int(selected[0]) if selected else None
 
+    def _clear_captured_search_query_kind(self, *_args):
+        """Manual edits switch the search back to fuzzy cross-type matching."""
+        self._key_search_query_kind = ""
+
     def _set_search_capture_buttons_state(self, state: str):
-        for button in (
-            getattr(self, "key_search_capture_button", None),
-            getattr(self, "mouse_search_capture_button", None),
-        ):
-            if button is not None:
-                try:
-                    button.configure(state=state)
-                except tk.TclError:
-                    pass
+        button = getattr(self, "input_search_capture_button", None)
+        if button is None:
+            return "break"
+        try:
+            button.configure(state=state)
+        except tk.TclError:
+            pass
 
-    def start_key_search_capture(self):
-        """Capture one physical key and use its canonical name for key search."""
-        if (
-            getattr(self, "_key_search_capturer", None) is not None
-            or getattr(self, "_mouse_search_capturer", None) is not None
-        ):
+    def start_input_search_capture(self):
+        """Capture the next physical key or mouse button for input search."""
+        if getattr(self, "_input_search_capturer", None) is not None:
             return "break"
         self._set_search_capture_buttons_state("disabled")
-        self.key_search_match_var.set("请按下要搜索的按键…按 Esc 取消")
+        self.key_search_match_var.set("请按下要搜索的键或鼠标按键…按 Esc 取消")
 
-        def on_key(vk):
+        def on_input(kind, value):
             try:
-                self.root.after(0, self._apply_captured_search_key, int(vk))
+                self.root.after(0, self._apply_captured_search_input, kind, value)
             except tk.TclError:
                 pass
 
         def on_cancel():
             try:
-                self.root.after(0, self._cancel_key_search_capture)
+                self.root.after(0, self._cancel_search_capture)
             except tk.TclError:
                 pass
 
-        capturer = KeyCapturer(on_key, on_cancel)
-        self._key_search_capturer = capturer
+        capturer = InputCapturer(on_input, on_cancel)
+        self._input_search_capturer = capturer
         if not capturer.start():
-            self._key_search_capturer = None
+            self._input_search_capturer = None
             self._set_search_capture_buttons_state("normal")
-            self.key_search_match_var.set("无法捕获按键")
+            self.key_search_match_var.set("无法捕获键鼠输入")
         return "break"
 
-    def start_mouse_search_capture(self):
-        """Capture one physical mouse button and use it for input search."""
-        if (
-            getattr(self, "_key_search_capturer", None) is not None
-            or getattr(self, "_mouse_search_capturer", None) is not None
-        ):
-            return "break"
-        self._set_search_capture_buttons_state("disabled")
-        self.key_search_match_var.set("请按下要搜索的鼠标按键…按 Esc 取消")
-
-        def on_button(button):
-            try:
-                self.root.after(0, self._apply_captured_mouse_button, str(button))
-            except tk.TclError:
-                pass
-
-        def on_cancel():
-            try:
-                self.root.after(0, self._cancel_mouse_search_capture)
-            except tk.TclError:
-                pass
-
-        capturer = MouseCapturer(on_button, on_cancel)
-        self._mouse_search_capturer = capturer
-        if not capturer.start():
-            self._mouse_search_capturer = None
-            self._set_search_capture_buttons_state("normal")
-            self.key_search_match_var.set("无法捕获鼠标按键")
-        return "break"
-
-    def _apply_captured_search_key(self, vk: int):
-        self.key_search_var.set(vk_to_key_name(vk))
+    def _apply_captured_search_input(self, kind: str, value):
+        query_kind = str(kind).strip().casefold()
+        if query_kind == "mouse":
+            value = {
+                "left": "左键", "right": "右键", "middle": "中键",
+            }.get(str(value).strip().casefold(), str(value))
+        else:
+            query_kind = "key"
+            value = vk_to_key_name(int(value))
+        self.key_search_var.set(value)
+        self._key_search_query_kind = query_kind
         self._finish_search_capture()
         self._search_key_actions(1)
 
-    def _cancel_key_search_capture(self):
+    def _cancel_search_capture(self):
         self._finish_search_capture()
-        self.key_search_match_var.set("已取消按键检测")
-
-    def _apply_captured_mouse_button(self, button: str):
-        button_name = {
-            "left": "左键", "right": "右键", "middle": "中键",
-        }.get(str(button).strip().casefold(), str(button))
-        self.key_search_var.set(button_name)
-        self._finish_search_capture()
-        self._search_key_actions(1)
-
-    def _cancel_mouse_search_capture(self):
-        self._finish_search_capture()
-        self.key_search_match_var.set("已取消鼠标按键检测")
+        self.key_search_match_var.set("已取消键鼠检测")
 
     def _finish_search_capture(self):
-        capturers = (
-            getattr(self, "_key_search_capturer", None),
-            getattr(self, "_mouse_search_capturer", None),
-        )
-        self._key_search_capturer = None
-        self._mouse_search_capturer = None
-        for capturer in capturers:
-            if capturer is None:
-                continue
+        capturer = getattr(self, "_input_search_capturer", None)
+        self._input_search_capturer = None
+        if capturer is not None:
             try:
                 capturer.stop()
             except Exception:
                 pass
         self._set_search_capture_buttons_state("normal")
 
-    def _finish_key_search_capture(self):
-        self._finish_search_capture()
-
     def _search_key_actions(self, direction: int = 1):
         state = {
             "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
         }.get(self.key_search_state_var.get(), "all")
         query = self.key_search_var.get()
+        query_kind = getattr(self, "_key_search_query_kind", "")
         matches = [
             index for index, action in enumerate(self.script.actions)
-            if key_action_matches(action, query, state)
+            if key_action_matches(action, query, state, query_kind=query_kind)
         ]
         if not query.strip() and state == "all":
             matches = []
@@ -5501,6 +5603,7 @@ class MacroFlowApp:
     def _clear_key_search(self):
         self._finish_search_capture()
         self.key_search_var.set("")
+        self._key_search_query_kind = ""
         self.key_search_state_var.set("全部")
         self.key_search_delay_var.set("0")
         self.key_search_match_var.set("")
@@ -5520,16 +5623,17 @@ class MacroFlowApp:
         state = {
             "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
         }.get(self.key_search_state_var.get(), "all")
+        query_kind = getattr(self, "_key_search_query_kind", "")
         candidate_indices = [
             index for index, action in enumerate(self.script.actions)
-            if key_action_matches(action, query, state)
+            if key_action_matches(action, query, state, query_kind=query_kind)
         ]
         if not candidate_indices:
             self.key_search_match_var.set("未找到")
             return "break"
         self._checkpoint_action_edit()
         changed = set_matching_key_action_delays(
-            self.script.actions, query, state, delay,
+            self.script.actions, query, state, delay, query_kind=query_kind,
         )
         self._mark_dirty()
         self.rebuild_action_tree()
@@ -8248,6 +8352,10 @@ class MacroFlowApp:
         if self.exiting:
             return
         self.exiting = True
+        if self.recorder.running:
+            # The recorder owns the newest actions until it is stopped. Move
+            # them into the editor before taking the shutdown snapshot.
+            self.stop_recording(sound=False)
         self._persist_workflow_draft()
         if self.backup_after_id is not None:
             try:
@@ -8264,8 +8372,6 @@ class MacroFlowApp:
         if self.cursor_tracking:
             self._stop_cursor_tracking()
         self.input_guard.stop()
-        if self.recorder.running:
-            self.recorder.stop()
         self._hide_recording_mini()
         if self.hotkey_listener:
             self.hotkey_listener.stop()

@@ -73,7 +73,11 @@ class AdvanceToNextWorkflowStep(Exception):
 class EndCurrentScriptRequest(Exception):
     """Leave nested code segments and stop at the nearest script boundary."""
 
-    pass
+    def __init__(self, repeat_only: bool = False):
+        super().__init__()
+        # 全局模块处理段处于当前脚本重复内部，只结束本次执行，不能跳过
+        # 当前脚本后续重复。
+        self.repeat_only = bool(repeat_only)
 
 
 class EndCurrentScriptRepeatRequest(Exception):
@@ -269,6 +273,9 @@ class MacroPlayer:
         # 守卫处理段执行深度：处理段内不再评估守卫（与旧模型"模块执行期间
         # 其它检测暂停"一致），同一时刻只允许一个处理段。
         self._handler_depth = 0
+        # 标记当前动作是否来自全局守卫处理段；其中的结束动作只结束本次
+        # 脚本重复，不能让外层播放循环跳过剩余重复。
+        self._guard_processing_depth = 0
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -494,6 +501,7 @@ class MacroPlayer:
         scope = None
         saved_source = self._source_screen
         saved_target = self._target_screen
+        self._guard_processing_depth += 1
         try:
             if self.on_script_scope_enter:
                 scope = self.on_script_scope_enter(actions)
@@ -504,6 +512,7 @@ class MacroPlayer:
         finally:
             self._source_screen = saved_source
             self._target_screen = saved_target
+            self._guard_processing_depth -= 1
             if self.on_script_scope_exit and scope is not None:
                 self.on_script_scope_exit(scope)
 
@@ -655,16 +664,23 @@ class MacroPlayer:
                             actions, hwnd, start_index=last_index,
                             on_action=on_action,
                         )
-                except EndCurrentScriptRequest:
-                    if on_repeat_complete:
-                        on_repeat_complete(repeat_index + 1, repeat_total)
-                    advanced_to_next_workflow_step = True
-                    self._log_event(
-                        f"已{END_CURRENT_SCRIPT_LABEL}；"
-                        "跳过当前脚本剩余重复，继续执行工作流下一项。"
-                    )
-                    self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
-                    break
+                except EndCurrentScriptRequest as request:
+                    if request.repeat_only:
+                        self._log_event(
+                            f"已{END_CURRENT_SCRIPT_LABEL}本次执行；"
+                            "继续执行当前脚本下一次重复。"
+                        )
+                        self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
+                    else:
+                        if on_repeat_complete:
+                            on_repeat_complete(repeat_index + 1, repeat_total)
+                        advanced_to_next_workflow_step = True
+                        self._log_event(
+                            f"已{END_CURRENT_SCRIPT_LABEL}；"
+                            "跳过当前脚本剩余重复，继续执行工作流下一项。"
+                        )
+                        self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
+                        break
                 except AdvanceToNextWorkflowStep:
                     # The current repeat counts as completed, but remaining
                     # repeats of this workflow step are skipped immediately.
@@ -699,7 +715,13 @@ class MacroPlayer:
                         self._status(
                             f"全局检测触发：下一次重复从第 {target_index + 1} 行开始"
                         )
-                    except EndCurrentScriptRequest:
+                    except EndCurrentScriptRequest as request:
+                        if request.repeat_only:
+                            self._status(
+                                f"已{END_CURRENT_SCRIPT_LABEL}本次执行，"
+                                "继续当前脚本下一次重复"
+                            )
+                            continue
                         advanced_to_next_workflow_step = True
                         self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
                         break
@@ -800,7 +822,9 @@ class MacroPlayer:
                 continue
             target_kind, target_value = jump_target
             if target_kind == "end_current_script":
-                raise EndCurrentScriptRequest()
+                raise EndCurrentScriptRequest(
+                    repeat_only=self._guard_processing_depth > 0,
+                )
             if target_kind == "next_workflow_step":
                 if depth > 0:
                     raise EndCurrentScriptRepeatRequest()
@@ -1107,7 +1131,9 @@ class MacroPlayer:
             # 独立脚本运行时没有“当前工作流”，该固定动作不执行。
             return None
         elif kind == "end_current_script":
-            raise EndCurrentScriptRequest()
+            raise EndCurrentScriptRequest(
+                repeat_only=self._guard_processing_depth > 0,
+            )
         elif kind == "jump_current_script_last":
             raise JumpToCurrentScriptLastAction()
         elif kind == "block":
@@ -1173,7 +1199,13 @@ class MacroPlayer:
                             referenced.actions, hwnd,
                             script_stack=script_stack, depth=depth + 1,
                         )
-                    except EndCurrentScriptRequest:
+                    except EndCurrentScriptRequest as request:
+                        if request.repeat_only:
+                            self._status(
+                                f"已{END_CURRENT_SCRIPT_LABEL}本次执行，"
+                                "进入下一次引用执行"
+                            )
+                            continue
                         # 只在最近的脚本引用边界接住；模块代码段本身不是脚本边界，
                         # 因而结束信号会先穿过代码段，再结束当前最里层引用脚本。
                         self._status(f"已{END_CURRENT_SCRIPT_LABEL}（返回外层脚本）")
@@ -1336,13 +1368,26 @@ class MacroPlayer:
             )
         timeout_ms = max(0, int(action.get("timeout_ms", 3000)))
         wait_forever = bool(action.get("wait_forever", False))
+        blocking_timeout_enabled = False
         interval_ms = max(50, int(action.get("interval_ms", 250)))
         threshold = min(1.0, max(0.1, float(action.get("threshold", 0.85))))
         if module_obj is not None:
-            wait_forever = bool(module_obj.get("blocking", False))
+            module_blocking = bool(module_obj.get("blocking", False))
+            blocking_timeout_enabled = module_blocking and bool(
+                action.get("blocking_timeout_enabled", False)
+            )
+            wait_forever = module_blocking and not blocking_timeout_enabled
             interval_ms = max(50, int(module_obj.get("interval_ms", 250)))
             threshold = min(1.0, max(0.1, float(module_obj.get("threshold", 0.85))))
-            timeout_ms = max(0, int(module_obj.get("not_found_timeout_ms", timeout_ms)))
+            if blocking_timeout_enabled:
+                try:
+                    timeout_ms = max(0, int(action.get(
+                        "blocking_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+                    )))
+                except (TypeError, ValueError):
+                    timeout_ms = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
+            else:
+                timeout_ms = max(0, int(module_obj.get("not_found_timeout_ms", timeout_ms)))
         if wait_forever:
             module_label = (
                 str((module_obj or {}).get("name", "")).strip()
@@ -1369,7 +1414,7 @@ class MacroPlayer:
                 expected_number = int(action["expected_number"])
             except (TypeError, ValueError) as exc:
                 raise RuntimeError("数字读取模块的比较数字不是有效整数") from exc
-        if wait_target_absent:
+        if wait_target_absent and not blocking_timeout_enabled:
             # “直到目标消失”本身就是无限等待条件，不受普通识别超时影响。
             wait_forever = True
         ignore_background = bool(
@@ -1627,6 +1672,27 @@ class MacroPlayer:
                 )
                 self._wait(interval_ms)
                 continue
+            if blocking_timeout_enabled and (time.perf_counter() - start) * 1000 >= timeout_ms:
+                timeout_subject = (
+                    str(module_obj.get("name") or "读取数字")
+                    if number_module else
+                    str(module_obj.get("name") or "识别文字")
+                    if text_module else
+                    str(module_obj.get("name") or Path(template).name or "模块")
+                )
+                self._log_event(
+                    f"模块 {timeout_subject} 阻塞等待达到 {timeout_ms} ms，"
+                    "已跳过当前脚本行",
+                )
+                self._status(
+                    f"模块 {timeout_subject} 阻塞超时，已跳过当前脚本行",
+                )
+                if action.get("show_result_notice") and self.on_notice:
+                    self.on_notice(
+                        f"阻塞模块超时：{timeout_subject} · {timeout_ms} ms · 已跳过",
+                        3500,
+                    )
+                return
             if module_timeout_enabled and (time.perf_counter() - start) * 1000 >= module_timeout_ms:
                 segment = list(module_obj.get("on_timeout_actions") or [])
                 timeout_subject = (

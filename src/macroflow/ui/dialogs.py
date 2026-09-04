@@ -2284,7 +2284,7 @@ def segment_action_is_blocking(action: dict) -> bool:
         key = str(action.get("module_key") or action.get("template", "")).strip()
         obj = registered_module_object(key) if key else None
         return bool(obj and (
-            obj.get("blocking")
+            (obj.get("blocking") and not action.get("blocking_timeout_enabled", False))
             or obj.get("wait_text_absent")
         ))
     return bool(action.get("blocking"))
@@ -5327,6 +5327,7 @@ class ModuleReferenceDelayDialog(ModalDialog):
         key = str(action.get("module_key") or action.get("template", ""))
         obj = registered_module_object(key)
         number_routes = bool(result_routes and obj and obj.get("recognize") == "number")
+        self.blocking_module = bool(obj and obj.get("blocking", False))
         super().__init__(
             parent, "编辑数字读取" if number_routes else "编辑模块引用",
             680, 640 if number_routes else 570 if result_routes else 330,
@@ -5336,6 +5337,12 @@ class ModuleReferenceDelayDialog(ModalDialog):
         self.number_routes_enabled = number_routes
         self.delay = duration_var(action.get("delay_ms", 0))
         self.after_delay = duration_var(action.get("after_delay_ms", 0))
+        self.blocking_timeout_enabled_var = tk.BooleanVar(
+            value=bool(action.get("blocking_timeout_enabled", False)),
+        )
+        self.blocking_timeout_var = duration_var(
+            action.get("blocking_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
+        )
         self.jump_options = image_jump_target_options(actions or [])
         self.jump_target_ids = dict(self.jump_options)
         self.on_success = tk.StringVar(
@@ -5382,6 +5389,21 @@ class ModuleReferenceDelayDialog(ModalDialog):
                 textvariable=variable, width=12,
             ).grid(row=row, column=1, sticky="ew", pady=8)
         next_row = 3
+        if self.blocking_module:
+            ttk.Label(body, text="阻塞超时后跳过").grid(
+                row=next_row, column=0, sticky="w", pady=8,
+            )
+            blocking_timeout_row = ttk.Frame(body)
+            blocking_timeout_row.grid(row=next_row, column=1, sticky="ew", pady=8)
+            ttk.Checkbutton(
+                blocking_timeout_row, text="启用",
+                variable=self.blocking_timeout_enabled_var,
+            ).pack(side="left")
+            ttk.Spinbox(
+                blocking_timeout_row, from_=0, to=86400000, increment=100,
+                textvariable=self.blocking_timeout_var, width=12,
+            ).pack(side="left", padx=(10, 0))
+            next_row += 1
         if number_routes:
             ttk.Label(body, text="比较数字").grid(
                 row=next_row, column=0, sticky="w", pady=8,
@@ -5437,7 +5459,7 @@ class ModuleReferenceDelayDialog(ModalDialog):
             text=(
                 "读取到数字后立即比较；等于走成功分支，不等于走失败分支。未读取到数字会按模块的阻塞和未识别时限重试，超时后走失败分支。"
                 if number_routes else
-                "结果分支只属于当前脚本行；识别方式、区域、相似度、阻塞、未识别时限、点击和代码段仍在“模块管理…”统一设置。"
+                "结果分支只属于当前脚本行；阻塞模块还可在此单独开启“阻塞超时后跳过”。识别方式、区域、相似度、阻塞、未识别时限、点击和代码段仍在“模块管理…”统一设置。"
                 if result_routes else
                 "此处只设置当前引用的进入/完成延时；检测和触发行为统一到“模块管理…”修改。"
             ),
@@ -5493,6 +5515,7 @@ class ModuleReferenceDelayDialog(ModalDialog):
                 "on_found", "found_jump_action_id",
                 "on_timeout", "timeout_jump_action_id",
                 "expected_number",
+                "blocking_timeout_enabled", "blocking_timeout_ms",
             )
             if key in self.action
         }
@@ -5516,6 +5539,31 @@ class ModuleReferenceDelayDialog(ModalDialog):
         result = dict(self.action)
         result["delay_ms"] = delay
         result["after_delay_ms"] = after_delay
+        blocking_module = bool(
+            getattr(self, "blocking_module", self.action.get("blocking", False)),
+        )
+        timeout_enabled_var = getattr(self, "blocking_timeout_enabled_var", None)
+        timeout_var = getattr(self, "blocking_timeout_var", None)
+        blocking_timeout_enabled = bool(
+            blocking_module and (
+                timeout_enabled_var.get()
+                if timeout_enabled_var is not None
+                else self.action.get("blocking_timeout_enabled", False)
+            )
+        )
+        blocking_timeout_ms = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
+        if timeout_var is not None:
+            try:
+                blocking_timeout_ms = max(0, int(timeout_var.get()))
+            except (TypeError, ValueError):
+                if blocking_timeout_enabled:
+                    show_floating_notice(
+                        self, "阻塞超时格式错误",
+                        "阻塞超时必须是大于等于 0 的整数（毫秒）。",
+                    )
+                    return
+        result["blocking_timeout_enabled"] = blocking_timeout_enabled
+        result["blocking_timeout_ms"] = blocking_timeout_ms
         if bool(getattr(self, "number_routes_enabled", False)):
             try:
                 expected_number = int(self.expected_number.get())

@@ -111,6 +111,8 @@ Create a Switch module, set the recognition mode to **Read Number**, and drag-se
 
 When inserting the module into a script, configure the **compare number** and two result branches: **equal / not-equal-or-not-read**. Both branches can continue to the next line, jump to a stable line object, or end the innermost script; when no number is read, it retries per the module's blocking / timeout settings, and a non-blocking timeout falls to the failure branch.
 
+After inserting a blocking module into a specific script, double-click that reference row to optionally enable **skip after blocking timeout** and set its duration. It is off by default, applies only to that script row, and leaves other references to the same module blocking as configured.
+
 ## ⚙️ Workflows
 
 The Workflow page organizes multiple scripts in order; each step supports:
@@ -220,7 +222,7 @@ First public release, organized by feature area:
 
 - Template matching: region, threshold, ignore background, timeout branches, secondary confirmation
 - Offline PaddleOCR: loaded on demand; real text-box coordinates, pixel offsets, wait-until-text-gone, number reading
-- Module repository: switch / workflow-global / script-global / special; enable / disable, bulk add / remove, post-action & timeout code segments, fallback recognition, multi-click, pre-recognition delay
+- Module repository: switch / workflow-global / script-global / special; enable / disable, bulk add / remove, post-action & timeout code segments, fallback recognition, multi-click, pre-recognition delay; script-row timeout skip for blocking references (off by default)
 - Window auto-hiding while picking coordinates on screen so the tool never blocks the target page
 
 ### Workflows

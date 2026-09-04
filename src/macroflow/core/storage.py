@@ -252,6 +252,10 @@ def load_app_settings() -> dict:
         "startup_workflow_path": "",
         # 上次关闭时脚本编辑页正在编辑的脚本（启动时自动恢复打开）。
         "last_script_path": "",
+        # 上次关闭时编辑器的完整快照，包含尚未手动保存的录制动作和脚本设置。
+        "editor_draft": None,
+        # 主窗口最后一次关闭时的尺寸与位置。
+        "main_window_geometry": "",
         # 快捷键脚本绑定：[{"key": "J", "vk": 74, "script": "scripts/关卡/xx.json"}, ...]
         "hotkey_scripts": [],
     }
