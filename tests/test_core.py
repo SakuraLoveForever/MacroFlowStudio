@@ -9173,6 +9173,102 @@ class PlayerTests(unittest.TestCase):
             [0, 100, 200],
         )
 
+    def test_absolute_mouse_button_positions_from_its_own_coordinates(self):
+        player = MacroPlayer()
+        player._source_screen = {"left": -1920, "top": 0, "width": 3840, "height": 2160}
+        player._target_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        player._wait = Mock()
+        with patch("macroflow.execution.player.send_move_absolute") as move, \
+             patch("macroflow.execution.player.send_button") as button:
+            player._execute_action({
+                "type": "mouse_button", "mode": "absolute", "x": -960, "y": 540,
+                "button": "left", "down": True,
+            }, None)
+        move.assert_called_once_with(480, 270)
+        button.assert_called_once_with("left", True)
+
+    def test_relative_mouse_button_does_not_teleport_cursor(self):
+        player = MacroPlayer()
+        with patch("macroflow.execution.player.send_move_absolute") as move, \
+             patch("macroflow.execution.player.send_button") as button:
+            player._execute_action({
+                "type": "mouse_button", "mode": "relative", "x": 100, "y": 200,
+                "button": "right", "down": True,
+            }, None)
+        move.assert_not_called()
+        button.assert_called_once_with("right", True)
+
+    def test_stop_during_mouse_button_hold_releases_button(self):
+        player = MacroPlayer()
+        player._wait = lambda _milliseconds: player.stop()
+        with patch("macroflow.execution.player.send_button") as button:
+            player.play([
+                {"type": "mouse_button", "button": "left", "down": True},
+                {"type": "delay", "ms": 1},
+            ])
+        self.assertEqual(button.call_args_list, [call("left", True), call("left", False)])
+
+    def test_recorded_turn_uses_pulse_duration_including_zero(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._center_cursor_for_turn = Mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 6, "dy": 0, "steps": 3,
+                "pulse_duration_ms": 0, "duration_ms": 10,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [0, 0, 0],
+        )
+
+        player._wait.reset_mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 6, "dy": 0, "steps": 3,
+                "pulse_duration_ms": 24,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [8, 8, 8],
+        )
+
+    def test_manual_turn_keeps_explicit_duration(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._center_cursor_for_turn = Mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 2, "dy": 0, "steps": 2,
+                "duration_ms": 14,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [7, 7],
+        )
+
+    def test_stop_cleanup_metric_measures_from_stop_request_to_release(self):
+        timing = []
+        player = MacroPlayer(on_timing=timing.append)
+        player._wait = lambda _milliseconds: player.stop()
+        with patch("macroflow.execution.player.time.perf_counter", side_effect=[
+            100.000, 100.025, 100.030, 100.080,
+        ]), patch("macroflow.execution.player.send_button"):
+            player.play([
+                {"type": "mouse_button", "button": "left", "down": True},
+                {"type": "delay", "ms": 1},
+            ])
+        self.assertAlmostEqual(timing[0]["stop_cleanup_ms"], 55.0)
+
+    def test_release_all_clears_keys_and_buttons_when_a_release_raises(self):
+        player = MacroPlayer()
+        player._held_keys.add(65)
+        player._held_buttons.add("left")
+        with patch("macroflow.execution.player.send_key", side_effect=RuntimeError("key")) as key, \
+             patch("macroflow.execution.player.send_button", side_effect=RuntimeError("button")) as button:
+            player._release_all(None)
+        key.assert_called_once_with(65, False)
+        button.assert_called_once_with("left", False)
+        self.assertEqual(player._held_keys, set())
+        self.assertEqual(player._held_buttons, set())
+
     def test_playback_speed_scales_waits_without_changing_hold_time(self):
         player = MacroPlayer()
         player.set_playback_speed(1.2)

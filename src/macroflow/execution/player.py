@@ -284,8 +284,11 @@ class MacroPlayer:
             now=time.perf_counter,
             wait=self._wait_on_timeline,
         )
+        self._stop_requested_at: float | None = None
 
     def stop(self) -> None:
+        if self._stop_requested_at is None:
+            self._stop_requested_at = time.perf_counter()
         self.stop_event.set()
 
     def reset(self) -> None:
@@ -566,6 +569,7 @@ class MacroPlayer:
             raise RuntimeError("已有脚本正在执行")
         self.running = True
         self._timeline_waiting = False
+        self._stop_requested_at = None
         self._timeline = PlaybackTimeline(
             now=time.perf_counter,
             wait=self._wait_on_timeline,
@@ -778,11 +782,12 @@ class MacroPlayer:
         finally:
             if self.on_script_scope_exit and script_scope is not None:
                 self.on_script_scope_exit(script_scope)
-            cleanup_started = time.perf_counter()
             self._release_all(hwnd)
-            self._timeline.metrics.stop_cleanup_ms += (
-                time.perf_counter() - cleanup_started
-            ) * 1000
+            cleanup_finished = time.perf_counter()
+            if self._stop_requested_at is not None:
+                self._timeline.metrics.stop_cleanup_ms += (
+                    cleanup_finished - self._stop_requested_at
+                ) * 1000
             if self.on_timing:
                 self.on_timing(self._timeline.metrics.snapshot())
             self._relative_target_hwnd = None
@@ -1114,6 +1119,11 @@ class MacroPlayer:
         elif kind == "mouse_button":
             button = str(action.get("button", "left"))
             down = bool(action.get("down", True))
+            if action.get("mode") == "absolute":
+                x, y = int(action.get("x", 0)), int(action.get("y", 0))
+                x, y = self._scale_point(x, y)
+                x, y = self._clamp_click_point(x, y, hwnd)
+                send_move_absolute(x, y)
             send_button(button, down)
             (self._held_buttons.add if down else self._held_buttons.discard)(button)
         elif kind == "click":
@@ -1167,8 +1177,10 @@ class MacroPlayer:
             dx = int(action.get("dx", 0))
             dy = int(action.get("dy", 0))
             steps = max(1, min(500, int(action.get("steps", 1))))
-            duration_ms = max(0, int(action.get("duration_ms", 10)))
-            per_step = max(1, duration_ms // steps) if duration_ms > 0 else 0
+            if "pulse_duration_ms" in action:
+                duration_ms = max(0, int(action.get("pulse_duration_ms", 0)))
+            else:
+                duration_ms = max(0, int(action.get("duration_ms", 10)))
             self._status(
                 f"转向：ΔX={dx}，ΔY={dy}，{steps} 步，{duration_ms} ms"
             )
@@ -1188,8 +1200,9 @@ class MacroPlayer:
                 step_dx = current_dx - round(per_step_dx * (step - 1))
                 step_dy = current_dy - round(per_step_dy * (step - 1))
                 send_move_relative(step_dx, step_dy)
-                if per_step:
-                    self._wait(per_step)
+                step_start_ms = duration_ms * (step - 1) // steps
+                step_end_ms = duration_ms * step // steps
+                self._wait(step_end_ms - step_start_ms)
         elif kind == "scroll":
             dx, dy = int(action.get("dx", 0)), int(action.get("dy", 0))
             send_scroll(dx, dy)
