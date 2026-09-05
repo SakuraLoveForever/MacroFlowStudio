@@ -87,7 +87,7 @@ from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MacroPlayer, PlaybackStopped,
     scale_screen_point, screen_template_scale,
 )
-from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult
+from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult, DetectionWorker
 from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.recorder import MacroRecorder
@@ -4081,6 +4081,47 @@ class GuardTestHelpers:
 
 
 class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
+    def test_run_workflow_validation_early_return_shuts_down_detection_worker(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.recorder = Mock(running=False)
+        app.worker = None
+        app._workflow_only_steps = Mock(return_value=[{"kind": "script", "enabled": True}])
+        app._global_module_steps = Mock(return_value=[])
+        app._begin_detection_run = Mock()
+        app._read_workflow_start_delay = Mock(return_value=None)
+        worker = DetectionWorker(lambda _run_id, _config_version: None)
+        app._detection_worker = worker
+        app._ensure_detection_worker = Mock()
+        app._notify = Mock()
+        self.addCleanup(worker.close)
+
+        app.run_workflow(test_mode=False)
+
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIsNone(app._detection_worker)
+        self.assertTrue(worker._closed)
+
+    def test_run_current_script_startup_exception_shuts_down_detection_worker(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.recorder = Mock(running=False)
+        app.worker = None
+        app.script = Mock(actions=[{"type": "delay", "ms": 1}], settings={"trigger": {}})
+        app.repeat_var = Mock()
+        app.repeat_var.get.return_value = 1
+        app._begin_detection_run = Mock()
+        worker = DetectionWorker(lambda _run_id, _config_version: None)
+        app._detection_worker = worker
+        app._ensure_detection_worker = Mock()
+        app._bound_hwnd = Mock(side_effect=RuntimeError("binding failed"))
+        self.addCleanup(worker.close)
+
+        with self.assertRaises(RuntimeError):
+            app.run_current_script()
+
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIsNone(app._detection_worker)
+        self.assertTrue(worker._closed)
+
     def test_worker_evaluator_defers_overlay_and_fallback_click_to_player_thread(self):
         app = self._make_guard_app()
         app._pending_global_guard_hits = []

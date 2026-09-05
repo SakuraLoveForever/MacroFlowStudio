@@ -1011,7 +1011,7 @@ class MacroFlowApp:
         self._detection_run_id = 0
         self._guard_config_version = 0
         self._detection_request: tuple[int, int] | None = None
-        self._detection_worker = DetectionWorker(self._evaluate_global_guards_sync)
+        self._detection_worker = None
         # 同一共享截图命中的守卫按注册顺序排队，播放器逐个执行处理段。
         self._pending_global_guard_hits: list[dict] = []
         # 触发后跨执行保留的重新武装锁；新守卫确认图片消失后才允许再次触发。
@@ -5286,6 +5286,11 @@ class MacroFlowApp:
         self.load_script_into_editor(ref_path)
 
     def run_workflow_script_alone(self, step: dict):
+        return self._run_detection_entrypoint(
+            self._run_workflow_script_alone_impl, step,
+        )
+
+    def _run_workflow_script_alone_impl(self, step: dict):
         """工作流右键“单独执行一次测试”：加载该行脚本执行 1 次，不扣减工作流次数。
 
         使用该行脚本自己的前置窗口与录屏设置（同打开脚本按 F9），
@@ -5312,7 +5317,11 @@ class MacroFlowApp:
             return
         self._begin_detection_run()
         self._ensure_detection_worker()
-        hwnd = self._bound_hwnd()
+        try:
+            hwnd = self._bound_hwnd()
+        except BaseException:
+            self._shutdown_detection_worker()
+            raise
         activation_enabled = bool(script.settings.get("activation_window_enabled", False))
         activation_signature = script.settings.get("activation_window")
         if isinstance(activation_signature, dict) and activation_signature.get("title"):
@@ -6476,6 +6485,13 @@ class MacroFlowApp:
             worker.close()
             self._detection_worker = None
 
+    def _run_detection_entrypoint(self, callback, *args):
+        try:
+            return callback(*args)
+        except BaseException:
+            self._shutdown_detection_worker()
+            raise
+
     def run_script_from_selected_action(self):
         selected = sorted(int(item) for item in self.action_tree.selection())
         if not selected:
@@ -6484,6 +6500,11 @@ class MacroFlowApp:
         self.run_current_script(start_index=selected[0])
 
     def run_current_script(self, start_index: int = 0):
+        return self._run_detection_entrypoint(
+            self._run_current_script_impl, start_index,
+        )
+
+    def _run_current_script_impl(self, start_index: int = 0):
         if self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
@@ -7929,6 +7950,17 @@ class MacroFlowApp:
                      preserve_global_rearm_locks: bool = False,
                      test_mode: bool | None = None,
                      suppress_start_sound: bool = False):
+        return self._run_detection_entrypoint(
+            self._run_workflow_impl, start_index, start_repeat,
+            resume_action_index, preserve_global_rearm_locks, test_mode,
+            suppress_start_sound,
+        )
+
+    def _run_workflow_impl(self, start_index: int = 0, start_repeat: int = 0,
+                      resume_action_index: int | None = None,
+                      preserve_global_rearm_locks: bool = False,
+                      test_mode: bool | None = None,
+                      suppress_start_sound: bool = False):
         recorder = getattr(self, "recorder", None)
         if recorder is not None and recorder.running:
             self.stop_recording()
@@ -7951,6 +7983,7 @@ class MacroFlowApp:
             self.workflow_test_mode_active = bool(test_mode)
             start_delay_seconds = self._read_workflow_start_delay(validate=True)
             if start_delay_seconds is None:
+                self._shutdown_detection_worker()
                 return
         else:
             # 全局模块断点恢复与“重新执行工作流”属于同一次运行，不重复等待。
@@ -7976,6 +8009,7 @@ class MacroFlowApp:
                 start_at = datetime.strptime(start_text, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 self._notify("时间格式错误", "请使用格式：2026-08-03 23:30:00")
+                self._shutdown_detection_worker()
                 return
         hwnd = self._bound_hwnd()
         # 当前侧栏选择作为整个工作流的默认前置窗口；步骤脚本若保存了自己的
