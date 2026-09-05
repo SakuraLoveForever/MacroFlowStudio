@@ -2230,7 +2230,12 @@ class MacroFlowApp:
             else None
         )
         urgent = bool(key == "status" and args and str(args[0]).lower() in {"错误", "停止"})
-        self.ui_queue.submit(callback, *args, key=key, batch_key=batch_key, urgent=urgent)
+        ui_queue = getattr(self, "ui_queue", None)
+        if ui_queue is None:
+            # 允许未经过完整窗口初始化的后台测试 fixture 复用同一 UI 入口。
+            self.root.after(0, callback, *args)
+            return
+        ui_queue.submit(callback, *args, key=key, batch_key=batch_key, urgent=urgent)
 
     def _set_status(self, text: str, style: str = "normal"):
         self.status_var.set(text)
