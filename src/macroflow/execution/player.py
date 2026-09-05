@@ -30,6 +30,7 @@ from macroflow.core.storage import (
     DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, load_script, registered_module_object,
     registered_template_region, resolve_path,
 )
+from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.wininput import (
     activate_window, get_cursor_pos, get_foreground_window_info, get_virtual_screen_rect,
     get_window_rect, is_window,
@@ -233,7 +234,8 @@ class MacroPlayer:
                  on_script_scope_exit: Callable[[object], None] | None = None,
                  on_target_window_request: Callable[[], int | None] | None = None,
                  on_guard_poll: Callable[[], dict | None] | None = None,
-                 on_ocr_engine_wait: Callable[[], bool] | None = None):
+                 on_ocr_engine_wait: Callable[[], bool] | None = None,
+                 on_timing: Callable[[dict], None] | None = None):
         self.on_status = on_status
         self.on_notice = on_notice
         self.on_global_detect_request = on_global_detect_request
@@ -252,6 +254,7 @@ class MacroPlayer:
         # 返回 False 表示用户已请求停止，播放器应立即中断（F12 不再被
         # 首次 OCR 导入卡住）。
         self.on_ocr_engine_wait = on_ocr_engine_wait
+        self.on_timing = on_timing
         self.playback_speed = 1.0
         self.stop_event = threading.Event()
         self.running = False
@@ -276,6 +279,11 @@ class MacroPlayer:
         # 标记当前动作是否来自全局守卫处理段；其中的结束动作只结束本次
         # 脚本重复，不能让外层播放循环跳过剩余重复。
         self._guard_processing_depth = 0
+        self._timeline_waiting = False
+        self._timeline = PlaybackTimeline(
+            now=time.perf_counter,
+            wait=self._wait_on_timeline,
+        )
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -295,6 +303,19 @@ class MacroPlayer:
         if milliseconds <= 0:
             return 0
         return max(1, round(milliseconds / self.playback_speed))
+
+    def _wait_on_timeline(self, seconds: float) -> None:
+        self._timeline_waiting = True
+        try:
+            self._wait(seconds * 1000)
+        finally:
+            self._timeline_waiting = False
+
+    def _mark_explicit_wait(self, milliseconds: float) -> None:
+        if self._timeline_waiting:
+            return
+        self._timeline.metrics.explicit_wait_ms += max(0.0, milliseconds)
+        self._timeline.mark_boundary()
 
     def _status(self, text: str) -> None:
         if self.on_status:
@@ -317,6 +338,7 @@ class MacroPlayer:
         if milliseconds <= 0:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
+            self._mark_explicit_wait(milliseconds)
             return
         # 长等待切成 100ms 片并逐片检查守卫：异常在等待期间也能被处理，
         # 处理段内联执行完继续剩余等待。短等待（按键按住/点击间隙）保持
@@ -332,19 +354,28 @@ class MacroPlayer:
                 # 等待期间的前台守护：每 5 片（约 500ms）检查一次目标窗口
                 # 是否仍在台前，其他程序弹窗抢焦点时几百毫秒内被抢回
                 # （无目标窗口时零开销跳过）。
+            self._mark_explicit_wait(milliseconds)
             return
         if self.stop_event.wait(milliseconds / 1000):
             raise PlaybackStopped()
+        self._mark_explicit_wait(milliseconds)
 
     def _poll_guards(self) -> None:
         """动作边界/等待片上的守卫评估：依次内联执行当前轮全部命中。"""
         if self._handler_depth > 0 or self.on_guard_poll is None:
             return
         while True:
-            hit = self.on_guard_poll()
+            started = time.perf_counter()
+            try:
+                hit = self.on_guard_poll()
+            finally:
+                self._timeline.metrics.recognition_ms += (
+                    time.perf_counter() - started
+                ) * 1000
             if not hit:
                 return
             self.handle_guard_hit(hit)
+            self._timeline.mark_boundary()
 
     @staticmethod
     def _guard_processing_action_description(action: object) -> str:
@@ -534,6 +565,11 @@ class MacroPlayer:
         if self.running:
             raise RuntimeError("已有脚本正在执行")
         self.running = True
+        self._timeline_waiting = False
+        self._timeline = PlaybackTimeline(
+            now=time.perf_counter,
+            wait=self._wait_on_timeline,
+        )
         # 每次播放前清空上次中断时的被引用脚本信息。
         self._last_stop_referenced_actions = None
         self._last_stop_referenced_source_screen = None
@@ -741,7 +777,13 @@ class MacroPlayer:
         finally:
             if self.on_script_scope_exit and script_scope is not None:
                 self.on_script_scope_exit(script_scope)
+            cleanup_started = time.perf_counter()
             self._release_all(hwnd)
+            self._timeline.metrics.stop_cleanup_ms += (
+                time.perf_counter() - cleanup_started
+            ) * 1000
+            if self.on_timing:
+                self.on_timing(self._timeline.metrics.snapshot())
             self._relative_target_hwnd = None
             self._source_screen = None
             self._target_screen = None
@@ -769,14 +811,21 @@ class MacroPlayer:
             if action.get("action_id")
         }
         index = max(0, min(int(start_index), max(0, len(actions) - 1)))
+        first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
+        self._timeline.start(first_offset_ms)
         while index < len(actions):
             action = actions[index]
             try:
                 # 动作边界守卫评估：命中时内联执行处理段（可携带跳转/结束/推进语义）。
                 self._poll_guards()
                 default_delay = 1000 if action.get("type") == "image_match" else 0
-                self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
+                if "recorded_at_ms" in action:
+                    self._timeline.wait_until(float(action["recorded_at_ms"]))
+                else:
+                    self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
                 jump_target = self._execute_action(action, hwnd, script_stack, depth)
+                if action.get("type") in {"delay", "script_ref", "image_match"}:
+                    self._timeline.mark_boundary()
             except GuardJumpRequest as request:
                 # 只在守卫所属脚本帧解析行目标；模块代码段或其他脚本帧
                 # 先原样抛出，直到回到对应的脚本动作序列。
@@ -841,6 +890,7 @@ class MacroPlayer:
                 target_index = jump_row - 1
             self._status(f"{self._jump_reason or '识图'}，跳到第 {target_index + 1} 行目标动作")
             index = target_index
+            self._timeline.mark_boundary()
 
     def _scale_point(self, x: int, y: int) -> tuple[int, int]:
         return scale_screen_point(x, y, self._source_screen, self._target_screen)

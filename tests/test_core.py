@@ -87,6 +87,7 @@ from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MacroPlayer, PlaybackStopped,
     scale_screen_point, screen_template_scale,
 )
+from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
@@ -8705,6 +8706,117 @@ class ShutdownLifecycleTests(unittest.TestCase):
 
 
 class PlayerTests(unittest.TestCase):
+    def test_recorded_actions_use_absolute_targets_when_execution_takes_time(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(_action, _hwnd, _stack=None, _depth=0):
+            clock.value += 0.003
+
+        player._execute_action = execute
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": 0.0},
+            {"type": "key", "recorded_at_ms": 100.0},
+            {"type": "key", "recorded_at_ms": 200.0},
+        ], None)
+
+        self.assertEqual(clock.waits, [0.097, 0.097])
+
+    def test_explicit_delay_rebases_the_next_recorded_action(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(action, *_args):
+            if action["type"] == "delay":
+                clock.wait(action["ms"] / 1000)
+
+        player._execute_action = execute
+
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": 0.0},
+            {"type": "delay", "ms": 50},
+            {"type": "key", "recorded_at_ms": 100.0},
+        ], None)
+
+        self.assertEqual([wait for wait in clock.waits if wait], [0.05, 0.1])
+
+    def test_nested_action_sequence_marks_boundaries_on_entry_and_exit(self):
+        player = MacroPlayer()
+        player._timeline.mark_boundary = Mock()
+
+        def execute(action, hwnd, stack=None, depth=0):
+            if action["type"] == "script_ref":
+                player._run_action_sequence([{"type": "comment"}], hwnd, depth=depth + 1)
+
+        player._execute_action = execute
+        player._run_action_sequence([{"type": "script_ref"}], None)
+
+        self.assertEqual(player._timeline.mark_boundary.call_count, 3)
+
+    def test_thousand_recorded_actions_do_not_accumulate_execution_cost(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(*_args):
+            clock.value += 0.003
+
+        player._execute_action = execute
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": float(index * 10)}
+            for index in range(1000)
+        ], None)
+
+        self.assertAlmostEqual(clock.value, 9.993, places=9)
+
+    def test_guard_poll_records_recognition_time_without_reordering_actions(self):
+        player = MacroPlayer(on_guard_poll=lambda: None)
+        player._execute_action = Mock(return_value=None)
+        with patch("macroflow.execution.player.time.perf_counter", side_effect=[10.0, 10.025]):
+            player._run_action_sequence([{"type": "comment"}], None)
+
+        self.assertEqual(player._execute_action.call_args_list[0].args[0]["type"], "comment")
+        self.assertAlmostEqual(player._timeline.metrics.recognition_ms, 25.0, places=6)
+
     def test_poll_guards_executes_all_hits_from_one_evaluation_in_order(self):
         hits = [
             {"kind": "success", "log_subject": "模块[first]"},
