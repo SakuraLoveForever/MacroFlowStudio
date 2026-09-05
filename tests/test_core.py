@@ -20,6 +20,7 @@ import threading
 import time
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, call, patch
 
 import cv2
@@ -4079,6 +4080,26 @@ class GuardTestHelpers:
 
 
 class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
+    def test_global_detection_poll_rejects_stale_run_or_config_results(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._detection_run_id = 8
+        app._detection_config_version = 3
+        app._ui = Mock()
+        app.detection_worker = Mock()
+        app.detection_worker.poll.return_value = SimpleNamespace(
+            run_id=7, config_version=3, hit={"kind": "success"}, error=None,
+        )
+
+        self.assertIsNone(app._evaluate_global_guards())
+        app.detection_worker.submit.assert_called_once_with(8, 3)
+
+    def test_new_test_fixture_without_detection_worker_keeps_sync_guard_seam(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._evaluate_global_guards_sync = Mock(return_value={"kind": "success"})
+
+        self.assertEqual(app._evaluate_global_guards(), {"kind": "success"})
+        app._evaluate_global_guards_sync.assert_called_once_with()
+
     def test_switch_module_fallback_clicks_once_then_main_match_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             main_path = Path(folder) / "main.png"

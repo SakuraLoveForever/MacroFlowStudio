@@ -70,6 +70,7 @@ from macroflow.execution.player import (
     JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
     screen_template_scale,
 )
+from macroflow.execution.detection_worker import DetectionWorker
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
@@ -1012,6 +1013,9 @@ class MacroFlowApp:
         # 触发后跨执行保留的重新武装锁；新守卫确认图片消失后才允许再次触发。
         self.global_detect_rearm_locks: set[str] = set()
         self.global_detect_trigger_count = 0
+        self._detection_run_id = 0
+        self._detection_config_version = 0
+        self.detection_worker = DetectionWorker(self._evaluate_global_guards_sync)
         # 单独执行（F9）全局脚本时的语句体回放参数：触发条件满足后重新播放语句体。
         self.standalone_global_replay: dict | None = None
         # 特殊模块「重新执行工作流」：标志 + 目标行（1 基，运行时按
@@ -2877,6 +2881,7 @@ class MacroFlowApp:
         }
         with self.guards_lock:
             self.global_guards[key] = guard
+        self._detection_config_version = int(getattr(self, "_detection_config_version", 0)) + 1
         name = guard["template"].name or "未设置"
         if region_mode == "window":
             region_text = "目标窗口"
@@ -2948,6 +2953,31 @@ class MacroFlowApp:
         return interval / 1000.0
 
     def _evaluate_global_guards(self) -> dict | None:
+        """Submit/poll recognition and keep guard handling on the caller thread."""
+        worker = getattr(self, "detection_worker", None)
+        if worker is None:
+            return self._evaluate_global_guards_sync()
+        run_id = int(getattr(self, "_detection_run_id", 0))
+        config_version = int(getattr(self, "_detection_config_version", 0))
+        worker.submit(run_id, config_version)
+        result = worker.poll()
+        if result is None:
+            return None
+        if result.run_id != run_id or result.config_version != config_version:
+            return None
+        if result.error is not None:
+            self._ui(self._log, f"全局检测失败：{result.error}")
+            return None
+        return result.hit
+
+    def _ensure_detection_worker(self) -> None:
+        worker = getattr(self, "detection_worker", None)
+        if worker is None or not worker.is_alive():
+            self.detection_worker = DetectionWorker(self._evaluate_global_guards_sync)
+
+    def _evaluate_global_guards_sync(
+        self, _run_id: int = 0, _config_version: int = 0,
+    ) -> dict | None:
         """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
 
         节流未到点的守卫跳过；至少一个守卫到点才截图一次，全部图片守卫
@@ -3503,6 +3533,7 @@ class MacroFlowApp:
 
     def _clear_global_guards(self) -> None:
         """清空全部守卫（执行开始/结束/停止时）。"""
+        self._detection_config_version = int(getattr(self, "_detection_config_version", 0)) + 1
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending is not None:
             pending.clear()
@@ -6390,6 +6421,8 @@ class MacroFlowApp:
     def _run_script_worker(self, actions, repeats, hwnd, activation_hwnd, source_screen,
                            focus_enabled, activate_target, start_index=0, trigger=None,
                            script_name: str = ""):
+        self._ensure_detection_worker()
+        self._detection_run_id = int(getattr(self, "_detection_run_id", 0)) + 1
         script_label = str(script_name).strip() or "未命名脚本"
         self._ui(self._set_status, "正在执行脚本…", "warning")
         if start_index:
@@ -6473,6 +6506,7 @@ class MacroFlowApp:
         finally:
             self.standalone_global_replay = None
             self._clear_global_guards()
+            self.detection_worker.close()
             self._leave_focus_mode()
             self._ui(self._finish_execution_visibility)
 
@@ -7902,6 +7936,8 @@ class MacroFlowApp:
                              resume_action_index=None, workflow_activation_hwnd=None,
                              test_mode=False, start_delay_seconds=0,
                              activation_allowed=True):
+        self._ensure_detection_worker()
+        self._detection_run_id = int(getattr(self, "_detection_run_id", 0)) + 1
         try:
             if start_at and start_at > datetime.now():
                 seconds = (start_at - datetime.now()).total_seconds()
@@ -8194,6 +8230,7 @@ class MacroFlowApp:
             # 守卫生命周期 = 一次执行：正常完成/报错/F12 都必须清空，
             # 否则残留的工作流全局模块守卫会在之后的单独脚本执行中继续触发。
             self._clear_global_guards()
+            self.detection_worker.close()
             # 特殊模块「重新执行工作流」继续沿用当前执行的输入锁；
             # 其余情况（普通完成/报错/F12）正常收尾。
             if not getattr(self, "workflow_restart_requested", False):
@@ -8438,6 +8475,9 @@ class MacroFlowApp:
         if hotkey_player is not None:
             hotkey_player.stop()
         self._clear_global_guards()
+        detection_worker = getattr(self, "detection_worker", None)
+        if detection_worker is not None:
+            detection_worker.close()
         if self.cursor_tracking:
             self._stop_cursor_tracking()
         self.input_guard.stop()
