@@ -87,6 +87,8 @@ from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MacroPlayer, PlaybackStopped,
     scale_screen_point, screen_template_scale,
 )
+from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult, DetectionWorker
+from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
@@ -4079,6 +4081,133 @@ class GuardTestHelpers:
 
 
 class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
+    def test_run_workflow_validation_early_return_shuts_down_detection_worker(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.recorder = Mock(running=False)
+        app.worker = None
+        app._workflow_only_steps = Mock(return_value=[{"kind": "script", "enabled": True}])
+        app._global_module_steps = Mock(return_value=[])
+        app._begin_detection_run = Mock()
+        app._read_workflow_start_delay = Mock(return_value=None)
+        worker = DetectionWorker(lambda _run_id, _config_version: None)
+        app._detection_worker = worker
+        app._ensure_detection_worker = Mock()
+        app._notify = Mock()
+        self.addCleanup(worker.close)
+
+        app.run_workflow(test_mode=False)
+
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIsNone(app._detection_worker)
+        self.assertTrue(worker._closed)
+
+    def test_run_current_script_startup_exception_shuts_down_detection_worker(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.recorder = Mock(running=False)
+        app.worker = None
+        app.script = Mock(actions=[{"type": "delay", "ms": 1}], settings={"trigger": {}})
+        app.repeat_var = Mock()
+        app.repeat_var.get.return_value = 1
+        app._begin_detection_run = Mock()
+        worker = DetectionWorker(lambda _run_id, _config_version: None)
+        app._detection_worker = worker
+        app._ensure_detection_worker = Mock()
+        app._bound_hwnd = Mock(side_effect=RuntimeError("binding failed"))
+        self.addCleanup(worker.close)
+
+        with self.assertRaises(RuntimeError):
+            app.run_current_script()
+
+        self.assertFalse(worker.thread.is_alive())
+        self.assertIsNone(app._detection_worker)
+        self.assertTrue(worker._closed)
+
+    def test_worker_evaluator_defers_overlay_and_fallback_click_to_player_thread(self):
+        app = self._make_guard_app()
+        app._pending_global_guard_hits = []
+        app._guard_config_version = 3
+        app._detection_run_id = 7
+        app._ui = Mock()
+        with tempfile.TemporaryDirectory() as folder:
+            main_path = Path(folder) / "main.png"
+            fallback_path = Path(folder) / "fallback.png"
+            main_path.write_bytes(b"main")
+            fallback_path.write_bytes(b"fallback")
+            guard = self._make_guard(
+                main_path,
+                key="script:g1",
+                fallback_module_key="module:fallback",
+                fallback_click=True,
+            )
+            app.global_guards[guard["key"]] = guard
+            fallback_obj = {"name": "备用", "template": str(fallback_path), "threshold": 0.8}
+            fallback_match = {"x": 10, "y": 20, "width": 30, "height": 40,
+                              "center_x": 25, "center_y": 40}
+            with patch("macroflow.ui.app.capture_bgr", return_value=(None, None)), \
+                 patch("macroflow.ui.app.registered_module_object", return_value=fallback_obj), \
+                 patch("macroflow.ui.app.find_template", side_effect=[None, fallback_match]), \
+                 patch("macroflow.ui.app.show_overlay") as overlay, \
+                 patch.object(app.player, "_click_module_point") as fallback_click:
+                evaluation = app._evaluate_global_guards_sync()
+
+        self.assertIsInstance(evaluation, DetectionEvaluation)
+        self.assertIsNone(evaluation.hit)
+        self.assertEqual([event["kind"] for event in evaluation.deferred_events],
+                         ["restore_foreground", "overlay", "fallback_click"])
+        overlay.assert_not_called()
+        fallback_click.assert_not_called()
+        with patch("macroflow.ui.app.show_overlay") as consumed_overlay, \
+             patch.object(app, "_restore_workflow_scan_foreground") as restore_foreground, \
+             patch.object(app.player, "_click_module_point") as consumed_click:
+            app._consume_detection_events(evaluation.deferred_events)
+        consumed_overlay.assert_called_once()
+        restore_foreground.assert_called_once()
+        consumed_click.assert_called_once()
+
+    def test_worker_result_is_returned_only_for_current_run_and_config(self):
+        class FakeWorker:
+            def __init__(self, result):
+                self.result = result
+                self.submitted = []
+
+            def submit(self, run_id, config_version):
+                self.submitted.append((run_id, config_version))
+
+            def poll(self):
+                result, self.result = self.result, None
+                return result
+
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.exiting = False
+        app._detection_run_id = 4
+        app._guard_config_version = 6
+        app._detection_request = None
+        app.guards_lock = threading.Lock()
+        app.global_guards = {}
+        app._pending_global_guard_hits = []
+        app.player = MacroPlayer()
+        worker = FakeWorker(DetectionResult(3, 6, 1.0, 2.0, {"stale": True}))
+        app._detection_worker = worker
+        app._evaluate_global_guards_sync = Mock(return_value={"fresh": True})
+
+        self.assertIsNone(app._evaluate_global_guards())
+        self.assertEqual(worker.submitted, [(4, 6)])
+        worker.result = DetectionResult(4, 6, 3.0, 4.0, {"fresh": True})
+        self.assertEqual(app._evaluate_global_guards(), {"fresh": True})
+        app._evaluate_global_guards_sync.assert_not_called()
+
+    def test_pending_hits_from_previous_run_are_discarded(self):
+        app = self._make_guard_app()
+        app._detection_run_id = 2
+        app._guard_config_version = 4
+        app._pending_global_guard_hits = [{"guard_key": "stale"}]
+        app._pending_global_guard_hits_version = (1, 3)
+
+        evaluation = app._evaluate_global_guards_sync()
+
+        self.assertIsNone(evaluation.hit)
+        self.assertEqual(app._pending_global_guard_hits, [])
+
     def test_switch_module_fallback_clicks_once_then_main_match_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             main_path = Path(folder) / "main.png"
@@ -5202,6 +5331,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         }
         app.guards_lock = threading.Lock()
         app.global_detect_rearm_locks = {"script:one", "workflow:one"}
+        app._guard_config_version = 8
+        app._pending_global_guard_hits = [{"guard_key": "script:one"}]
 
         app._exit_script_global_scope(("script:one",))
 
@@ -5209,6 +5340,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertIn("workflow:one", app.global_guards)
         # 离开作用域同时丢弃该脚本守卫的重新武装锁。
         self.assertEqual(app.global_detect_rearm_locks, {"workflow:one"})
+        self.assertEqual(app._guard_config_version, 9)
+        self.assertEqual(app._pending_global_guard_hits, [])
 
     def test_activate_global_detect_region_mode_parsing(self):
         # 旧配置没有 region_mode：无区域 → 全屏；有区域 → 自定义区域。
@@ -8705,6 +8838,209 @@ class ShutdownLifecycleTests(unittest.TestCase):
 
 
 class PlayerTests(unittest.TestCase):
+    def test_recorded_actions_use_absolute_targets_when_execution_takes_time(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(_action, _hwnd, _stack=None, _depth=0):
+            clock.value += 0.003
+
+        player._execute_action = execute
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": 0.0},
+            {"type": "key", "recorded_at_ms": 100.0},
+            {"type": "key", "recorded_at_ms": 200.0},
+        ], None)
+
+        self.assertEqual(clock.waits, [0.097, 0.097])
+
+    def test_explicit_delay_rebases_the_next_recorded_action(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(action, *_args):
+            if action["type"] == "delay":
+                clock.wait(action["ms"] / 1000)
+
+        player._execute_action = execute
+
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": 0.0},
+            {"type": "delay", "ms": 50},
+            {"type": "key", "recorded_at_ms": 100.0},
+        ], None)
+
+        self.assertEqual([wait for wait in clock.waits if wait], [0.05, 0.1])
+
+    def test_nested_recorded_actions_use_child_timeline_and_restore_parent_boundary(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+        timeline_events = []
+        mark_boundary = player._timeline.mark_boundary
+        start = player._timeline.start
+
+        def record_boundary():
+            timeline_events.append(("boundary", round(clock.value, 9)))
+            mark_boundary()
+
+        def record_start(offset_ms=0.0):
+            timeline_events.append(("start", round(clock.value, 9), offset_ms))
+            start(offset_ms)
+
+        player._timeline.mark_boundary = record_boundary
+        player._timeline.start = record_start
+
+        def execute(action, hwnd, stack=None, depth=0):
+            if action["type"] == "script_ref":
+                player._run_action_sequence([
+                    {"type": "key", "recorded_at_ms": 0.0},
+                    {"type": "key", "recorded_at_ms": 50.0},
+                ], hwnd, depth=depth + 1)
+
+        player._execute_action = execute
+        player._run_action_sequence([
+            {"type": "comment"},
+            {"type": "key", "recorded_at_ms": 100.0},
+            {"type": "script_ref"},
+            {"type": "key", "recorded_at_ms": 200.0},
+        ], None)
+
+        self.assertEqual([wait for wait in clock.waits if wait], [0.1, 0.05, 0.1])
+        self.assertEqual(
+            timeline_events,
+            [
+                ("start", 0.0, 0.0),
+                ("boundary", 0.1),
+                ("start", 0.1, 0.0),
+                ("boundary", 0.15),
+                ("boundary", 0.15),
+            ],
+        )
+
+    def test_guard_jump_rebases_before_the_target_recorded_action(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+                self.waits = []
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.waits.append(seconds)
+                self.value += seconds
+
+        clock = FakeClock()
+        hits = [{"kind": "success"}]
+        player = MacroPlayer(on_guard_poll=lambda: hits.pop(0) if hits else None)
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def handle_guard_hit(_hit):
+            clock.value += 0.05
+            raise GuardJumpRequest(jump_row=2)
+
+        player.handle_guard_hit = handle_guard_hit
+        player._execute_action = Mock(return_value=None)
+        player._run_action_sequence([
+            {"type": "comment"},
+            {"type": "key", "recorded_at_ms": 100.0},
+        ], None)
+
+        self.assertEqual(clock.waits, [0.1])
+        self.assertEqual(player._timeline.metrics.rebase_count, 1)
+
+    def test_repeat_interval_guard_jump_rebases_timeline(self):
+        timing = []
+        player = MacroPlayer(on_timing=timing.append)
+
+        def wait(milliseconds):
+            if milliseconds:
+                raise GuardJumpRequest(jump_row=1)
+
+        player._wait = wait
+        player.play([{"type": "comment"}], repeats=2, repeat_interval_ms=25)
+
+        self.assertEqual(timing[0]["rebase_count"], 1)
+
+    def test_thousand_recorded_actions_do_not_accumulate_execution_cost(self):
+        class FakeClock:
+            def __init__(self):
+                self.value = 0.0
+
+            def now(self):
+                return self.value
+
+            def wait(self, seconds):
+                self.value += seconds
+
+        clock = FakeClock()
+        player = MacroPlayer()
+        player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
+        player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
+
+        def execute(*_args):
+            clock.value += 0.003
+
+        player._execute_action = execute
+        player._run_action_sequence([
+            {"type": "key", "recorded_at_ms": float(index * 10)}
+            for index in range(1000)
+        ], None)
+
+        self.assertAlmostEqual(clock.value, 9.993, places=9)
+
+    def test_guard_poll_records_recognition_time_without_reordering_actions(self):
+        player = MacroPlayer(on_guard_poll=lambda: None)
+        player._execute_action = Mock(return_value=None)
+        with patch("macroflow.execution.player.time.perf_counter", side_effect=[10.0, 10.025]):
+            player._run_action_sequence([{"type": "comment"}], None)
+
+        self.assertEqual(player._execute_action.call_args_list[0].args[0]["type"], "comment")
+        self.assertAlmostEqual(player._timeline.metrics.recognition_ms, 25.0, places=6)
+
     def test_poll_guards_executes_all_hits_from_one_evaluation_in_order(self):
         hits = [
             {"kind": "success", "log_subject": "模块[first]"},
@@ -8968,6 +9304,102 @@ class PlayerTests(unittest.TestCase):
             [call.args[0] for call in player._wait.call_args_list],
             [0, 100, 200],
         )
+
+    def test_absolute_mouse_button_positions_from_its_own_coordinates(self):
+        player = MacroPlayer()
+        player._source_screen = {"left": -1920, "top": 0, "width": 3840, "height": 2160}
+        player._target_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        player._wait = Mock()
+        with patch("macroflow.execution.player.send_move_absolute") as move, \
+             patch("macroflow.execution.player.send_button") as button:
+            player._execute_action({
+                "type": "mouse_button", "mode": "absolute", "x": -960, "y": 540,
+                "button": "left", "down": True,
+            }, None)
+        move.assert_called_once_with(480, 270)
+        button.assert_called_once_with("left", True)
+
+    def test_relative_mouse_button_does_not_teleport_cursor(self):
+        player = MacroPlayer()
+        with patch("macroflow.execution.player.send_move_absolute") as move, \
+             patch("macroflow.execution.player.send_button") as button:
+            player._execute_action({
+                "type": "mouse_button", "mode": "relative", "x": 100, "y": 200,
+                "button": "right", "down": True,
+            }, None)
+        move.assert_not_called()
+        button.assert_called_once_with("right", True)
+
+    def test_stop_during_mouse_button_hold_releases_button(self):
+        player = MacroPlayer()
+        player._wait = lambda _milliseconds: player.stop()
+        with patch("macroflow.execution.player.send_button") as button:
+            player.play([
+                {"type": "mouse_button", "button": "left", "down": True},
+                {"type": "delay", "ms": 1},
+            ])
+        self.assertEqual(button.call_args_list, [call("left", True), call("left", False)])
+
+    def test_recorded_turn_uses_pulse_duration_including_zero(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._center_cursor_for_turn = Mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 6, "dy": 0, "steps": 3,
+                "pulse_duration_ms": 0, "duration_ms": 10,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [0, 0, 0],
+        )
+
+        player._wait.reset_mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 6, "dy": 0, "steps": 3,
+                "pulse_duration_ms": 24,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [8, 8, 8],
+        )
+
+    def test_manual_turn_keeps_explicit_duration(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        player._center_cursor_for_turn = Mock()
+        with patch("macroflow.execution.player.send_move_relative"):
+            player._execute_action({
+                "type": "turn", "dx": 2, "dy": 0, "steps": 2,
+                "duration_ms": 14,
+            }, None)
+        self.assertEqual(
+            [item.args[0] for item in player._wait.call_args_list], [7, 7],
+        )
+
+    def test_stop_cleanup_metric_measures_from_stop_request_to_release(self):
+        timing = []
+        player = MacroPlayer(on_timing=timing.append)
+        player._wait = lambda _milliseconds: player.stop()
+        with patch("macroflow.execution.player.time.perf_counter", side_effect=[
+            100.000, 100.025, 100.030, 100.080,
+        ]), patch("macroflow.execution.player.send_button"):
+            player.play([
+                {"type": "mouse_button", "button": "left", "down": True},
+                {"type": "delay", "ms": 1},
+            ])
+        self.assertAlmostEqual(timing[0]["stop_cleanup_ms"], 55.0)
+
+    def test_release_all_clears_keys_and_buttons_when_a_release_raises(self):
+        player = MacroPlayer()
+        player._held_keys.add(65)
+        player._held_buttons.add("left")
+        with patch("macroflow.execution.player.send_key", side_effect=RuntimeError("key")) as key, \
+             patch("macroflow.execution.player.send_button", side_effect=RuntimeError("button")) as button:
+            player._release_all(None)
+        key.assert_called_once_with(65, False)
+        button.assert_called_once_with("left", False)
+        self.assertEqual(player._held_keys, set())
+        self.assertEqual(player._held_buttons, set())
 
     def test_playback_speed_scales_waits_without_changing_hold_time(self):
         player = MacroPlayer()

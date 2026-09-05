@@ -573,3 +573,48 @@ git log -5 --oneline
 ```
 
 Report focused test counts, build exit code, artifact paths, and any unchanged baseline failures separately. Do not claim visual UI verification because the project explicitly forbids starting the interface for tests.
+
+---
+
+## P2/P3 continuation: detection isolation and unified refresh/UI
+
+The first five tasks complete the P0/P1 playback line. The following tasks implement the second line without starting the GUI: recognition work leaves the input scheduler, UI callbacks are batched, and the grid-condition dialog adopts the shared spacing and semantic control rules.
+
+### Task 6: Isolate global detection work behind a bounded worker
+
+**Files:**
+- Create: `src/macroflow/execution/detection_worker.py`
+- Modify: `src/macroflow/ui/app.py`
+- Create: `tests/test_detection_worker.py`
+- Modify: `tests/test_core.py` only for app integration seams
+
+- [ ] Add a worker with `submit(run_id, config_version)`, `poll()`, and `close()`; it owns one daemon thread, one active request, and one coalesced pending request. Results carry run id, config version, submitted/completed monotonic timestamps, hit/error, and never call Tk directly.
+- [ ] Move the existing synchronous guard evaluator behind a private sync method. The real app's `_evaluate_global_guards` submits/polls the worker and rejects stale run/config results; `MacroFlowApp.__new__` test fixtures without a worker retain the sync seam.
+- [ ] Increment a detection run id at execution start and a config version whenever guards are activated/cleared. Preserve ordered guard handling in the player thread: recognition only produces a result; `handle_guard_hit` remains on the player/execution thread.
+- [ ] Ensure worker shutdown is invoked from app close and execution cleanup; bounded queues must not accumulate requests. Add fake evaluator tests for coalescing, metadata, stale-result rejection, exceptions, and close.
+- [ ] After every production edit run `.`\\build.ps1`; run focused worker/global-guard tests, compileall, and diff check.
+
+### Task 7: Batch Tk notifications and normalize the grid-condition dialog
+
+**Files:**
+- Create: `src/macroflow/ui/update_queue.py`
+- Modify: `src/macroflow/ui/app.py`
+- Modify: `src/macroflow/ui/dialogs.py`
+- Create: `tests/test_update_queue.py`
+- Modify: `tests/test_core.py` only for dialog pure helpers/seams
+
+- [ ] Add a thread-safe UI update queue scheduled at 50 ms (20 Hz), coalescing status updates by key while preserving log/action order. Urgent error/stop updates may flush immediately. Keep log file writes synchronous and batch Text widget insertion.
+- [ ] Route `_ui` through the queue and flush it during close; recording callbacks continue to submit data while action-tree/mini-window updates are batched. Do not change recorder/player semantics.
+- [ ] Add shared dialog layout constants (4/8/12/16/24 spacing, field/button widths, semantic primary/secondary styles) and use one palette for the grid-condition dialog.
+- [ ] Rework `GridRowConditionClickDialog`: split `x,y,w,h` into named fields with frame-picker entry; show image name with optional path detail; arrange left/right conditions in a responsive two-column/stacked layout; hide irrelevant type fields without blank rows; display columns from 1; map buttons to 左键/右键/中键; rename 确定 to 保存动作; show testing progress/result/取消 state and prevent duplicate tests.
+- [ ] Keep the existing non-visual data contract and add pure tests for named-region parsing, 1-based column labels, condition field visibility decisions, and test-state transitions. After each production edit run `.`\\build.ps1`; run focused queue/dialog tests, compileall, and diff check.
+
+### Task 8: Final P2/P3 verification and package
+
+**Files:**
+- Verify all modified source/tests and `dist/MacroFlowStudio.exe`
+- Create final `MacroFlowStudio_latest_win64.zip`
+
+- [ ] Run focused P0/P1, detection-worker, UI-queue, dialog, and existing player tests; compare baseline failures separately.
+- [ ] Run compileall and diff checks; run `.`\\build.ps1`, then `python verify_build.py dist\\MacroFlowStudio.exe` and static artifact/hash checks. The pre-existing `_default_global_jump` verifier failure must remain explicitly recorded unless independently repaired in scope.
+- [ ] Only after the successful final build and static checks run `.`\\pack.ps1`; verify the zip contains the current EXE, `dist\\paddle_ocr\\`, README.md, and CHANGELOG.md. Never launch the GUI or claim visual verification.

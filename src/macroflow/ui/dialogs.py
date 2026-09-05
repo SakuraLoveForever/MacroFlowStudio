@@ -4,6 +4,7 @@ import ctypes
 import json
 import tkinter as tk
 import copy
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -54,6 +55,66 @@ SCRIPT_CATEGORY_LABELS = {
 TIME_UNITS = ("ms", "s", "min")
 
 _UNIT_TO_MS = {"ms": 1, "s": 1000, "min": 60000}
+
+DIALOG_SPACING = (4, 8, 12, 16, 24)
+DIALOG_FIELD_WIDTH = 12
+DIALOG_BUTTON_WIDTH = 12
+DIALOG_PRIMARY_STYLE = "primary-outline"
+DIALOG_SECONDARY_STYLE = "secondary-outline"
+
+
+def parse_named_region(value) -> list[int]:
+    """Parse either named x/y/w/h values or the persisted comma form."""
+    if isinstance(value, dict):
+        values = [value.get(name, "") for name in ("x", "y", "w", "h")]
+    elif isinstance(value, str):
+        values = value.split(",")
+    else:
+        values = value or []
+    if len(values) != 4:
+        raise ValueError("区域必须包含 x、y、w、h 四个数字")
+    try:
+        result = [int(str(part).strip()) for part in values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("区域必须包含 x、y、w、h 四个数字") from exc
+    if result[2] <= 0 or result[3] <= 0:
+        raise ValueError("区域宽高必须大于 0")
+    return result
+
+
+def format_grid_column_label(column: int | None) -> str:
+    return "未选择" if column is None else f"第{int(column) + 1}列"
+
+
+def condition_field_visibility(kind: str) -> set[str]:
+    return {
+        "image": {"module"},
+        "text": {"text", "match"},
+        "number": {"separator", "relation"},
+    }.get(str(kind), set())
+
+
+def test_state_transition(state: str, event: str) -> str:
+    if event == "start":
+        return "running" if state != "running" else state
+    if event == "cancel":
+        return "idle"
+    if state == "running" and event in {"success", "error"}:
+        return event
+    return state
+
+
+def format_test_result(result, error, elapsed_ms: int) -> str:
+    elapsed = max(0, int(elapsed_ms))
+    if error:
+        return f"测试失败：{error}（耗时 {elapsed} ms）"
+    matched = result.get("matched_rows", 0) if isinstance(result, dict) else 0
+    return f"命中 {int(matched)} 行，耗时 {elapsed} ms"
+
+
+def test_callback_is_current(active_token: int, callback_token: int,
+                             destroyed: bool) -> bool:
+    return not destroyed and active_token == callback_token
 
 
 def _parse_grid_int_list(values):
@@ -8594,6 +8655,9 @@ class RowListConditionClickDialog(ModalDialog):
         super().__init__(parent, "列表逐行条件点击", 700, 640)
         action = action or {}
         self.on_test = on_test
+        self.test_cancel_event = threading.Event()
+        self._test_generation = 0
+        self._destroyed = False
         self.picker = None
         self.condition_field_widgets = {}
         self.jump_target_ids = dict(image_jump_target_options(actions or []))
@@ -9401,13 +9465,16 @@ class GridRowConditionClickDialog(ModalDialog):
     CONDITION_TYPES = (("图片匹配", "image"), ("文字识别", "text"), ("数字比较", "number"))
     MATCH_MODES = (("包含", "contains"), ("完全相等", "equals"))
     RELATIONS = (("相等", "equal"), ("不相等", "not_equal"))
+    BUTTON_LABELS = (("左键", "left"), ("右键", "right"), ("中键", "middle"))
 
     def __init__(self, parent, action=None, on_test=None):
-        super().__init__(parent, "网格逐行条件点击", 680, 620)
+        super().__init__(parent, "网格逐行条件点击", 760, 680)
         action = action or {}
         self.on_test = on_test
         region = action.get("grid_region", [])
         self.grid_region = tk.StringVar(value=",".join(map(str, region)) if len(region) == 4 else "")
+        region = list(region) if len(region) == 4 else ["", "", "", ""]
+        self.region_vars = {name: tk.StringVar(value=str(value)) for name, value in zip(("x", "y", "w", "h"), region)}
         self.source_image = tk.StringVar(value=str(action.get("screenshot_path", "")))
         self.condition_widgets = {}
         for side in ("left", "right"):
@@ -9435,41 +9502,64 @@ class GridRowConditionClickDialog(ModalDialog):
         frame = ttk.Frame(self, padding=14)
         frame.pack(fill="both", expand=True)
         frame.columnconfigure(1, weight=1)
-        ttk.Label(frame, text="总区域 (x,y,w,h)").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Entry(frame, textvariable=self.grid_region).grid(row=0, column=1, sticky="ew", pady=5)
-        ttk.Button(frame, text="框选总区域", command=self._pick_region).grid(row=0, column=2, padx=6)
-        ttk.Button(frame, text="选择图片", command=self._choose_image).grid(row=0, column=3, padx=6)
+        frame.columnconfigure(3, weight=1)
+        ttk.Label(frame, text="总区域").grid(row=0, column=0, sticky="w", pady=4)
+        for index, name in enumerate(("x", "y", "w", "h")):
+            column = 1 + (index % 2) * 2
+            ttk.Label(frame, text=name).grid(row=0, column=column, sticky="e", padx=(8, 4), pady=4)
+            ttk.Entry(frame, textvariable=self.region_vars[name], width=8).grid(row=0, column=column + 1, sticky="ew", pady=4)
+        ttk.Button(frame, text="框选总区域", command=self._pick_region, width=12).grid(row=1, column=0, padx=(0, 8), pady=4)
+        ttk.Button(frame, text="选择图片", command=self._choose_image, width=12).grid(row=1, column=1, sticky="w", pady=4)
         self.grid_status = tk.StringVar(value=self._state_text())
         ttk.Label(frame, textvariable=self.grid_status, foreground=COLOR_MUTED).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=5,
+            row=2, column=0, columnspan=4, sticky="w", pady=4,
         )
         ttk.Label(frame, textvariable=self.source_image, foreground=COLOR_MUTED).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=(2, 4),
+            row=3, column=0, columnspan=4, sticky="w", pady=(2, 4),
         )
         ttk.Button(frame, text="编辑截图网格…", command=self._edit_grid).grid(
-            row=3, column=0, columnspan=4, sticky="w", pady=8,
+            row=4, column=0, columnspan=4, sticky="w", pady=8,
         )
-        self._build_condition_panel(frame, "left", 4, "左条件")
-        self._build_condition_panel(frame, "right", 10, "右条件")
-        ttk.Label(frame, text="点击按钮").grid(row=16, column=0, sticky="w", pady=5)
-        ttk.Combobox(frame, textvariable=self.button, values=("left", "right", "middle"),
-                     state="readonly", width=10).grid(row=16, column=1, sticky="w", pady=5)
-        ttk.Label(frame, text="连续点击次数").grid(row=17, column=0, sticky="w", pady=5)
-        ttk.Entry(frame, textvariable=self.click_count, width=10).grid(row=17, column=1, sticky="w", pady=5)
+        self._build_condition_panel(frame, "left", 5, "左条件")
+        self._build_condition_panel(frame, "right", 5, "右条件")
+        ttk.Label(frame, text="点击按钮").grid(row=6, column=0, sticky="w", pady=5)
+        self.button.set(_option_label(self.button.get(), self.BUTTON_LABELS, "左键"))
+        ttk.Combobox(frame, textvariable=self.button,
+                     values=tuple(label for label, _value in self.BUTTON_LABELS), state="readonly", width=12).grid(row=6, column=1, sticky="w", pady=5)
+        ttk.Label(frame, text="连续点击次数").grid(row=6, column=2, sticky="e", padx=(8, 4), pady=5)
+        ttk.Entry(frame, textvariable=self.click_count, width=12).grid(row=6, column=3, sticky="w", pady=5)
+        self.test_state = tk.StringVar(value="未测试")
+        ttk.Label(frame, textvariable=self.test_state, foreground=COLOR_MUTED).grid(row=7, column=0, columnspan=4, sticky="w", pady=(0, 4))
         buttons = ttk.Frame(frame)
-        buttons.grid(row=18, column=0, columnspan=4, sticky="ew", pady=(22, 0))
-        ttk.Button(buttons, text="测试识别（不点击）", command=self._test).pack(side="left")
-        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        self.test_button = ttk.Button(buttons, text="测试识别（不点击）", command=self._test)
+        self.test_button.pack(side="left")
+        self.cancel_button = ttk.Button(buttons, text="取消", command=self._cancel_test_or_close)
+        self.cancel_button.pack(side="right")
+        self.save_button = ttk.Button(buttons, text="保存动作", command=self.save)
+        self.save_button.pack(side="right", padx=8)
 
     def _state_text(self):
         return (f"横线 {len(self.state['horizontal_lines'])} 条，竖线 {len(self.state['vertical_lines'])} 条；"
-                f"左列={self.state.get('left_column')}，右列={self.state.get('right_column')}，"
-                f"点击列={self.state.get('click_column')}")
+                f"左列={format_grid_column_label(self.state.get('left_column'))}，"
+                f"右列={format_grid_column_label(self.state.get('right_column'))}，"
+                f"点击列={format_grid_column_label(self.state.get('click_column'))}")
+
+    def _grid_region(self):
+        if hasattr(self, "region_vars"):
+            return parse_named_region({name: var.get() for name, var in self.region_vars.items()})
+        return parse_named_region(self.grid_region.get())
+
+    def _set_grid_region(self, region):
+        values = parse_named_region(region)
+        if hasattr(self, "region_vars"):
+            for name, value in zip(("x", "y", "w", "h"), values):
+                self.region_vars[name].set(str(value))
+        self.grid_region.set(",".join(map(str, values)))
 
     def _pick_region(self):
         ScreenRegionPicker(self, self.master,
-                           lambda region: self.grid_region.set(",".join(map(str, region))),
+                           self._set_grid_region,
                            hidden_windows=[], tip_text="框选网格总区域").start()
 
     def _choose_image(self):
@@ -9483,6 +9573,8 @@ class GridRowConditionClickDialog(ModalDialog):
 
     def _edit_grid(self):
         try:
+            if hasattr(self, "region_vars"):
+                self.grid_region.set(",".join(self.region_vars[name].get().strip() for name in ("x", "y", "w", "h")))
             raw = [int(value.strip()) for value in self.grid_region.get().split(",")] if self.grid_region.get().strip() else []
             region = raw if len(raw) == 4 and raw[2] > 0 and raw[3] > 0 else None
             if region is None and not self.source_image.get().strip():
@@ -9500,12 +9592,14 @@ class GridRowConditionClickDialog(ModalDialog):
         self.state = state
         selected_region = state.get("selected_region")
         if isinstance(selected_region, list) and len(selected_region) == 4 and selected_region[2] > 0:
-            self.grid_region.set(",".join(map(str, selected_region)))
+            self._set_grid_region(selected_region)
         self.grid_status.set(self._state_text())
 
     def _build_condition_panel(self, parent, side, row, title):
         box = ttk.LabelFrame(parent, text=title, padding=8)
-        box.grid(row=row, column=0, columnspan=3, sticky="ew", pady=6)
+        column = 0 if side == "left" else 2
+        box.grid(row=row, column=column, columnspan=2, sticky="nsew",
+                 padx=(0, 8) if side == "left" else (8, 0), pady=6)
         box.columnconfigure(1, weight=1)
         type_var = getattr(self, f"{side}_type")
         ttk.Label(box, text="类型").grid(row=0, column=0, sticky="w", pady=3)
@@ -9543,11 +9637,17 @@ class GridRowConditionClickDialog(ModalDialog):
 
     def _refresh_condition(self, side):
         kind = _option_value(getattr(self, f"{side}_type").get(), self.CONDITION_TYPES, "number")
-        visible = {"module": kind == "image", "text": kind == "text", "match": kind == "text", "separator": kind == "number", "relation": kind == "number"}
+        visible = condition_field_visibility(kind)
+        next_row = 1
         for key, groups in self.condition_widgets[side].items():
             for group in groups:
                 for widget in group:
-                    (widget.grid if visible[key] else widget.grid_remove)()
+                    if key in visible:
+                        widget.grid_configure(row=next_row)
+                    else:
+                        widget.grid_remove()
+            if key in visible:
+                next_row += 1
 
     def _select_module(self, side):
         binding = choose_module_binding(self, categories=("switch",))
@@ -9571,9 +9671,7 @@ class GridRowConditionClickDialog(ModalDialog):
 
     def _build_action(self):
         try:
-            region = _parse_grid_int_list(self.grid_region.get())
-            if len(region) != 4 or region[2] <= 0 or region[3] <= 0:
-                raise ValueError("请先在图片上框选总区域")
+            region = self._grid_region()
             if any(value is None for value in (self.state.get("left_column"), self.state.get("right_column"), self.state.get("click_column"))):
                 raise ValueError("请在截图网格中锁定左条件列、右条件列和点击列")
             count = int(self.click_count.get())
@@ -9597,15 +9695,69 @@ class GridRowConditionClickDialog(ModalDialog):
             "click_column": int(self.state["click_column"]),
             "left_condition": left_condition,
             "right_condition": right_condition,
-            "button": self.button.get(), "click_count": count,
+            "button": _option_value(self.button.get(), self.BUTTON_LABELS, "left"), "click_count": count,
         }
 
     def _test(self):
+        if self.test_state.get() == "正在测试…":
+            return
         action = self._build_action()
-        if action and self.on_test:
-            self.on_test(action)
+        if not action or not self.on_test:
+            return
+        self._test_generation = getattr(self, "_test_generation", 0) + 1
+        token = self._test_generation
+        self.test_cancel_event = threading.Event()
+        self.test_state.set("正在测试…")
+        self.test_button.configure(state="disabled")
+        self.save_button.configure(state="disabled")
+        self.cancel_button.configure(text="取消测试", state="normal")
+        try:
+            self.on_test(
+                action,
+                lambda result=None, error=None, elapsed_ms=0, cancelled=False: self._test_complete(
+                    token, result, error, elapsed_ms, cancelled,
+                ),
+                self.test_cancel_event,
+            )
+        except Exception as exc:
+            self._test_complete(token, None, exc, 0)
+
+    def _test_complete(self, token, result=None, error=None, elapsed_ms=0, cancelled=False):
+        if not test_callback_is_current(
+                getattr(self, "_test_generation", 0), token,
+                getattr(self, "_destroyed", False)):
+            return
+        if cancelled or self.test_cancel_event.is_set():
+            self.test_state.set("已取消")
+        else:
+            self.test_state.set(format_test_result(result, error, elapsed_ms))
+        self.test_button.configure(state="normal")
+        self.save_button.configure(state="normal")
+        self.cancel_button.configure(text="取消", state="normal")
+
+    def _cancel_test_or_close(self):
+        if self.test_state.get() == "正在测试…":
+            self._test_generation += 1
+            self.test_cancel_event.set()
+            self.test_state.set("已取消")
+            self.test_button.configure(state="normal")
+            self.save_button.configure(state="normal")
+            self.cancel_button.configure(text="取消", state="normal")
+            return
+        self.destroy()
+
+    def destroy(self):
+        if not getattr(self, "_destroyed", False):
+            self._destroyed = True
+            self._test_generation = getattr(self, "_test_generation", 0) + 1
+            event = getattr(self, "test_cancel_event", None)
+            if event is not None:
+                event.set()
+        super().destroy()
 
     def save(self):
+        if self.test_state.get() == "正在测试…":
+            return
         action = self._build_action()
         if action is None:
             return

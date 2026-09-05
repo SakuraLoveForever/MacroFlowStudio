@@ -28,6 +28,7 @@ from pynput import keyboard
 
 from macroflow.core.alerts import play_alert, prewarm_alert
 from macroflow.ui.detect_overlay import show_overlay
+from macroflow.ui.update_queue import UIUpdateQueue
 from macroflow.ui.dialogs import (
     ClickDialog, GameSetupNoteDialog, GlobalDetectDialog, TurnActionDialog,
     HotkeyScriptsDialog,
@@ -70,6 +71,7 @@ from macroflow.execution.player import (
     JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
     screen_template_scale,
 )
+from macroflow.execution.detection_worker import DetectionEvaluation, DetectionWorker
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
@@ -881,6 +883,7 @@ class MacroFlowApp:
         self.log_file_lock = threading.Lock()
         self.root = ttk.Window(themename="darkly")
         self.root._macroflow_app = self
+        self.ui_queue = UIUpdateQueue(self.root, interval_ms=50)
         self.root.title(f"{APP_NAME}  {APP_VERSION}")
         self.root.geometry(DEFAULT_MAIN_GEOMETRY)
         self.root.minsize(MIN_MAIN_WIDTH, MIN_MAIN_HEIGHT)
@@ -1007,6 +1010,10 @@ class MacroFlowApp:
         # action_id 登记，互不替换、同时生效；生命周期 = 一次执行。
         self.global_guards: dict[str, dict] = {}
         self.guards_lock = threading.Lock()
+        self._detection_run_id = 0
+        self._guard_config_version = 0
+        self._detection_request: tuple[int, int] | None = None
+        self._detection_worker = None
         # 同一共享截图命中的守卫按注册顺序排队，播放器逐个执行处理段。
         self._pending_global_guard_hits: list[dict] = []
         # 触发后跨执行保留的重新武装锁；新守卫确认图片消失后才允许再次触发。
@@ -1064,6 +1071,7 @@ class MacroFlowApp:
         self.player.set_playback_speed(self.playback_speed_var.get())
         self.hotkey_player.set_playback_speed(self.playback_speed_var.get())
         self._build_ui()
+        self.ui_queue.start()
         self._restore_saved_window_binding()
         self._sync_activation_ui_from_script()
         self.rebuild_action_tree()
@@ -2199,6 +2207,14 @@ class MacroFlowApp:
 
     # General helpers
     def _ui(self, callback, *args):
+        detection_context = getattr(self, "_detection_event_context", None)
+        deferred_events = getattr(detection_context, "events", None)
+        if deferred_events is not None:
+            if getattr(callback, "__func__", None) is MacroFlowApp._log:
+                self._defer_detection_event(deferred_events, "log", text=str(args[0]))
+            elif getattr(callback, "__func__", None) is MacroFlowApp._append_mini_step:
+                self._defer_detection_event(deferred_events, "mini_step", text=str(args[0]))
+            return
         # 后台线程产生的运行日志必须先同步落盘，再排队更新 Tk 界面。
         # 这样即使 UI 正忙或程序随后异常退出，文件中也保留已经产生的日志。
         if getattr(callback, "__self__", None) is self \
@@ -2208,10 +2224,13 @@ class MacroFlowApp:
             self._write_log_line(line)
             callback = self._append_log_line_to_ui
             args = (line,)
-        try:
-            self.root.after(0, callback, *args)
-        except RuntimeError:
-            pass
+        key = "status" if getattr(callback, "__func__", None) is MacroFlowApp._set_status else None
+        batch_key = (
+            "log" if getattr(callback, "__func__", None) is MacroFlowApp._append_log_line_to_ui
+            else None
+        )
+        urgent = bool(key == "status" and args and str(args[0]).lower() in {"错误", "停止"})
+        self.ui_queue.submit(callback, *args, key=key, batch_key=batch_key, urgent=urgent)
 
     def _set_status(self, text: str, style: str = "normal"):
         self.status_var.set(text)
@@ -2232,9 +2251,9 @@ class MacroFlowApp:
             cursor = "[鼠标 ?,?]"
         return f"[{stamp}] {cursor} {text}\n"
 
-    def _append_log_line_to_ui(self, line: str) -> None:
+    def _append_log_line_to_ui(self, line: str | list[str]) -> None:
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", line)
+        self.log_text.insert("end", "".join(line) if isinstance(line, list) else line)
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
@@ -2257,7 +2276,11 @@ class MacroFlowApp:
     def _log(self, text: str):
         line = self._format_log_line(text)
         self._write_log_line(line)
-        self._append_log_line_to_ui(line)
+        queue = getattr(self, "ui_queue", None)
+        if queue is None:
+            self._append_log_line_to_ui(line)
+        else:
+            queue.submit(self._append_log_line_to_ui, line, batch_key="log")
 
     def _mark_dirty(self):
         self.dirty = True
@@ -2658,6 +2681,7 @@ class MacroFlowApp:
                 hit for hit in pending
                 if str(hit.get("guard_key", "")) not in key_set
             ]
+        self._invalidate_detection_config()
 
     def _activate_global_detect_from_config(self, config: dict, module: dict | None = None,
                                             standalone_replay: dict | None = None):
@@ -2877,6 +2901,7 @@ class MacroFlowApp:
         }
         with self.guards_lock:
             self.global_guards[key] = guard
+        self._invalidate_detection_config()
         name = guard["template"].name or "未设置"
         if region_mode == "window":
             region_text = "目标窗口"
@@ -2948,6 +2973,72 @@ class MacroFlowApp:
         return interval / 1000.0
 
     def _evaluate_global_guards(self) -> dict | None:
+        worker = getattr(self, "_detection_worker", None)
+        if worker is None:
+            evaluation = self._evaluate_global_guards_sync()
+            if isinstance(evaluation, DetectionEvaluation):
+                self._consume_detection_events(evaluation.deferred_events)
+                return evaluation.hit
+            return evaluation
+        if getattr(self, "exiting", False):
+            return None
+        result = worker.poll()
+        if result is not None:
+            self._detection_request = None
+            if (result.run_id != getattr(self, "_detection_run_id", 0)
+                    or result.config_version != getattr(self, "_guard_config_version", 0)):
+                result = None
+            elif result.error is not None:
+                self._ui(self._log, f"全局检测失败：{result.error}")
+                result = None
+            else:
+                if isinstance(result.hit, dict) and "hwnd" in result.hit \
+                        and result.hit.get("hwnd") is None:
+                    result.hit["hwnd"] = self._bound_hwnd(update_display=False)
+                self._consume_detection_events(result.deferred_events)
+                return result.hit
+        player = getattr(self, "player", None)
+        if player is None or player.stop_event.is_set():
+            return None
+        if self._detection_request is None:
+            run_id = getattr(self, "_detection_run_id", 0)
+            config_version = getattr(self, "_guard_config_version", 0)
+            worker.submit(run_id, config_version)
+            self._detection_request = (run_id, config_version)
+        return None
+
+    @staticmethod
+    def _defer_detection_event(events: list[dict], kind: str, **payload) -> None:
+        events.append({"kind": kind, **payload})
+
+    def _consume_detection_events(self, events) -> None:
+        for event in events or ():
+            kind = event.get("kind")
+            if kind == "log":
+                self._ui(self._log, event["text"])
+            elif kind == "mini_step":
+                self._ui(self._append_mini_step, event["text"])
+            elif kind == "overlay":
+                show_overlay(event["x"], event["y"], event["width"], event["height"])
+            elif kind == "restore_foreground":
+                self._restore_workflow_scan_foreground()
+            elif kind == "fallback_click":
+                self._guard_fallback_click(
+                    event["guard"], event["match"], event["fallback_name"],
+                )
+
+    def _detection_overlay(self, x, y, width, height) -> None:
+        detection_context = getattr(self, "_detection_event_context", None)
+        deferred_events = getattr(detection_context, "events", None)
+        if deferred_events is not None:
+            self._defer_detection_event(
+                deferred_events, "overlay", x=x, y=y, width=width, height=height,
+            )
+            return
+        show_overlay(x, y, width, height)
+
+    def _evaluate_global_guards_sync(self, _run_id: int | None = None,
+                                     _config_version: int | None = None) -> DetectionEvaluation:
         """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
 
         节流未到点的守卫跳过；至少一个守卫到点才截图一次，全部图片守卫
@@ -2956,21 +3047,30 @@ class MacroFlowApp:
         同一帧命中的多个守卫先排队，再由播放器逐个执行。
         """
         if getattr(self, "exiting", False) or getattr(self, "_evaluating_guards", False):
-            return None
+            return DetectionEvaluation()
         player = getattr(self, "player", None)
         if player is None or player.stop_event.is_set():
             pending = getattr(self, "_pending_global_guard_hits", None)
             if pending is not None:
                 pending.clear()
-            return None
+            self._pending_global_guard_hits_version = None
+            return DetectionEvaluation()
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending:
-            return pending.pop(0)
+            version = (
+                getattr(self, "_detection_run_id", 0),
+                getattr(self, "_guard_config_version", 0),
+            )
+            pending_version = getattr(self, "_pending_global_guard_hits_version", None)
+            if pending_version is None or pending_version == version:
+                return DetectionEvaluation(pending.pop(0))
+            pending.clear()
+            self._pending_global_guard_hits_version = None
         now = time.perf_counter()
         with self.guards_lock:
             guards = [guard for guard in list(self.global_guards.values())]
         if not guards:
-            return None
+            return DetectionEvaluation()
         due: list[dict] = []
         for guard in guards:
             if now - float(guard.get("last_check_time", 0.0)) < self._guard_check_interval(guard):
@@ -2984,34 +3084,50 @@ class MacroFlowApp:
             due.append(guard)
             guard["last_check_time"] = now
         if not due:
-            return None
+            return DetectionEvaluation()
+        deferred_events: list[dict] = []
+        detection_context = getattr(self, "_detection_event_context", None)
+        if detection_context is None:
+            detection_context = self._detection_event_context = threading.local()
+        detection_context.events = deferred_events
         needs_capture = any(str(guard.get("recognize", "")) != "none" for guard in due)
         screen = origin = None
         if needs_capture:
             try:
                 screen, origin = capture_bgr()
             except Exception as exc:
-                self._ui(self._log, f"全局检测：屏幕截图失败：{exc}")
-                return None
+                self._defer_detection_event(
+                    deferred_events, "log", text=f"全局检测：屏幕截图失败：{exc}",
+                )
+                detection_context.events = None
+                return DetectionEvaluation(None, tuple(deferred_events))
             # 全屏截图偶发会让独占全屏游戏短暂失焦：截图后立即校验并恢复绑定窗口前台。
-            self._restore_workflow_scan_foreground()
+            self._defer_detection_event(deferred_events, "restore_foreground")
         self._evaluating_guards = True
         hits: list[dict] = []
         try:
             for guard in due:
-                hit = self._evaluate_one_guard(guard, screen, origin, now)
+                hit = self._evaluate_one_guard(guard, screen, origin, now, deferred_events)
                 if hit is not None:
                     hits.append(hit)
         finally:
             self._evaluating_guards = False
+            detection_context.events = None
         if not hits:
-            return None
+            return DetectionEvaluation(None, tuple(deferred_events))
         if pending is None:
             pending = self._pending_global_guard_hits = []
         pending.extend(hits[1:])
-        return hits[0]
+        self._pending_global_guard_hits_version = (
+            _run_id if _run_id is not None else getattr(self, "_detection_run_id", 0),
+            _config_version if _config_version is not None
+            else getattr(self, "_guard_config_version", 0),
+        )
+        return DetectionEvaluation(hits[0], tuple(deferred_events))
 
-    def _evaluate_one_guard(self, guard: dict, screen, origin, now: float) -> dict | None:
+    def _evaluate_one_guard(self, guard: dict, screen, origin, now: float,
+                            deferred_events: list[dict] | None = None) -> dict | None:
+        deferred_events = deferred_events if deferred_events is not None else []
         if guard.get("module_ref"):
             self._refresh_guard_from_module(guard)
         if guard.get("region_mode") == "window":
@@ -3045,7 +3161,7 @@ class MacroFlowApp:
             if fallback_match and not guard.get("fallback_present"):
                 guard["fallback_present"] = True
                 fallback_name = str((fallback_obj or {}).get("name") or "备用识别模块")
-                show_overlay(
+                self._detection_overlay(
                     fallback_match["x"], fallback_match["y"],
                     fallback_match["width"], fallback_match["height"],
                 )
@@ -3103,7 +3219,7 @@ class MacroFlowApp:
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
                            if guard.get("hold_enabled", False) else "立即触发。"),
                     )
-                    show_overlay(match["x"], match["y"], match["width"], match["height"])
+                    self._detection_overlay(match["x"], match["y"], match["width"], match["height"])
                 else:
                     self._ui(
                         self._log,
@@ -3124,7 +3240,7 @@ class MacroFlowApp:
                 guard["trigger_kind"] = "success"
                 self.global_detect_trigger_count += 1
                 self._ui(self._log, f"全局检测触发：{condition_subject}。")
-                return self._build_guard_hit(guard)
+                return self._build_guard_hit(guard, resolve_hwnd=False)
         else:
             if guard.get("was_detected"):
                 self._ui(
@@ -3157,7 +3273,7 @@ class MacroFlowApp:
                     f"全局检测：连续 {timeout_ms} ms 未识别到 {condition_subject}，"
                     f"执行超时处理段（{len(segment)} 个动作）。",
                 )
-                return self._build_guard_hit(guard)
+                return self._build_guard_hit(guard, resolve_hwnd=False)
         return None
 
     def _refresh_guard_from_module(self, guard: dict) -> None:
@@ -3369,6 +3485,14 @@ class MacroFlowApp:
 
     def _guard_fallback_click(self, guard: dict, match: dict, fallback_name: str) -> None:
         """备用模块命中点击（播放器线程内联，按间隔节流防连点）。"""
+        detection_context = getattr(self, "_detection_event_context", None)
+        deferred_events = getattr(detection_context, "events", None)
+        if deferred_events is not None:
+            self._defer_detection_event(
+                deferred_events, "fallback_click", guard=dict(guard),
+                match=dict(match), fallback_name=fallback_name,
+            )
+            return
         now = time.perf_counter()
         interval_ms = max(0, int(guard.get("fallback_click_interval_ms", 100)))
         if (now - float(guard.get("fallback_click_since", 0.0))) * 1000 < interval_ms:
@@ -3399,9 +3523,9 @@ class MacroFlowApp:
             f"全局检测：备用模块 {fallback_name} 已识别并点击，继续识别主模块。",
         )
 
-    def _build_guard_hit(self, guard: dict) -> dict:
+    def _build_guard_hit(self, guard: dict, *, resolve_hwnd: bool = True) -> dict:
         """把命中的守卫打包成播放器处理段描述（hit）。"""
-        hwnd = self._bound_hwnd(update_display=False)
+        hwnd = self._bound_hwnd(update_display=False) if resolve_hwnd else None
         recognize = str(guard.get("recognize", ""))
         subject = (
             str(guard.get("expected_text", "")).strip() or "识别文字"
@@ -3501,8 +3625,17 @@ class MacroFlowApp:
                     hit["scope_action_ids"] = tuple(scope_action_ids)
         return hit
 
+    def _invalidate_detection_config(self) -> None:
+        self._guard_config_version = getattr(self, "_guard_config_version", 0) + 1
+        self._detection_request = None
+        pending = getattr(self, "_pending_global_guard_hits", None)
+        if pending is not None:
+            pending.clear()
+        self._pending_global_guard_hits_version = None
+
     def _clear_global_guards(self) -> None:
         """清空全部守卫（执行开始/结束/停止时）。"""
+        self._invalidate_detection_config()
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending is not None:
             pending.clear()
@@ -3559,6 +3692,11 @@ class MacroFlowApp:
         一次廉价的前台校验（GetForegroundWindow 进程比对），只有发现
         失焦才激活，正常时零开销。
         """
+        detection_context = getattr(self, "_detection_event_context", None)
+        deferred_events = getattr(detection_context, "events", None)
+        if deferred_events is not None:
+            self._defer_detection_event(deferred_events, "restore_foreground")
+            return
         hwnd = self._bound_hwnd(update_display=False)
         if hwnd and not is_window_process_foreground(hwnd):
             activate_window(hwnd)
@@ -5158,6 +5296,11 @@ class MacroFlowApp:
         self.load_script_into_editor(ref_path)
 
     def run_workflow_script_alone(self, step: dict):
+        return self._run_detection_entrypoint(
+            self._run_workflow_script_alone_impl, step,
+        )
+
+    def _run_workflow_script_alone_impl(self, step: dict):
         """工作流右键“单独执行一次测试”：加载该行脚本执行 1 次，不扣减工作流次数。
 
         使用该行脚本自己的前置窗口与录屏设置（同打开脚本按 F9），
@@ -5182,7 +5325,13 @@ class MacroFlowApp:
         if not script.actions and not trigger.get("template"):
             self._notify("没有动作", f"脚本 {script.name} 没有动作，无法执行。")
             return
-        hwnd = self._bound_hwnd()
+        self._begin_detection_run()
+        self._ensure_detection_worker()
+        try:
+            hwnd = self._bound_hwnd()
+        except BaseException:
+            self._shutdown_detection_worker()
+            raise
         activation_enabled = bool(script.settings.get("activation_window_enabled", False))
         activation_signature = script.settings.get("activation_window")
         if isinstance(activation_signature, dict) and activation_signature.get("title"):
@@ -5824,19 +5973,28 @@ class MacroFlowApp:
         if action:
             self._insert_action(action)
 
-    def test_row_list_condition_click(self, action: dict):
+    def test_row_list_condition_click(self, action: dict, on_complete=None,
+                                      cancel_event=None):
         """Run a one-shot, non-clicking diagnostic scan for a row-list action."""
+        def reject(message: str) -> None:
+            if on_complete is not None:
+                on_complete(None, message, 0, False)
+
         if getattr(self, "worker", None) and self.worker.is_alive():
             self._notify("无法测试识别", "当前已有脚本正在执行，请先停止执行。")
+            reject("当前已有脚本正在执行")
             return
         if getattr(self, "_row_list_diagnostic_running", False):
             kind = getattr(self, "_row_list_diagnostic_kind", "")
             label = "网格逐行识别诊断" if kind == "grid" else "列表逐行识别诊断"
             self._notify("无法测试识别", f"当前已有{label}正在执行，请稍候。")
+            reject(f"当前已有{label}正在执行")
             return
         diagnostic_kind = (
             "grid" if action.get("type") == "grid_row_condition_click" else "row_list"
         )
+        cancel_event = cancel_event or threading.Event()
+        started_at = time.perf_counter()
         self._row_list_diagnostic_running = True
         self._row_list_diagnostic_kind = diagnostic_kind
         hwnd = None if diagnostic_kind == "grid" else self._bound_hwnd()
@@ -5852,11 +6010,17 @@ class MacroFlowApp:
             self._row_list_diagnostic_running = False
             self._row_list_diagnostic_kind = ""
             self._notify("无法测试识别", str(exc))
+            reject(str(exc))
             return
 
         def run_diagnostic():
             error = None
             diagnostic_result = None
+            original_wait = self.player.on_ocr_engine_wait
+            self.player.on_ocr_engine_wait = lambda: (
+                not cancel_event.is_set()
+                and (original_wait() if original_wait else True)
+            )
             try:
                 if action.get("type") == "grid_row_condition_click":
                     diagnostic_result = self.player._diagnose_grid_row_condition_click(
@@ -5869,12 +6033,16 @@ class MacroFlowApp:
             except Exception as exc:
                 error = exc
             finally:
+                self.player.on_ocr_engine_wait = original_wait
                 self._ui(
                     self._finish_row_list_diagnostic,
                     result_lines,
                     error,
                     hidden_states,
                     diagnostic_result,
+                    on_complete,
+                    started_at,
+                    cancel_event,
                 )
 
         threading.Thread(target=run_diagnostic, daemon=True).start()
@@ -5964,12 +6132,37 @@ class MacroFlowApp:
 
     def _finish_row_list_diagnostic(
             self, result_lines: list[str], error: Exception | None,
-            hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None) -> None:
+            hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None,
+            on_complete=None, started_at: float | None = None,
+            cancel_event=None) -> None:
         """Restore the app and show the completed diagnostic in a new window."""
+        elapsed_ms = round(max(0.0, time.perf_counter() - (started_at or time.perf_counter())) * 1000)
+        cancelled = bool(cancel_event is not None and cancel_event.is_set())
         if hidden_states is not None:
             self._restore_macroflow_windows_after_diagnostic(hidden_states)
         self._row_list_diagnostic_running = False
         self._row_list_diagnostic_kind = ""
+        if on_complete is not None:
+            matched_rows = 0
+            if isinstance(diagnostic_result, dict):
+                cells = diagnostic_result.get("cells", [])
+                by_row = {}
+                left_column = int(diagnostic_result.get("left_column", -1)) + 1
+                right_column = int(diagnostic_result.get("right_column", -1)) + 1
+                for cell in cells:
+                    by_row.setdefault(cell.get("row"), {})[cell.get("column")] = cell.get("matched")
+                matched_rows = sum(
+                    bool(values.get(left_column)) and bool(values.get(right_column))
+                    for values in by_row.values()
+                )
+            on_complete(
+                {"matched_rows": matched_rows} if diagnostic_result is not None else None,
+                "已取消" if cancelled else error,
+                elapsed_ms,
+                cancelled,
+            )
+        if cancelled:
+            return
         if isinstance(diagnostic_result, dict):
             GridRowDiagnosticResultDialog(
                 self.root, diagnostic_result, error,
@@ -6331,6 +6524,28 @@ class MacroFlowApp:
         self.execution_started_at = time.perf_counter()
         self.mini_elapsed_var.set("00:00")
 
+    def _begin_detection_run(self) -> None:
+        self._detection_run_id = getattr(self, "_detection_run_id", 0) + 1
+        self._detection_request = None
+
+    def _ensure_detection_worker(self) -> None:
+        worker = getattr(self, "_detection_worker", None)
+        if worker is None or not worker.thread.is_alive():
+            self._detection_worker = DetectionWorker(self._evaluate_global_guards_sync)
+
+    def _shutdown_detection_worker(self) -> None:
+        worker = getattr(self, "_detection_worker", None)
+        if worker is not None:
+            worker.close()
+            self._detection_worker = None
+
+    def _run_detection_entrypoint(self, callback, *args):
+        try:
+            return callback(*args)
+        except BaseException:
+            self._shutdown_detection_worker()
+            raise
+
     def run_script_from_selected_action(self):
         selected = sorted(int(item) for item in self.action_tree.selection())
         if not selected:
@@ -6339,6 +6554,11 @@ class MacroFlowApp:
         self.run_current_script(start_index=selected[0])
 
     def run_current_script(self, start_index: int = 0):
+        return self._run_detection_entrypoint(
+            self._run_current_script_impl, start_index,
+        )
+
+    def _run_current_script_impl(self, start_index: int = 0):
         if self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
@@ -6348,6 +6568,8 @@ class MacroFlowApp:
         if not self.script.actions and not trigger.get("template"):
             self._notify("没有动作", "请先录制或添加动作。")
             return
+        self._begin_detection_run()
+        self._ensure_detection_worker()
         start_index = max(0, min(int(start_index), len(self.script.actions) - 1))
         repeats = max(1, int(self.repeat_var.get()))
         hwnd = self._bound_hwnd()
@@ -6473,6 +6695,7 @@ class MacroFlowApp:
         finally:
             self.standalone_global_replay = None
             self._clear_global_guards()
+            self._shutdown_detection_worker()
             self._leave_focus_mode()
             self._ui(self._finish_execution_visibility)
 
@@ -7781,6 +8004,17 @@ class MacroFlowApp:
                      preserve_global_rearm_locks: bool = False,
                      test_mode: bool | None = None,
                      suppress_start_sound: bool = False):
+        return self._run_detection_entrypoint(
+            self._run_workflow_impl, start_index, start_repeat,
+            resume_action_index, preserve_global_rearm_locks, test_mode,
+            suppress_start_sound,
+        )
+
+    def _run_workflow_impl(self, start_index: int = 0, start_repeat: int = 0,
+                      resume_action_index: int | None = None,
+                      preserve_global_rearm_locks: bool = False,
+                      test_mode: bool | None = None,
+                      suppress_start_sound: bool = False):
         recorder = getattr(self, "recorder", None)
         if recorder is not None and recorder.running:
             self.stop_recording()
@@ -7792,6 +8026,9 @@ class MacroFlowApp:
         if not workflow_steps and not global_modules:
             self._notify("没有步骤", "请先向工作流添加脚本或模块。")
             return
+        if resume_action_index is None:
+            self._begin_detection_run()
+        self._ensure_detection_worker()
         start_index = max(0, min(int(start_index), max(0, len(workflow_steps) - 1)))
         if resume_action_index is None:
             if test_mode is None:
@@ -7800,6 +8037,7 @@ class MacroFlowApp:
             self.workflow_test_mode_active = bool(test_mode)
             start_delay_seconds = self._read_workflow_start_delay(validate=True)
             if start_delay_seconds is None:
+                self._shutdown_detection_worker()
                 return
         else:
             # 全局模块断点恢复与“重新执行工作流”属于同一次运行，不重复等待。
@@ -7825,6 +8063,7 @@ class MacroFlowApp:
                 start_at = datetime.strptime(start_text, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 self._notify("时间格式错误", "请使用格式：2026-08-03 23:30:00")
+                self._shutdown_detection_worker()
                 return
         hwnd = self._bound_hwnd()
         # 当前侧栏选择作为整个工作流的默认前置窗口；步骤脚本若保存了自己的
@@ -8194,6 +8433,7 @@ class MacroFlowApp:
             # 守卫生命周期 = 一次执行：正常完成/报错/F12 都必须清空，
             # 否则残留的工作流全局模块守卫会在之后的单独脚本执行中继续触发。
             self._clear_global_guards()
+            self._shutdown_detection_worker()
             # 特殊模块「重新执行工作流」继续沿用当前执行的输入锁；
             # 其余情况（普通完成/报错/F12）正常收尾。
             if not getattr(self, "workflow_restart_requested", False):
@@ -8438,6 +8678,7 @@ class MacroFlowApp:
         if hotkey_player is not None:
             hotkey_player.stop()
         self._clear_global_guards()
+        self._shutdown_detection_worker()
         if self.cursor_tracking:
             self._stop_cursor_tracking()
         self.input_guard.stop()
@@ -8445,6 +8686,8 @@ class MacroFlowApp:
         if self.hotkey_listener:
             self.hotkey_listener.stop()
         self._stop_tray()
+        self.ui_queue.flush()
+        self.ui_queue.close()
         self.root.destroy()
 
     def run(self):
