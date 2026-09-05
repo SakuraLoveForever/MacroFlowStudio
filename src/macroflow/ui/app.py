@@ -28,6 +28,7 @@ from pynput import keyboard
 
 from macroflow.core.alerts import play_alert, prewarm_alert
 from macroflow.ui.detect_overlay import show_overlay
+from macroflow.ui.update_queue import UIUpdateQueue
 from macroflow.ui.dialogs import (
     ClickDialog, GameSetupNoteDialog, GlobalDetectDialog, TurnActionDialog,
     HotkeyScriptsDialog,
@@ -882,6 +883,7 @@ class MacroFlowApp:
         self.log_file_lock = threading.Lock()
         self.root = ttk.Window(themename="darkly")
         self.root._macroflow_app = self
+        self.ui_queue = UIUpdateQueue(self.root, interval_ms=50)
         self.root.title(f"{APP_NAME}  {APP_VERSION}")
         self.root.geometry(DEFAULT_MAIN_GEOMETRY)
         self.root.minsize(MIN_MAIN_WIDTH, MIN_MAIN_HEIGHT)
@@ -2212,10 +2214,13 @@ class MacroFlowApp:
             self._write_log_line(line)
             callback = self._append_log_line_to_ui
             args = (line,)
-        try:
-            self.root.after(0, callback, *args)
-        except RuntimeError:
-            pass
+        key = "status" if getattr(callback, "__func__", None) is MacroFlowApp._set_status else None
+        batch_key = (
+            "log" if getattr(callback, "__func__", None) is MacroFlowApp._append_log_line_to_ui
+            else None
+        )
+        urgent = bool(key == "status" and args and str(args[0]).lower() in {"错误", "停止"})
+        self.ui_queue.submit(callback, *args, key=key, batch_key=batch_key, urgent=urgent)
 
     def _set_status(self, text: str, style: str = "normal"):
         self.status_var.set(text)
@@ -2236,9 +2241,9 @@ class MacroFlowApp:
             cursor = "[鼠标 ?,?]"
         return f"[{stamp}] {cursor} {text}\n"
 
-    def _append_log_line_to_ui(self, line: str) -> None:
+    def _append_log_line_to_ui(self, line: str | list[str]) -> None:
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", line)
+        self.log_text.insert("end", "".join(line) if isinstance(line, list) else line)
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
@@ -2261,7 +2266,7 @@ class MacroFlowApp:
     def _log(self, text: str):
         line = self._format_log_line(text)
         self._write_log_line(line)
-        self._append_log_line_to_ui(line)
+        self.ui_queue.submit(self._append_log_line_to_ui, line, batch_key="log")
 
     def _mark_dirty(self):
         self.dirty = True
@@ -8485,6 +8490,8 @@ class MacroFlowApp:
         if self.hotkey_listener:
             self.hotkey_listener.stop()
         self._stop_tray()
+        self.ui_queue.flush()
+        self.ui_queue.close()
         self.root.destroy()
 
     def run(self):
