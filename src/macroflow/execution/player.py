@@ -805,14 +805,43 @@ class MacroPlayer:
                              depth: int = 0,
                              on_action: Callable[[int, int], None] | None = None) -> None:
         """Execute an action sequence (a script or a referenced script) in order."""
+        nested_timeline_state = None
+        if depth > 0:
+            self._timeline.mark_boundary()
+            nested_timeline_state = (
+                self._timeline._base_wall_time,
+                self._timeline._base_offset_ms,
+                self._timeline._last_scheduled_offset_ms,
+            )
+        else:
+            index = max(0, min(int(start_index), max(0, len(actions) - 1)))
+            first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
+            self._timeline.start(first_offset_ms)
+        try:
+            self._run_action_sequence_body(
+                actions, hwnd, start_index, script_stack, depth, on_action,
+            )
+        finally:
+            if nested_timeline_state is not None:
+                (
+                    self._timeline._base_wall_time,
+                    self._timeline._base_offset_ms,
+                    self._timeline._last_scheduled_offset_ms,
+                ) = nested_timeline_state
+                self._timeline.mark_boundary()
+
+    def _run_action_sequence_body(self, actions: list[dict], hwnd: int | None,
+                                  start_index: int,
+                                  script_stack: set[str] | None,
+                                  depth: int,
+                                  on_action: Callable[[int, int], None] | None) -> None:
+        """Execute a sequence after its caller has established timeline ownership."""
         action_indices_by_id = {
             str(action.get("action_id")): index
             for index, action in enumerate(actions)
             if action.get("action_id")
         }
         index = max(0, min(int(start_index), max(0, len(actions) - 1)))
-        first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
-        self._timeline.start(first_offset_ms)
         while index < len(actions):
             action = actions[index]
             try:
@@ -827,6 +856,7 @@ class MacroPlayer:
                 if action.get("type") in {"delay", "script_ref", "image_match"}:
                     self._timeline.mark_boundary()
             except GuardJumpRequest as request:
+                self._timeline.mark_boundary()
                 # 只在守卫所属脚本帧解析行目标；模块代码段或其他脚本帧
                 # 先原样抛出，直到回到对应的脚本动作序列。
                 current_scope_ids = frozenset(action_indices_by_id)
