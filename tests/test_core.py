@@ -87,6 +87,7 @@ from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MacroPlayer, PlaybackStopped,
     scale_screen_point, screen_template_scale,
 )
+from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult
 from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.recorder import MacroRecorder
@@ -4080,6 +4081,92 @@ class GuardTestHelpers:
 
 
 class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
+    def test_worker_evaluator_defers_overlay_and_fallback_click_to_player_thread(self):
+        app = self._make_guard_app()
+        app._pending_global_guard_hits = []
+        app._guard_config_version = 3
+        app._detection_run_id = 7
+        app._ui = Mock()
+        with tempfile.TemporaryDirectory() as folder:
+            main_path = Path(folder) / "main.png"
+            fallback_path = Path(folder) / "fallback.png"
+            main_path.write_bytes(b"main")
+            fallback_path.write_bytes(b"fallback")
+            guard = self._make_guard(
+                main_path,
+                key="script:g1",
+                fallback_module_key="module:fallback",
+                fallback_click=True,
+            )
+            app.global_guards[guard["key"]] = guard
+            fallback_obj = {"name": "备用", "template": str(fallback_path), "threshold": 0.8}
+            fallback_match = {"x": 10, "y": 20, "width": 30, "height": 40,
+                              "center_x": 25, "center_y": 40}
+            with patch("macroflow.ui.app.capture_bgr", return_value=(None, None)), \
+                 patch("macroflow.ui.app.registered_module_object", return_value=fallback_obj), \
+                 patch("macroflow.ui.app.find_template", side_effect=[None, fallback_match]), \
+                 patch("macroflow.ui.app.show_overlay") as overlay, \
+                 patch.object(app.player, "_click_module_point") as fallback_click:
+                evaluation = app._evaluate_global_guards_sync()
+
+        self.assertIsInstance(evaluation, DetectionEvaluation)
+        self.assertIsNone(evaluation.hit)
+        self.assertEqual([event["kind"] for event in evaluation.deferred_events],
+                         ["restore_foreground", "overlay", "fallback_click"])
+        overlay.assert_not_called()
+        fallback_click.assert_not_called()
+        with patch("macroflow.ui.app.show_overlay") as consumed_overlay, \
+             patch.object(app, "_restore_workflow_scan_foreground") as restore_foreground, \
+             patch.object(app.player, "_click_module_point") as consumed_click:
+            app._consume_detection_events(evaluation.deferred_events)
+        consumed_overlay.assert_called_once()
+        restore_foreground.assert_called_once()
+        consumed_click.assert_called_once()
+
+    def test_worker_result_is_returned_only_for_current_run_and_config(self):
+        class FakeWorker:
+            def __init__(self, result):
+                self.result = result
+                self.submitted = []
+
+            def submit(self, run_id, config_version):
+                self.submitted.append((run_id, config_version))
+
+            def poll(self):
+                result, self.result = self.result, None
+                return result
+
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.exiting = False
+        app._detection_run_id = 4
+        app._guard_config_version = 6
+        app._detection_request = None
+        app.guards_lock = threading.Lock()
+        app.global_guards = {}
+        app._pending_global_guard_hits = []
+        app.player = MacroPlayer()
+        worker = FakeWorker(DetectionResult(3, 6, 1.0, 2.0, {"stale": True}))
+        app._detection_worker = worker
+        app._evaluate_global_guards_sync = Mock(return_value={"fresh": True})
+
+        self.assertIsNone(app._evaluate_global_guards())
+        self.assertEqual(worker.submitted, [(4, 6)])
+        worker.result = DetectionResult(4, 6, 3.0, 4.0, {"fresh": True})
+        self.assertEqual(app._evaluate_global_guards(), {"fresh": True})
+        app._evaluate_global_guards_sync.assert_not_called()
+
+    def test_pending_hits_from_previous_run_are_discarded(self):
+        app = self._make_guard_app()
+        app._detection_run_id = 2
+        app._guard_config_version = 4
+        app._pending_global_guard_hits = [{"guard_key": "stale"}]
+        app._pending_global_guard_hits_version = (1, 3)
+
+        evaluation = app._evaluate_global_guards_sync()
+
+        self.assertIsNone(evaluation.hit)
+        self.assertEqual(app._pending_global_guard_hits, [])
+
     def test_switch_module_fallback_clicks_once_then_main_match_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             main_path = Path(folder) / "main.png"
@@ -5203,6 +5290,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         }
         app.guards_lock = threading.Lock()
         app.global_detect_rearm_locks = {"script:one", "workflow:one"}
+        app._guard_config_version = 8
+        app._pending_global_guard_hits = [{"guard_key": "script:one"}]
 
         app._exit_script_global_scope(("script:one",))
 
@@ -5210,6 +5299,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertIn("workflow:one", app.global_guards)
         # 离开作用域同时丢弃该脚本守卫的重新武装锁。
         self.assertEqual(app.global_detect_rearm_locks, {"workflow:one"})
+        self.assertEqual(app._guard_config_version, 9)
+        self.assertEqual(app._pending_global_guard_hits, [])
 
     def test_activate_global_detect_region_mode_parsing(self):
         # 旧配置没有 region_mode：无区域 → 全屏；有区域 → 自定义区域。
