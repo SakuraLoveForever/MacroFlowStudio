@@ -735,6 +735,7 @@ class MacroPlayer:
                     try:
                         self._wait(repeat_interval)
                     except GuardJumpRequest as request:
+                        self._timeline.rebase()
                         # 守卫在间隔等待中命中并携带跳转：解析后应用到下一次
                         # 重复的起始行，而不是让异常逃出 play() 造成“执行失败”。
                         if request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
@@ -813,6 +814,9 @@ class MacroPlayer:
                 self._timeline._base_offset_ms,
                 self._timeline._last_scheduled_offset_ms,
             )
+            index = max(0, min(int(start_index), max(0, len(actions) - 1)))
+            first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
+            self._timeline.start(first_offset_ms)
         else:
             index = max(0, min(int(start_index), max(0, len(actions) - 1)))
             first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
@@ -856,7 +860,7 @@ class MacroPlayer:
                 if action.get("type") in {"delay", "script_ref", "image_match"}:
                     self._timeline.mark_boundary()
             except GuardJumpRequest as request:
-                self._timeline.mark_boundary()
+                self._timeline.rebase()
                 # 只在守卫所属脚本帧解析行目标；模块代码段或其他脚本帧
                 # 先原样抛出，直到回到对应的脚本动作序列。
                 current_scope_ids = frozenset(action_indices_by_id)

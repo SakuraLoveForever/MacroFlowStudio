@@ -8768,7 +8768,7 @@ class PlayerTests(unittest.TestCase):
 
         self.assertEqual([wait for wait in clock.waits if wait], [0.05, 0.1])
 
-    def test_nested_action_sequence_preserves_outer_timeline_after_boundaries(self):
+    def test_nested_recorded_actions_use_child_timeline_and_restore_parent_boundary(self):
         class FakeClock:
             def __init__(self):
                 self.value = 0.0
@@ -8785,20 +8785,27 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._timeline = PlaybackTimeline(now=clock.now, wait=clock.wait)
         player._wait = lambda milliseconds: clock.wait(milliseconds / 1000)
-        boundaries = []
+        timeline_events = []
         mark_boundary = player._timeline.mark_boundary
+        start = player._timeline.start
 
         def record_boundary():
-            boundaries.append(clock.value)
+            timeline_events.append(("boundary", round(clock.value, 9)))
             mark_boundary()
 
+        def record_start(offset_ms=0.0):
+            timeline_events.append(("start", round(clock.value, 9), offset_ms))
+            start(offset_ms)
+
         player._timeline.mark_boundary = record_boundary
+        player._timeline.start = record_start
 
         def execute(action, hwnd, stack=None, depth=0):
             if action["type"] == "script_ref":
-                player._run_action_sequence([{"type": "delay", "ms": 50}], hwnd, depth=depth + 1)
-            elif action["type"] == "delay":
-                clock.wait(action["ms"] / 1000)
+                player._run_action_sequence([
+                    {"type": "key", "recorded_at_ms": 0.0},
+                    {"type": "key", "recorded_at_ms": 50.0},
+                ], hwnd, depth=depth + 1)
 
         player._execute_action = execute
         player._run_action_sequence([
@@ -8809,8 +8816,16 @@ class PlayerTests(unittest.TestCase):
         ], None)
 
         self.assertEqual([wait for wait in clock.waits if wait], [0.1, 0.05, 0.1])
-        self.assertIn(0.1, boundaries)
-        self.assertTrue(any(abs(boundary - 0.15) < 1e-9 for boundary in boundaries))
+        self.assertEqual(
+            timeline_events,
+            [
+                ("start", 0.0, 0.0),
+                ("boundary", 0.1),
+                ("start", 0.1, 0.0),
+                ("boundary", 0.15),
+                ("boundary", 0.15),
+            ],
+        )
 
     def test_guard_jump_rebases_before_the_target_recorded_action(self):
         class FakeClock:
@@ -8843,6 +8858,20 @@ class PlayerTests(unittest.TestCase):
         ], None)
 
         self.assertEqual(clock.waits, [0.1])
+        self.assertEqual(player._timeline.metrics.rebase_count, 1)
+
+    def test_repeat_interval_guard_jump_rebases_timeline(self):
+        timing = []
+        player = MacroPlayer(on_timing=timing.append)
+
+        def wait(milliseconds):
+            if milliseconds:
+                raise GuardJumpRequest(jump_row=1)
+
+        player._wait = wait
+        player.play([{"type": "comment"}], repeats=2, repeat_interval_ms=25)
+
+        self.assertEqual(timing[0]["rebase_count"], 1)
 
     def test_thousand_recorded_actions_do_not_accumulate_execution_cost(self):
         class FakeClock:
