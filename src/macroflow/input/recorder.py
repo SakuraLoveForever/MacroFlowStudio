@@ -6,6 +6,12 @@ from typing import Callable
 
 from pynput import keyboard, mouse
 
+from macroflow.core.models import (
+    INPUT_MODE_KEY,
+    PULSE_DURATION_KEY,
+    PULSE_STARTED_AT_KEY,
+    RECORDED_AT_KEY,
+)
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.wininput import is_cursor_near_window_center, is_window_process_foreground
 
@@ -37,6 +43,7 @@ class MacroRecorder:
         self._mouse_listener = None
         self._raw_listener: RawMouseListener | None = None
         self._lock = threading.RLock()
+        self._recording_started_at = 0.0
         self._last_action_time = 0.0
         self._last_move_time = 0.0
         self._raw_dx = 0
@@ -76,6 +83,7 @@ class MacroRecorder:
         self._event_times = []
         self.limit_reached = False
         now = time.perf_counter()
+        self._recording_started_at = now
         self._last_action_time = now
         self._last_move_time = 0.0
         self._raw_last_flush = now
@@ -135,6 +143,7 @@ class MacroRecorder:
     def _append(self, action: dict, when: float | None = None) -> None:
         if not self.running:
             return
+        now = time.perf_counter() if when is None else when
         with self._lock:
             if len(self.actions) >= self.max_actions:
                 self.limit_reached = True
@@ -142,8 +151,8 @@ class MacroRecorder:
             # when 用于注入的「转向」动作：delay_ms 从快捷键实际按下时刻
             # （注入脉冲起始）起算，而不是从刷出时刻起算，否则转向的延时
             # 会被记到下一次快捷键/停止的时间点，丢失真实按下时机。
-            now = time.perf_counter() if when is None else when
             action["delay_ms"] = max(0, round((now - self._last_action_time) * 1000))
+            action[RECORDED_AT_KEY] = round((now - self._recording_started_at) * 1000, 3)
             self._last_action_time = now
             self.actions.append(action)
             self._event_times.append(now)
@@ -233,28 +242,40 @@ class MacroRecorder:
             if self._injected_last and now - self._injected_last > self._injected_flush_window:
                 flush_dx, flush_dy = self._injected_dx, self._injected_dy
                 flush_started = self._injected_started
+                flush_last = self._injected_last
                 self._injected_dx = self._injected_dy = 0
                 self._injected_started = 0.0
+                self._injected_last = 0.0
             else:
                 flush_dx = flush_dy = 0
                 flush_started = 0.0
+                flush_last = 0.0
             if not self._injected_started:
                 self._injected_started = now
             self._injected_dx += dx
             self._injected_dy += dy
             self._injected_last = now
         if flush_dx or flush_dy:
-            self._append({"type": "turn", "dx": flush_dx, "dy": flush_dy}, when=flush_started)
+            self._append({
+                "type": "turn", "dx": flush_dx, "dy": flush_dy,
+                PULSE_STARTED_AT_KEY: round((flush_started - self._recording_started_at) * 1000, 3),
+                PULSE_DURATION_KEY: round(max(0, flush_last - flush_started) * 1000, 3),
+            }, when=flush_started)
 
     def _flush_injected(self, force: bool = False) -> None:
         with self._lock:
             dx, dy = self._injected_dx, self._injected_dy
             started = self._injected_started
+            last = self._injected_last
             self._injected_dx = self._injected_dy = 0
             self._injected_started = 0.0
             self._injected_last = 0.0
         if dx or dy:
-            self._append({"type": "turn", "dx": dx, "dy": dy}, when=started)
+            self._append({
+                "type": "turn", "dx": dx, "dy": dy,
+                PULSE_STARTED_AT_KEY: round((started - self._recording_started_at) * 1000, 3),
+                PULSE_DURATION_KEY: round(max(0, last - started) * 1000, 3),
+            }, when=started)
 
     def _flush_raw(self, force: bool = False) -> None:
         now = time.perf_counter()
@@ -274,11 +295,16 @@ class MacroRecorder:
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
         # 注入的点击（快捷键脚本回放）也先刷出未落的转向，保持动作顺序。
         self._flush_injected()
+        if self.current_mode() == "relative":
+            self._flush_raw(force=True)
         self._append({
             "type": "mouse_button", "button": _button_name(button),
             "down": bool(pressed), "x": int(x), "y": int(y),
+            INPUT_MODE_KEY: self.current_mode(),
         })
 
     def _on_scroll(self, x: int, y: int, dx: int, dy: int) -> None:
         self._flush_injected()
+        if self.current_mode() == "relative":
+            self._flush_raw(force=True)
         self._append({"type": "scroll", "dx": int(dx), "dy": int(dy), "x": int(x), "y": int(y)})

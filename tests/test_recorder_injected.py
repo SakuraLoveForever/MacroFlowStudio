@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from macroflow.input.recorder import MacroRecorder  # noqa: E402
+from macroflow.core.models import PULSE_DURATION_KEY, PULSE_STARTED_AT_KEY  # noqa: E402
 
 from pynput import mouse  # noqa: E402
 
@@ -45,6 +46,9 @@ class RecorderInjectedInputTests(unittest.TestCase):
         self.assertEqual(action["type"], "turn")
         self.assertEqual(action["dx"], -1500)
         self.assertEqual(action["dy"], 0)
+        self.assertIn(PULSE_STARTED_AT_KEY, action)
+        self.assertIn(PULSE_DURATION_KEY, action)
+        self.assertEqual(action[PULSE_DURATION_KEY], 0.0)
 
     def test_injected_burst_merges_into_one_turn(self):
         rec = make_recorder()
@@ -54,6 +58,8 @@ class RecorderInjectedInputTests(unittest.TestCase):
         rec._flush_injected(force=True)
         self.assertEqual(len(rec.actions), 1)
         self.assertEqual(rec.actions[0]["dx"], -1500)
+        self.assertIn(PULSE_STARTED_AT_KEY, rec.actions[0])
+        self.assertIn(PULSE_DURATION_KEY, rec.actions[0])
 
     def test_physical_relative_delta_stays_mouse_move(self):
         rec = make_recorder(mode="relative")
@@ -81,6 +87,8 @@ class RecorderInjectedInputTests(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0]["type"], "turn")
         self.assertEqual(actions[0]["dy"], 1500)
+        self.assertIn(PULSE_STARTED_AT_KEY, actions[0])
+        self.assertIn(PULSE_DURATION_KEY, actions[0])
 
     def test_injected_turn_has_delay_ms(self):
         rec = make_recorder()
