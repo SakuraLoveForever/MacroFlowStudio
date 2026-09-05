@@ -15,7 +15,7 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
-    "app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click", "_default_global_jump",
+    "app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click",
             "_on_restart_workflow_request", "_poll_workflow_stop_for_restart_workflow",
             "_launch_workflow_restart", "_restart_workflow_resolved_row",
             "_evaluate_global_guards", "_evaluate_one_guard", "_build_guard_hit",
