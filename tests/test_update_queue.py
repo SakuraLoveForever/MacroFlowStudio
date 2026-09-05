@@ -9,6 +9,7 @@ from macroflow.ui.dialogs import (
     parse_named_region,
     test_state_transition,
     format_test_result,
+    test_callback_is_current,
 )
 from macroflow.ui.update_queue import UIUpdateQueue
 from macroflow.ui.app import MacroFlowApp
@@ -140,10 +141,20 @@ class GridDialogPureHelperTests(unittest.TestCase):
         dialog._test()
         self.assertEqual(dialog.test_state.get(), "正在测试…")
         self.assertEqual(len(callbacks), 1)
+        old_complete = callbacks[0][1]
         dialog._test()
         self.assertEqual(len(callbacks), 1)
         dialog._cancel_test_or_close()
         self.assertTrue(dialog.test_cancel_event.is_set())
+        dialog._test()
+        self.assertEqual(len(callbacks), 2)
+        self.assertFalse(test_callback_is_current(1, 2, False))
+        self.assertFalse(test_callback_is_current(2, 2, True))
+        old_complete({"matched_rows": 99}, None, 1)
+        self.assertEqual(dialog.test_state.get(), "正在测试…")
+
+    def test_destroyed_dialog_rejects_late_completion(self):
+        self.assertFalse(test_callback_is_current(4, 4, True))
 
     def test_log_falls_back_without_queue_on_new_fixture(self):
         app = MacroFlowApp.__new__(MacroFlowApp)

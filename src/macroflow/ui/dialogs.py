@@ -112,6 +112,11 @@ def format_test_result(result, error, elapsed_ms: int) -> str:
     return f"命中 {int(matched)} 行，耗时 {elapsed} ms"
 
 
+def test_callback_is_current(active_token: int, callback_token: int,
+                             destroyed: bool) -> bool:
+    return not destroyed and active_token == callback_token
+
+
 def _parse_grid_int_list(values):
     """Parse saved grid line values while ignoring empty trailing entries."""
     if values is None:
@@ -8651,6 +8656,8 @@ class RowListConditionClickDialog(ModalDialog):
         action = action or {}
         self.on_test = on_test
         self.test_cancel_event = threading.Event()
+        self._test_generation = 0
+        self._destroyed = False
         self.picker = None
         self.condition_field_widgets = {}
         self.jump_target_ids = dict(image_jump_target_options(actions or []))
@@ -9697,17 +9704,29 @@ class GridRowConditionClickDialog(ModalDialog):
         action = self._build_action()
         if not action or not self.on_test:
             return
+        self._test_generation = getattr(self, "_test_generation", 0) + 1
+        token = self._test_generation
         self.test_cancel_event = threading.Event()
         self.test_state.set("正在测试…")
         self.test_button.configure(state="disabled")
         self.save_button.configure(state="disabled")
         self.cancel_button.configure(text="取消测试", state="normal")
         try:
-            self.on_test(action, self._test_complete, self.test_cancel_event)
+            self.on_test(
+                action,
+                lambda result=None, error=None, elapsed_ms=0, cancelled=False: self._test_complete(
+                    token, result, error, elapsed_ms, cancelled,
+                ),
+                self.test_cancel_event,
+            )
         except Exception as exc:
-            self._test_complete(None, exc, 0)
+            self._test_complete(token, None, exc, 0)
 
-    def _test_complete(self, result=None, error=None, elapsed_ms=0, cancelled=False):
+    def _test_complete(self, token, result=None, error=None, elapsed_ms=0, cancelled=False):
+        if not test_callback_is_current(
+                getattr(self, "_test_generation", 0), token,
+                getattr(self, "_destroyed", False)):
+            return
         if cancelled or self.test_cancel_event.is_set():
             self.test_state.set("已取消")
         else:
@@ -9718,12 +9737,22 @@ class GridRowConditionClickDialog(ModalDialog):
 
     def _cancel_test_or_close(self):
         if self.test_state.get() == "正在测试…":
+            self._test_generation += 1
             self.test_cancel_event.set()
             self.test_state.set("已取消")
             self.test_button.configure(state="normal")
             self.save_button.configure(state="normal")
             return
         self.destroy()
+
+    def destroy(self):
+        if not getattr(self, "_destroyed", False):
+            self._destroyed = True
+            self._test_generation = getattr(self, "_test_generation", 0) + 1
+            event = getattr(self, "test_cancel_event", None)
+            if event is not None:
+                event.set()
+        super().destroy()
 
     def save(self):
         if self.test_state.get() == "正在测试…":
