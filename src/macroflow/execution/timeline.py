@@ -61,10 +61,9 @@ class PlaybackTimeline:
     def wait_until(self, offset_ms: float) -> TimingSample:
         self.metrics.scheduled_count += 1
         self._last_scheduled_offset_ms = offset_ms
-        target_wall_time = self._base_wall_time + (
-            (offset_ms - self._base_offset_ms) / 1000.0
-        )
-        remaining = round(target_wall_time - self._now(), 3)
+        target_duration = (offset_ms - self._base_offset_ms) / 1000.0
+        elapsed_duration = self._now() - self._base_wall_time
+        remaining = target_duration - elapsed_duration
         if remaining > 0:
             self._wait(remaining)
 
