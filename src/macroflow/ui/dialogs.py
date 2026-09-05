@@ -4,6 +4,7 @@ import ctypes
 import json
 import tkinter as tk
 import copy
+import threading
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -101,6 +102,14 @@ def test_state_transition(state: str, event: str) -> str:
     if state == "running" and event in {"success", "error"}:
         return event
     return state
+
+
+def format_test_result(result, error, elapsed_ms: int) -> str:
+    elapsed = max(0, int(elapsed_ms))
+    if error:
+        return f"测试失败：{error}（耗时 {elapsed} ms）"
+    matched = result.get("matched_rows", 0) if isinstance(result, dict) else 0
+    return f"命中 {int(matched)} 行，耗时 {elapsed} ms"
 
 
 def _parse_grid_int_list(values):
@@ -8641,6 +8650,7 @@ class RowListConditionClickDialog(ModalDialog):
         super().__init__(parent, "列表逐行条件点击", 700, 640)
         action = action or {}
         self.on_test = on_test
+        self.test_cancel_event = threading.Event()
         self.picker = None
         self.condition_field_widgets = {}
         self.jump_target_ids = dict(image_jump_target_options(actions or []))
@@ -9515,9 +9525,12 @@ class GridRowConditionClickDialog(ModalDialog):
         ttk.Label(frame, textvariable=self.test_state, foreground=COLOR_MUTED).grid(row=7, column=0, columnspan=4, sticky="w", pady=(0, 4))
         buttons = ttk.Frame(frame)
         buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(12, 0))
-        ttk.Button(buttons, text="测试识别（不点击）", command=self._test).pack(side="left")
-        ttk.Button(buttons, text="取消", command=self._cancel_test_or_close).pack(side="right")
-        ttk.Button(buttons, text="保存动作", command=self.save).pack(side="right", padx=8)
+        self.test_button = ttk.Button(buttons, text="测试识别（不点击）", command=self._test)
+        self.test_button.pack(side="left")
+        self.cancel_button = ttk.Button(buttons, text="取消", command=self._cancel_test_or_close)
+        self.cancel_button.pack(side="right")
+        self.save_button = ttk.Button(buttons, text="保存动作", command=self.save)
+        self.save_button.pack(side="right", padx=8)
 
     def _state_text(self):
         return (f"横线 {len(self.state['horizontal_lines'])} 条，竖线 {len(self.state['vertical_lines'])} 条；"
@@ -9553,6 +9566,8 @@ class GridRowConditionClickDialog(ModalDialog):
 
     def _edit_grid(self):
         try:
+            if hasattr(self, "region_vars"):
+                self.grid_region.set(",".join(self.region_vars[name].get().strip() for name in ("x", "y", "w", "h")))
             raw = [int(value.strip()) for value in self.grid_region.get().split(",")] if self.grid_region.get().strip() else []
             region = raw if len(raw) == 4 and raw[2] > 0 and raw[3] > 0 else None
             if region is None and not self.source_image.get().strip():
@@ -9682,20 +9697,37 @@ class GridRowConditionClickDialog(ModalDialog):
         action = self._build_action()
         if not action or not self.on_test:
             return
+        self.test_cancel_event = threading.Event()
         self.test_state.set("正在测试…")
+        self.test_button.configure(state="disabled")
+        self.save_button.configure(state="disabled")
+        self.cancel_button.configure(text="取消测试", state="normal")
         try:
-            result = self.on_test(action)
-            self.test_state.set("测试完成" if result is not False else "测试失败")
+            self.on_test(action, self._test_complete, self.test_cancel_event)
         except Exception as exc:
-            self.test_state.set(f"测试失败：{exc}")
+            self._test_complete(None, exc, 0)
+
+    def _test_complete(self, result=None, error=None, elapsed_ms=0, cancelled=False):
+        if cancelled or self.test_cancel_event.is_set():
+            self.test_state.set("已取消")
+        else:
+            self.test_state.set(format_test_result(result, error, elapsed_ms))
+        self.test_button.configure(state="normal")
+        self.save_button.configure(state="normal")
+        self.cancel_button.configure(text="取消", state="normal")
 
     def _cancel_test_or_close(self):
         if self.test_state.get() == "正在测试…":
+            self.test_cancel_event.set()
             self.test_state.set("已取消")
+            self.test_button.configure(state="normal")
+            self.save_button.configure(state="normal")
             return
         self.destroy()
 
     def save(self):
+        if self.test_state.get() == "正在测试…":
+            return
         action = self._build_action()
         if action is None:
             return

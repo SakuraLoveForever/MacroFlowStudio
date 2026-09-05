@@ -1071,6 +1071,7 @@ class MacroFlowApp:
         self.player.set_playback_speed(self.playback_speed_var.get())
         self.hotkey_player.set_playback_speed(self.playback_speed_var.get())
         self._build_ui()
+        self.ui_queue.start()
         self._restore_saved_window_binding()
         self._sync_activation_ui_from_script()
         self.rebuild_action_tree()
@@ -2275,7 +2276,11 @@ class MacroFlowApp:
     def _log(self, text: str):
         line = self._format_log_line(text)
         self._write_log_line(line)
-        self.ui_queue.submit(self._append_log_line_to_ui, line, batch_key="log")
+        queue = getattr(self, "ui_queue", None)
+        if queue is None:
+            self._append_log_line_to_ui(line)
+        else:
+            queue.submit(self._append_log_line_to_ui, line, batch_key="log")
 
     def _mark_dirty(self):
         self.dirty = True
@@ -5968,19 +5973,28 @@ class MacroFlowApp:
         if action:
             self._insert_action(action)
 
-    def test_row_list_condition_click(self, action: dict):
+    def test_row_list_condition_click(self, action: dict, on_complete=None,
+                                      cancel_event=None):
         """Run a one-shot, non-clicking diagnostic scan for a row-list action."""
+        def reject(message: str) -> None:
+            if on_complete is not None:
+                on_complete(None, message, 0, False)
+
         if getattr(self, "worker", None) and self.worker.is_alive():
             self._notify("无法测试识别", "当前已有脚本正在执行，请先停止执行。")
+            reject("当前已有脚本正在执行")
             return
         if getattr(self, "_row_list_diagnostic_running", False):
             kind = getattr(self, "_row_list_diagnostic_kind", "")
             label = "网格逐行识别诊断" if kind == "grid" else "列表逐行识别诊断"
             self._notify("无法测试识别", f"当前已有{label}正在执行，请稍候。")
+            reject(f"当前已有{label}正在执行")
             return
         diagnostic_kind = (
             "grid" if action.get("type") == "grid_row_condition_click" else "row_list"
         )
+        cancel_event = cancel_event or threading.Event()
+        started_at = time.perf_counter()
         self._row_list_diagnostic_running = True
         self._row_list_diagnostic_kind = diagnostic_kind
         hwnd = None if diagnostic_kind == "grid" else self._bound_hwnd()
@@ -5996,11 +6010,17 @@ class MacroFlowApp:
             self._row_list_diagnostic_running = False
             self._row_list_diagnostic_kind = ""
             self._notify("无法测试识别", str(exc))
+            reject(str(exc))
             return
 
         def run_diagnostic():
             error = None
             diagnostic_result = None
+            original_wait = self.player.on_ocr_engine_wait
+            self.player.on_ocr_engine_wait = lambda: (
+                not cancel_event.is_set()
+                and (original_wait() if original_wait else True)
+            )
             try:
                 if action.get("type") == "grid_row_condition_click":
                     diagnostic_result = self.player._diagnose_grid_row_condition_click(
@@ -6013,12 +6033,16 @@ class MacroFlowApp:
             except Exception as exc:
                 error = exc
             finally:
+                self.player.on_ocr_engine_wait = original_wait
                 self._ui(
                     self._finish_row_list_diagnostic,
                     result_lines,
                     error,
                     hidden_states,
                     diagnostic_result,
+                    on_complete,
+                    started_at,
+                    cancel_event,
                 )
 
         threading.Thread(target=run_diagnostic, daemon=True).start()
@@ -6108,12 +6132,37 @@ class MacroFlowApp:
 
     def _finish_row_list_diagnostic(
             self, result_lines: list[str], error: Exception | None,
-            hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None) -> None:
+            hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None,
+            on_complete=None, started_at: float | None = None,
+            cancel_event=None) -> None:
         """Restore the app and show the completed diagnostic in a new window."""
+        elapsed_ms = round(max(0.0, time.perf_counter() - (started_at or time.perf_counter())) * 1000)
+        cancelled = bool(cancel_event is not None and cancel_event.is_set())
         if hidden_states is not None:
             self._restore_macroflow_windows_after_diagnostic(hidden_states)
         self._row_list_diagnostic_running = False
         self._row_list_diagnostic_kind = ""
+        if on_complete is not None:
+            matched_rows = 0
+            if isinstance(diagnostic_result, dict):
+                cells = diagnostic_result.get("cells", [])
+                by_row = {}
+                left_column = int(diagnostic_result.get("left_column", -1)) + 1
+                right_column = int(diagnostic_result.get("right_column", -1)) + 1
+                for cell in cells:
+                    by_row.setdefault(cell.get("row"), {})[cell.get("column")] = cell.get("matched")
+                matched_rows = sum(
+                    bool(values.get(left_column)) and bool(values.get(right_column))
+                    for values in by_row.values()
+                )
+            on_complete(
+                {"matched_rows": matched_rows} if diagnostic_result is not None else None,
+                "已取消" if cancelled else error,
+                elapsed_ms,
+                cancelled,
+            )
+        if cancelled:
+            return
         if isinstance(diagnostic_result, dict):
             GridRowDiagnosticResultDialog(
                 self.root, diagnostic_result, error,

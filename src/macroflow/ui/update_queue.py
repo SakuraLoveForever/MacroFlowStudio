@@ -13,6 +13,7 @@ class _Update:
     args: tuple
     key: str | None = None
     batch_key: str | None = None
+    urgent: bool = False
 
 
 class UIUpdateQueue:
@@ -21,6 +22,7 @@ class UIUpdateQueue:
     def __init__(self, root, interval_ms: int = 50):
         self.root = root
         self.interval_ms = max(1, int(interval_ms))
+        self._owner_thread_id = threading.get_ident()
         self._lock = threading.RLock()
         self._updates: list[_Update] = []
         self._scheduled_id = None
@@ -34,28 +36,30 @@ class UIUpdateQueue:
             if key is not None:
                 for index, update in enumerate(self._updates):
                     if update.key == key:
-                        self._updates[index] = _Update(callback, args, key, batch_key)
+                        self._updates[index] = _Update(callback, args, key, batch_key, urgent)
                         break
                 else:
-                    self._updates.append(_Update(callback, args, key, batch_key))
+                    self._updates.append(_Update(callback, args, key, batch_key, urgent))
             elif batch_key is not None and self._updates:
                 previous = self._updates[-1]
                 if previous.batch_key == batch_key and self._same_callback(previous.callback, callback):
                     self._updates[-1] = _Update(
                         callback, previous.args + args, None, batch_key,
+                        previous.urgent or urgent,
                     )
                 else:
-                    self._updates.append(_Update(callback, args, None, batch_key))
+                    self._updates.append(_Update(callback, args, None, batch_key, urgent))
             else:
-                self._updates.append(_Update(callback, args, None, batch_key))
-            if urgent:
-                updates = self._take_locked()
-            else:
-                updates = None
-                self._schedule_locked()
-        if updates is not None:
-            self._run(updates)
+                self._updates.append(_Update(callback, args, None, batch_key, urgent))
+        # Producer threads must never touch Tk.  ``urgent`` is intentionally
+        # only retained as queue priority and is drained by the main-thread pump.
         return True
+
+    def start(self) -> None:
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError("UIUpdateQueue.start() must run on the Tk thread")
+        with self._lock:
+            self._schedule_locked()
 
     def _schedule_locked(self) -> None:
         if self._scheduled_id is not None or self._closed:
@@ -68,7 +72,7 @@ class UIUpdateQueue:
     def _scheduled_flush(self) -> None:
         with self._lock:
             self._scheduled_id = None
-        self.flush()
+        self.pump()
 
     def _take_locked(self) -> list[_Update]:
         updates = self._updates
@@ -83,10 +87,18 @@ class UIUpdateQueue:
         return updates
 
     def flush(self) -> int:
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError("UIUpdateQueue.flush() must run on the Tk thread")
         with self._lock:
             updates = self._take_locked()
-        self._run(updates)
+        self._run([update for update in updates if update.urgent])
+        self._run([update for update in updates if not update.urgent])
+        with self._lock:
+            self._schedule_locked()
         return len(updates)
+
+    def pump(self) -> int:
+        return self.flush()
 
     @staticmethod
     def _same_callback(left: Callable, right: Callable) -> bool:
@@ -104,6 +116,8 @@ class UIUpdateQueue:
                 update.callback(list(update.args))
 
     def close(self) -> None:
+        if threading.get_ident() != self._owner_thread_id:
+            raise RuntimeError("UIUpdateQueue.close() must run on the Tk thread")
         with self._lock:
             if self._closed:
                 return
