@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -15,8 +16,10 @@ from macroflow.execution.timeline import PlaybackTimeline  # noqa: E402
 
 def parse_durations(value: str) -> list[float]:
     durations = [float(item.strip()) for item in value.split(",") if item.strip()]
-    if not durations or any(duration < 0 for duration in durations):
-        raise argparse.ArgumentTypeError("durations must be a non-empty comma-separated list of non-negative seconds")
+    if not durations or any(not math.isfinite(duration) or duration < 0 for duration in durations):
+        raise argparse.ArgumentTypeError(
+            "durations must be a non-empty comma-separated list of finite, non-negative seconds"
+        )
     return durations
 
 
@@ -32,7 +35,7 @@ def run_case(duration_s: float, event_count: int) -> dict[str, float | int]:
     result["duration_s"] = duration_s
     result["event_count"] = event_count
     result["drift_ms"] = (time.perf_counter() - started_at) * 1000 - duration_s * 1000
-    result["dropped_event_count"] = result["scheduled_count"] - result["sent_count"]
+    result["dropped_event_count"] = event_count - timeline.metrics.sent_count
     return result
 
 
@@ -47,8 +50,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.events <= 0:
-        parser.error("events must be greater than zero")
+    if args.events < 2:
+        parser.error("events must be at least 2")
 
     for result in (run_case(duration, args.events) for duration in args.durations):
         if args.json:
