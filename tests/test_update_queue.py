@@ -146,6 +146,7 @@ class GridDialogPureHelperTests(unittest.TestCase):
         self.assertEqual(len(callbacks), 1)
         dialog._cancel_test_or_close()
         self.assertTrue(dialog.test_cancel_event.is_set())
+        self.assertEqual(dialog.cancel_button.configurations[-1]["text"], "取消")
         dialog._test()
         self.assertEqual(len(callbacks), 2)
         self.assertFalse(test_callback_is_current(1, 2, False))

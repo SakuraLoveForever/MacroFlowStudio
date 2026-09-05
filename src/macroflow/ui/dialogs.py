@@ -9742,6 +9742,7 @@ class GridRowConditionClickDialog(ModalDialog):
             self.test_state.set("已取消")
             self.test_button.configure(state="normal")
             self.save_button.configure(state="normal")
+            self.cancel_button.configure(text="取消", state="normal")
             return
         self.destroy()
 
