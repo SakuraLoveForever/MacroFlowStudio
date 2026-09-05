@@ -1484,7 +1484,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "comment", "text": "C1"},
             {"type": "comment", "text": "C2"},
         ])
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/scripts/C.json"), \
+        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch("macroflow.ui.app.load_script", return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 3)
@@ -1497,6 +1497,59 @@ class ScriptEditingTests(unittest.TestCase):
         app._mark_dirty.assert_called_once()
         app.action_tree.selection_set.assert_called_once_with("1")
 
+    def test_insert_script_reference_accepts_multiple_selected_files_in_order(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
+        app.root = Mock()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ("0",)
+        app._checkpoint_action_edit = Mock()
+        app._mark_dirty = Mock()
+        app.rebuild_action_tree = Mock()
+        app._notify = Mock()
+        paths = ("C:/scripts/first.json", "C:/scripts/second.json")
+
+        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""), \
+             patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=paths), \
+             patch("macroflow.ui.app.load_script", return_value=MacroScript()):
+            app._insert_script(False)
+
+        self.assertEqual(len(app.script.actions), 3)
+        self.assertEqual(
+            [action["script"] for action in app.script.actions[1:]],
+            [str(Path(paths[0]).resolve()), str(Path(paths[1]).resolve())],
+        )
+        self.assertEqual([action["type"] for action in app.script.actions[1:]], [
+            "script_ref", "script_ref",
+        ])
+        app.action_tree.selection_set.assert_called_once_with("1", "2")
+
+    def test_insert_script_expanded_accepts_multiple_selected_files_in_order(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.script = MacroScript(actions=[])
+        app.root = Mock()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
+        app._checkpoint_action_edit = Mock()
+        app._mark_dirty = Mock()
+        app.rebuild_action_tree = Mock()
+        app._notify = Mock()
+        paths = ("C:/scripts/first.json", "C:/scripts/second.json")
+        scripts = [
+            MacroScript(actions=[{"type": "comment", "text": "first"}]),
+            MacroScript(actions=[{"type": "comment", "text": "second"}]),
+        ]
+
+        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""), \
+             patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=paths), \
+             patch("macroflow.ui.app.load_script", side_effect=scripts * 2):
+            app._insert_script(True)
+
+        self.assertEqual(
+            [action["text"] for action in app.script.actions], ["first", "second"],
+        )
+        app.action_tree.selection_set.assert_called_once_with("0", "1")
+
     def test_insert_script_into_empty_script_allowed(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.script = MacroScript(actions=[])
@@ -1508,7 +1561,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.rebuild_action_tree = Mock()
         app._notify = Mock()
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/scripts/C.json"), \
+        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch("macroflow.ui.app.load_script", return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 1)
@@ -1525,7 +1578,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
         app._notify = Mock()
-        with patch("macroflow.ui.app.filedialog.askopenfilename") as picker:
+        with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
             app._insert_script(False)
         picker.assert_not_called()
         app._notify.assert_called_once()
@@ -1589,7 +1642,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.rebuild_action_tree = Mock()
         app._notify = Mock()
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/scripts/C.json"), \
+        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch("macroflow.ui.app.load_script", return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 3)
@@ -1615,7 +1668,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "image_match", "text": "img", "action_id": "src3",
              "timeout_jump_action_id": "src2", "found_jump_action_id": "src3"},
         ])
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/scripts/C.json"), \
+        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch("macroflow.ui.app.load_script", return_value=inserted):
             app._insert_script(True)
         self.assertEqual(len(app.script.actions), 5)
@@ -1665,7 +1718,7 @@ class ScriptEditingTests(unittest.TestCase):
                     {"type": "jump", "jump_row": 2},
                 ],
             }, ensure_ascii=False), encoding="utf-8")
-            with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=str(ref)):
+            with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=(str(ref),)):
                 app._insert_script(True)
         inserted = app.script.actions[1:4]
         self.assertEqual([action.get("text") for action in inserted], ["R1", "R2", None])
@@ -1681,7 +1734,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
         app._notify = Mock()
-        with patch("macroflow.ui.app.filedialog.askopenfilename") as picker:
+        with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
             app._insert_script(True)
         picker.assert_not_called()
         app._notify.assert_called_once()
@@ -6504,6 +6557,32 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
 
 class RecordingDisplayTests(unittest.TestCase):
+    def test_grid_image_diagnostic_does_not_hide_or_restore_windows(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app.root = Mock()
+        app._bound_hwnd = Mock()
+        app._hide_macroflow_windows_for_diagnostic = Mock(
+            side_effect=AttributeError("'Menu' object has no attribute 'state'"),
+        )
+        app._restore_macroflow_windows_after_diagnostic = Mock()
+        app._log = Mock()
+        app._ui = lambda callback, *args: callback(*args)
+        app.player = Mock()
+        result = {"image_path": "selected.png", "cells": []}
+        app.player._diagnose_grid_row_condition_click.return_value = result
+        action = {"type": "grid_row_condition_click", "screenshot_path": "selected.png"}
+        with patch("macroflow.ui.app.threading.Thread") as thread_class, \
+             patch("macroflow.ui.app.GridRowDiagnosticResultDialog") as dialog:
+            app.test_row_list_condition_click(action)
+            thread_class.call_args.kwargs["target"]()
+        app._bound_hwnd.assert_not_called()
+        app._hide_macroflow_windows_for_diagnostic.assert_not_called()
+        app._restore_macroflow_windows_after_diagnostic.assert_not_called()
+        dialog.assert_called_once_with(app.root, result, None)
+        dialog.return_value.show.assert_called_once()
+        self.assertFalse(app._row_list_diagnostic_running)
+
     def test_row_list_diagnostic_completion_restores_windows_before_showing_results(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
@@ -6545,6 +6624,7 @@ class RecordingDisplayTests(unittest.TestCase):
         diagnose_kwargs = app.player._diagnose_row_list_condition_click.call_args.kwargs
         self.assertIn("result_sink", diagnose_kwargs)
         app._finish_row_list_diagnostic.assert_called_once()
+
 
     def test_floating_notice_positions_cover_all_six_choices(self):
         self.assertEqual(floating_notice_xy("左上", 1920, 1080), (18, 18))
@@ -8568,6 +8648,62 @@ class AlertTests(unittest.TestCase):
             self.assertTrue(called.wait(1.0))
 
 
+class ShutdownLifecycleTests(unittest.TestCase):
+    def test_close_always_quits_instead_of_hiding(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._quit_app = Mock()
+        app._hide_main_to_tray = Mock()
+        app.on_close()
+        app._quit_app.assert_called_once()
+        app._hide_main_to_tray.assert_not_called()
+
+    def test_packaged_exit_terminates_with_background_thread_alive(self):
+        import subprocess
+        import sys
+        code = "\n".join([
+            "from tests.test_core import MacroFlowApp",
+            "import sys, threading",
+            "from unittest.mock import Mock",
+            "app = MacroFlowApp.__new__(MacroFlowApp)",
+            "app.root = Mock()",
+            "app.exiting = True",
+            "sys.frozen = True",
+            "threading.Thread(target=threading.Event().wait, daemon=False).start()",
+            "app.run()",
+            "raise RuntimeError('packaged process did not exit')",
+        ])
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True,
+            timeout=20, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+
+    def test_stop_tray_waits_for_detached_tray_thread(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.tray_icon = Mock()
+        app.tray_icon._thread = Mock()
+        app.tray_icon._thread.is_alive.return_value = True
+        icon = app.tray_icon
+
+        app._stop_tray()
+
+        icon.stop.assert_called_once()
+        icon._thread.join.assert_called_once()
+
+    def test_tray_creation_is_skipped_after_shutdown_begins(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.tray_icon = None
+        app.exiting = True
+        app._tray_restore = Mock()
+        app._tray_exit = Mock()
+        app._ui = Mock()
+
+        with patch("macroflow.ui.app.pystray.Icon") as icon:
+            self.assertFalse(app._ensure_tray())
+
+        icon.assert_not_called()
+
+
 class PlayerTests(unittest.TestCase):
     def test_poll_guards_executes_all_hits_from_one_evaluation_in_order(self):
         hits = [
@@ -9606,6 +9742,154 @@ class PlayerTests(unittest.TestCase):
 
         self.assertEqual(results, logs)
         self.assertTrue(any("第1行结果" in text for text in results), results)
+
+    def test_grid_diagnostic_uses_selected_image_and_reports_every_cell_text(self):
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(side_effect=[True, False, False, True])
+        image = np.zeros((20, 40, 3), dtype=np.uint8)
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        image_path = str(Path(temp_dir.name) / "grid-test.png")
+        Path(image_path).touch()
+        action = {
+            "type": "grid_row_condition_click",
+            "grid_region": [0, 0, 40, 20],
+            "horizontal_lines": [10], "vertical_lines": [20],
+            "left_column": 0, "right_column": 1, "click_column": 0,
+            "left_condition": {"type": "text", "expected_text": "左"},
+            "right_condition": {"type": "text", "expected_text": "右"},
+            "screenshot_path": image_path,
+        }
+        with patch(
+            "macroflow.execution.player.load_image", return_value=image, create=True,
+        ) as load_image, patch(
+            "macroflow.execution.player.capture_bgr",
+            side_effect=AssertionError("网格诊断不得重新截图"),
+        ), patch(
+            "macroflow.execution.player.recognize_image_with_boxes",
+            side_effect=[("左上", []), ("右上", []), ("左下", []), ("右下", [])],
+        ):
+            result = player._diagnose_grid_row_condition_click(action, None)
+
+        load_image.assert_called_once_with(Path(image_path))
+        self.assertEqual(
+            [cell["text"] for cell in result["cells"]],
+            ["左上", "右上", "左下", "右下"],
+        )
+        self.assertEqual(
+            [(cell["row"], cell["column"]) for cell in result["cells"]],
+            [(1, 1), (1, 2), (2, 1), (2, 2)],
+        )
+        self.assertEqual(result["image_path"], image_path)
+        self.assertEqual(result["left_column"], 0)
+        self.assertEqual(result["right_column"], 1)
+        self.assertEqual(result["click_column"], 0)
+
+    def test_grid_diagnostic_busy_notice_names_grid_task(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app._row_list_diagnostic_running = True
+        app._row_list_diagnostic_kind = "grid"
+        app._notify = Mock()
+
+        app.test_row_list_condition_click({"type": "grid_row_condition_click"})
+
+        app._notify.assert_called_once()
+        self.assertIn("网格逐行识别诊断", app._notify.call_args.args[1])
+
+    def test_grid_diagnostic_cell_label_includes_row_column_and_recognized_text(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        label_builder = getattr(dialog_class, "cell_label", None)
+        actual = label_builder({
+            "row": 2, "column": 3, "text": "奖励可领取",
+        }) if label_builder else None
+        self.assertEqual(
+            actual,
+            "第2行第3列\n奖励可领取",
+        )
+
+    def test_grid_result_scale_fits_selected_image_to_viewport(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        scale_builder = getattr(dialog_class, "display_scale", None)
+        actual = scale_builder((1920, 1080), (1150, 700)) if scale_builder else None
+        self.assertAlmostEqual(actual, 1150 / 1920)
+
+    def test_grid_result_viewport_falls_back_when_canvas_is_not_laid_out(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        viewport_builder = getattr(dialog_class, "resolve_viewport_size", None)
+        actual = viewport_builder((1, 1), (1180, 780)) if viewport_builder else None
+        self.assertEqual(actual, (1100, 630))
+
+    def test_grid_result_scale_applies_wheel_zoom_without_changing_aspect_ratio(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        scale_builder = getattr(dialog_class, "display_scale", None)
+        actual = scale_builder((1920, 1080), (1150, 700), 2.0) if scale_builder else None
+        self.assertAlmostEqual(actual, (1150 / 1920) * 2.0)
+
+    def test_grid_result_wheel_zoom_is_bounded(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        zoom_builder = getattr(dialog_class, "next_zoom", None)
+        zoom_in = zoom_builder(1.0, 120) if zoom_builder else None
+        zoom_out = zoom_builder(0.25, -120) if zoom_builder else None
+        self.assertAlmostEqual(zoom_in, 1.15)
+        self.assertEqual(zoom_out, 0.25)
+
+    def test_grid_result_cell_text_does_not_add_row_header_inside_cell(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        text_builder = getattr(dialog_class, "cell_text", None)
+        actual = text_builder({
+            "row": 2, "column": 3, "text": "奖励可领取",
+        }) if text_builder else None
+        self.assertEqual(actual, "奖励可领取")
+
+    def test_grid_result_visible_columns_exclude_clicked_column(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        column_builder = getattr(dialog_class, "visible_result_columns", None)
+        actual = column_builder({
+            "left_column": 0, "right_column": 2, "click_column": 2,
+        }) if column_builder else None
+        self.assertEqual(actual, [0])
+
+    def test_grid_result_toggle_switches_between_overlay_and_original_image(self):
+        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog = dialog_class.__new__(dialog_class)
+        dialog.overlay_visible = True
+        dialog.canvas = Mock()
+        dialog.toggle_button = Mock()
+
+        dialog._toggle_display_mode()
+
+        self.assertFalse(dialog.overlay_visible)
+        dialog.canvas.itemconfigure.assert_called_once_with("grid-result", state="hidden")
+        dialog.toggle_button.configure.assert_called_once_with(text="显示识别结果")
+
+        dialog.canvas.reset_mock()
+        dialog.toggle_button.reset_mock()
+        dialog._toggle_display_mode()
+
+        self.assertTrue(dialog.overlay_visible)
+        dialog.canvas.itemconfigure.assert_called_once_with("grid-result", state="normal")
+        dialog.toggle_button.configure.assert_called_once_with(text="显示原图")
+
+    def test_grid_dialog_builds_test_action_with_existing_source_image(self):
+        form_class = dialog_module.GridRowConditionClickDialog
+        form = form_class.__new__(form_class)
+        form.grid_region = Mock(**{"get.return_value": "0,0,40,20"})
+        form.source_image = Mock(**{"get.return_value": "C:/images/grid.png"})
+        form.state = {
+            "horizontal_lines": [10], "vertical_lines": [20],
+            "left_column": 0, "right_column": 1, "click_column": 0,
+        }
+        form.click_count = Mock(**{"get.return_value": "1"})
+        form.button = Mock(**{"get.return_value": "left"})
+        form._condition_value = Mock(side_effect=[
+            {"type": "text", "expected_text": "左"},
+            {"type": "text", "expected_text": "右"},
+        ])
+
+        action = form._build_action()
+
+        self.assertEqual(action["screenshot_path"], "C:/images/grid.png")
 
     def test_grid_row_click_uses_selected_columns_and_clicks_matching_row(self):
         player = MacroPlayer()

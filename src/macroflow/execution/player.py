@@ -13,7 +13,7 @@ import cv2
 
 from macroflow.ui.detect_overlay import show_overlay
 from macroflow.core.image_match import (
-    build_grid_cells, capture_bgr, find_template, find_template_in_image,
+    build_grid_cells, capture_bgr, find_template, find_template_in_image, load_image,
     stabilize_row_offsets,
 )
 from macroflow.core.ocr import (
@@ -2224,6 +2224,28 @@ class MacroPlayer:
                 raise RuntimeError(f"网格逐行条件点击的{key}超出列范围")
         return cells
 
+    @staticmethod
+    def _grid_diagnostic_snapshot(action: dict):
+        """Load the grid's saved canvas for a non-destructive recognition test."""
+        screenshot_text = str(action.get("screenshot_path", "")).strip()
+        if not screenshot_text:
+            raise RuntimeError("网格逐行识别测试需要先选择网格底图")
+        screenshot_path = resolve_path(screenshot_text)
+        if not screenshot_path.is_file():
+            raise RuntimeError(f"网格底图不存在：{screenshot_path}")
+        image = load_image(screenshot_path)
+        if image is None or getattr(image, "ndim", 0) < 2:
+            raise RuntimeError(f"网格底图无法读取：{screenshot_path}")
+
+        region = tuple(map(int, action["grid_region"]))
+        image_height, image_width = image.shape[:2]
+        # GridLayoutEditor stores a screen capture cropped to grid_region when
+        # no external image was selected.  Treat that legacy crop as an image
+        # with the saved screen origin; a user-selected full canvas is local.
+        origin = (region[0], region[1]) \
+            if (image_width, image_height) == (region[2], region[3]) else (0, 0)
+        return image, origin, screenshot_path
+
     def _execute_grid_row_condition_click(self, action: dict, hwnd: int | None):
         """Scan a saved grid from top to bottom and click the selected column."""
         cells = self._grid_action_cells(action)
@@ -2238,8 +2260,8 @@ class MacroPlayer:
         self._row_list_active_snapshot = capture_bgr(self._scale_region(grid_region))
         try:
             for row_index, row in enumerate(cells, start=1):
-                left_cell = self._scale_region(row[left_column])
-                right_cell = self._scale_region(row[right_column])
+                left_cell = row[left_column]
+                right_cell = row[right_column]
                 if not self._row_list_condition_matches(left_condition, left_cell, f"第{row_index}行左侧"):
                     continue
                 if not self._row_list_condition_matches(right_condition, right_cell, f"第{row_index}行右侧"):
@@ -2259,43 +2281,79 @@ class MacroPlayer:
 
     def _diagnose_grid_row_condition_click(
             self, action: dict, hwnd: int | None,
-            result_sink: Callable[[str], None] | None = None) -> None:
-        """Log every grid row's selected-column results without clicking."""
+            result_sink: Callable[[str], None] | None = None) -> dict:
+        """Recognize every saved grid cell without clicking or reading live screen."""
         del hwnd
         cells = self._grid_action_cells(action)
         left_column = int(action["left_column"])
         right_column = int(action["right_column"])
         left_condition = action.get("left_condition", {})
         right_condition = action.get("right_condition", {})
-        self._row_list_active_snapshot = capture_bgr(
-            self._scale_region(tuple(map(int, action["grid_region"])))
-        )
+        image, origin, screenshot_path = self._grid_diagnostic_snapshot(action)
+        self._row_list_active_snapshot = (image, origin)
+        self._row_list_diagnostic_ocr_cache = {}
+        result = {
+            "image_path": str(screenshot_path),
+            "image_origin": list(origin),
+            "grid_region": list(map(int, action["grid_region"])),
+            "horizontal_lines": [int(value) for value in action.get("horizontal_lines", [])],
+            "vertical_lines": [int(value) for value in action.get("vertical_lines", [])],
+            "left_column": left_column,
+            "right_column": right_column,
+            "click_column": int(action["click_column"]),
+            "cells": [],
+        }
         self._diagnostic_log_event(
             f"网格逐行识别诊断开始：共 {len(cells)} 行；不执行点击",
             result_sink,
         )
         try:
             for row_index, row in enumerate(cells, start=1):
-                left_cell = self._scale_region(row[left_column])
-                right_cell = self._scale_region(row[right_column])
+                row_results = []
+                for column_index, cell in enumerate(row, start=1):
+                    if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
+                        raise PlaybackStopped()
+                    crop, crop_origin = self._row_list_snapshot_crop(
+                        self._row_list_active_snapshot, cell,
+                    )
+                    recognized, matches = recognize_image_with_boxes(crop, crop_origin)
+                    self._row_list_diagnostic_ocr_cache[tuple(cell)] = (recognized, matches)
+                    cell_result = {
+                        "row": row_index,
+                        "column": column_index,
+                        "region": list(cell),
+                        "text": str(recognized or "").strip() or "未识别到文字",
+                        "matched": None,
+                    }
+                    row_results.append(cell_result)
+                    result["cells"].append(cell_result)
+
+                left_cell = row[left_column]
+                right_cell = row[right_column]
                 left_matched = self._row_list_condition_matches(
                     left_condition, left_cell, f"第{row_index}行左侧",
                 )
                 right_matched = self._row_list_condition_matches(
                     right_condition, right_cell, f"第{row_index}行右侧",
                 )
+                row_results[left_column]["matched"] = bool(left_matched)
+                row_results[right_column]["matched"] = bool(right_matched)
                 self._diagnostic_log_event(
-                    f"网格逐行识别诊断：第{row_index}行左区域 {left_cell}，右区域 {right_cell}；"
+                    f"网格逐行识别诊断：第{row_index}行左侧第{left_column + 1}列识别成"
+                    f"「{row_results[left_column]['text']}」；右侧第{right_column + 1}列识别成"
+                    f"「{row_results[right_column]['text']}」；"
                     f"左侧{'命中' if left_matched else '未命中'}，"
                     f"右侧{'命中' if right_matched else '未命中'}",
                     result_sink,
                 )
         finally:
             self._row_list_active_snapshot = None
+            self._row_list_diagnostic_ocr_cache = None
         self._diagnostic_log_event(
             "网格逐行识别诊断结束：已输出全部行结果，未执行点击",
             result_sink,
         )
+        return result
 
     def _execute_row_list_condition_click(self, action: dict, hwnd: int | None) -> tuple[str, str | int] | None:
         """Click the first list row whose left and right conditions both match."""
@@ -2471,7 +2529,11 @@ class MacroPlayer:
         if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
             raise PlaybackStopped()
         snapshot = getattr(self, "_row_list_active_snapshot", None)
-        if snapshot is None:
+        diagnostic_cache = getattr(self, "_row_list_diagnostic_ocr_cache", None)
+        cached = diagnostic_cache.get(tuple(region)) if diagnostic_cache is not None else None
+        if cached is not None:
+            recognized, matches = cached
+        elif snapshot is None:
             recognized, matches = recognize_region_with_boxes(region)
         else:
             crop, crop_origin = self._row_list_snapshot_crop(snapshot, region)

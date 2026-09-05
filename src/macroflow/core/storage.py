@@ -234,7 +234,6 @@ def load_app_settings() -> dict:
     defaults = {
         "sound_enabled": True,
         "mini_window_enabled": True,
-        "close_action": "exit",
         "record_mode": "auto",
         "move_interval_ms": 20,
         "floating_notice_position": "顶部居中",

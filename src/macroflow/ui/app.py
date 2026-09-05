@@ -35,6 +35,7 @@ from macroflow.ui.dialogs import (
     RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
     RowListConditionClickDialog,
     RowListDiagnosticResultDialog,
+    GridRowDiagnosticResultDialog,
     GridRowConditionClickDialog,
     ModulePickerDialog,
     MouseMoveDialog, ScheduleDialog,
@@ -1019,6 +1020,7 @@ class MacroFlowApp:
         self.workflow_restart_target_row = 1
         self.workflow_test_mode_active = False
         self._row_list_diagnostic_running = False
+        self._row_list_diagnostic_kind = ""
         self._row_list_diagnostic_grab_window = None
         self.dirty = False
         self.mini_window: tk.Toplevel | None = None
@@ -1048,6 +1050,8 @@ class MacroFlowApp:
         self.cursor_tracking_mini: tk.Toplevel | None = None
         self.main_hidden_for_cursor_tracking = False
         self.tray_icon: pystray.Icon | None = None
+        self._tray_lock = threading.RLock()
+        self.tray_warmup_thread: threading.Thread | None = None
         self.main_hidden_to_tray = False
         self.main_hidden_for_recording = False
         self.main_hidden_for_execution = False
@@ -1279,8 +1283,6 @@ class MacroFlowApp:
         if notice_position not in FLOATING_NOTICE_POSITIONS:
             notice_position = "顶部居中"
         self.floating_notice_position_var = tk.StringVar(value=notice_position)
-        close_action = self.app_settings.get("close_action", "exit")
-        self.close_action_var = tk.StringVar(value=close_action if close_action in {"exit", "tray"} else "exit")
         self.timed_backup_enabled_var = tk.BooleanVar(
             value=bool(self.app_settings.get("timed_backup_enabled", False)),
         )
@@ -1429,10 +1431,7 @@ class MacroFlowApp:
         ttk.Label(option_row, text="点击关闭按钮时", style="Section.TLabel").pack(anchor="w", pady=(9, 3))
         close_row = ttk.Frame(option_row, style="Sidebar.TFrame")
         close_row.pack(fill="x")
-        ttk.Radiobutton(close_row, text="直接退出", value="exit", variable=self.close_action_var,
-                        command=self._settings_changed).pack(side="left")
-        ttk.Radiobutton(close_row, text="隐藏到托盘", value="tray", variable=self.close_action_var,
-                        command=self._settings_changed).pack(side="left", padx=(12, 0))
+        ttk.Label(close_row, text="保存并完全退出程序", style="Sidebar.TLabel").pack(side="left")
 
         record_mode_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         record_mode_title.pack(fill="x", pady=(0, 7))
@@ -2355,7 +2354,6 @@ class MacroFlowApp:
             "playback_speed": round(float(self.playback_speed_var.get()), 1),
             "execution_mini_position": list(getattr(self, "execution_mini_position", [])),
             "main_window_geometry": self._current_main_window_geometry(),
-            "close_action": self.close_action_var.get(),
             "record_mode": "auto",
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
             "activate_target_enabled": bool(self.activate_target_enabled_var.get()),
@@ -3972,45 +3970,52 @@ class MacroFlowApp:
         return image
 
     def _ensure_tray(self, visible: bool = True) -> bool:
-        if self.tray_icon is not None:
-            # 图标已创建：可见性由调用方（_hide_main_to_tray/_restore_main_window）
-            # 同步设置并确认，这里只负责保证图标对象存在。
-            return True
-        try:
-            ready = threading.Event()
-            setup_errors: list[Exception] = []
-
-            def setup(icon: pystray.Icon):
-                try:
-                    if visible:
-                        icon.visible = True
-                except Exception as exc:
-                    setup_errors.append(exc)
-                finally:
-                    ready.set()
-
-            menu = pystray.Menu(
-                pystray.MenuItem("显示窗口", self._tray_restore, default=True),
-                pystray.MenuItem("退出", self._tray_exit),
-            )
-            self.tray_icon = pystray.Icon(
-                "MacroFlowStudio", self._create_tray_image(), APP_NAME, menu
-            )
-            self.tray_icon.run_detached(setup=setup)
-            if not ready.wait(timeout=3):
-                raise RuntimeError("系统托盘启动超时")
-            if setup_errors:
-                raise setup_errors[0]
-            return True
-        except Exception as exc:
-            if self.tray_icon is not None:
-                try:
-                    self.tray_icon.stop()
-                except Exception:
-                    pass
-            self.tray_icon = None
-            self._ui(self._log, f"创建系统托盘图标失败：{exc}")
+        if getattr(self, "exiting", False):
             return False
+        tray_lock = getattr(self, "_tray_lock", None)
+        if tray_lock is None:
+            tray_lock = threading.RLock()
+            self._tray_lock = tray_lock
+        with tray_lock:
+            if getattr(self, "exiting", False):
+                return False
+            if self.tray_icon is not None:
+                # 图标已创建：可见性由调用方（_hide_main_to_tray/_restore_main_window）
+                # 同步设置并确认，这里只负责保证图标对象存在。
+                return True
+            try:
+                ready = threading.Event()
+                setup_errors: list[Exception] = []
+
+                def setup(icon: pystray.Icon):
+                    try:
+                        if visible:
+                            icon.visible = True
+                    except Exception as exc:
+                        setup_errors.append(exc)
+                    finally:
+                        ready.set()
+
+                menu = pystray.Menu(
+                    pystray.MenuItem("显示窗口", self._tray_restore, default=True),
+                    pystray.MenuItem("退出", self._tray_exit),
+                )
+                self.tray_icon = pystray.Icon(
+                    "MacroFlowStudio", self._create_tray_image(), APP_NAME, menu
+                )
+                self.tray_icon.run_detached(setup=setup)
+                if not ready.wait(timeout=3):
+                    raise RuntimeError("系统托盘启动超时")
+                if setup_errors:
+                    raise setup_errors[0]
+                return True
+            except Exception as exc:
+                icon = self.tray_icon
+                self.tray_icon = None
+                if icon is not None:
+                    self._stop_detached_tray_icon(icon)
+                self._ui(self._log, f"创建系统托盘图标失败：{exc}")
+                return False
 
     def _set_tray_visible(self, visible: bool) -> bool:
         """Synchronously set the tray icon visibility; False when no usable icon."""
@@ -4041,7 +4046,10 @@ class MacroFlowApp:
                 # 造成"既无窗口又无托盘图标的隐藏进程"。
                 self._ensure_tray(visible=True)
 
-        threading.Thread(target=prepare_tray, name="MacroFlowTrayWarmup", daemon=True).start()
+        self.tray_warmup_thread = threading.Thread(
+            target=prepare_tray, name="MacroFlowTrayWarmup", daemon=True,
+        )
+        self.tray_warmup_thread.start()
 
         # OCR 引擎首次导入 paddle 全家可能耗时数十秒（杀软扫描外置目录时更久）。
         # 启动后立即后台预加载，否则第一次执行到文字识别时会在播放线程里卡住，
@@ -4289,14 +4297,37 @@ class MacroFlowApp:
                     return True
         return False
 
-    def _stop_tray(self):
-        icon = self.tray_icon
-        self.tray_icon = None
-        if icon is not None:
+    @staticmethod
+    def _stop_detached_tray_icon(icon) -> None:
+        """Stop pystray and wait for its non-daemon detached loop thread."""
+        try:
+            icon.stop()
+        except Exception:
+            pass
+        runner = getattr(icon, "_thread", None)
+        if runner is not None and runner is not threading.current_thread():
             try:
-                icon.stop()
+                runner.join(timeout=3.0)
             except Exception:
                 pass
+
+    def _stop_tray(self):
+        tray_lock = getattr(self, "_tray_lock", None)
+        if tray_lock is None:
+            tray_lock = threading.RLock()
+            self._tray_lock = tray_lock
+        with tray_lock:
+            icon = self.tray_icon
+            self.tray_icon = None
+            if icon is not None:
+                self._stop_detached_tray_icon(icon)
+        warmup = getattr(self, "tray_warmup_thread", None)
+        if warmup is not None and warmup is not threading.current_thread():
+            try:
+                warmup.join(timeout=3.0)
+            except Exception:
+                pass
+        self.tray_warmup_thread = None
 
     def _tray_restore(self, _icon=None, _item=None):
         self._ui(self._restore_main_window)
@@ -5799,19 +5830,36 @@ class MacroFlowApp:
             self._notify("无法测试识别", "当前已有脚本正在执行，请先停止执行。")
             return
         if getattr(self, "_row_list_diagnostic_running", False):
-            self._notify("无法测试识别", "当前已有列表逐行识别诊断正在执行，请稍候。")
+            kind = getattr(self, "_row_list_diagnostic_kind", "")
+            label = "网格逐行识别诊断" if kind == "grid" else "列表逐行识别诊断"
+            self._notify("无法测试识别", f"当前已有{label}正在执行，请稍候。")
             return
+        diagnostic_kind = (
+            "grid" if action.get("type") == "grid_row_condition_click" else "row_list"
+        )
         self._row_list_diagnostic_running = True
-        hwnd = self._bound_hwnd()
-        self._log("列表逐行识别诊断：开始截图并扫描全部行（不会点击）。")
+        self._row_list_diagnostic_kind = diagnostic_kind
+        hwnd = None if diagnostic_kind == "grid" else self._bound_hwnd()
+        diagnostic_label = "网格逐行识别诊断" if diagnostic_kind == "grid" else "列表逐行识别诊断"
+        self._log(f"{diagnostic_label}：开始识别全部行（不会点击）。")
         result_lines: list[str] = []
-        hidden_states = self._hide_macroflow_windows_for_diagnostic()
+        try:
+            hidden_states = (
+                None if diagnostic_kind == "grid"
+                else self._hide_macroflow_windows_for_diagnostic()
+            )
+        except Exception as exc:
+            self._row_list_diagnostic_running = False
+            self._row_list_diagnostic_kind = ""
+            self._notify("无法测试识别", str(exc))
+            return
 
         def run_diagnostic():
             error = None
+            diagnostic_result = None
             try:
                 if action.get("type") == "grid_row_condition_click":
-                    self.player._diagnose_grid_row_condition_click(
+                    diagnostic_result = self.player._diagnose_grid_row_condition_click(
                         action, hwnd, result_sink=result_lines.append,
                     )
                 else:
@@ -5826,6 +5874,7 @@ class MacroFlowApp:
                     result_lines,
                     error,
                     hidden_states,
+                    diagnostic_result,
                 )
 
         threading.Thread(target=run_diagnostic, daemon=True).start()
@@ -5915,13 +5964,20 @@ class MacroFlowApp:
 
     def _finish_row_list_diagnostic(
             self, result_lines: list[str], error: Exception | None,
-            hidden_states: list[tuple[tk.Misc, str]]) -> None:
+            hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None) -> None:
         """Restore the app and show the completed diagnostic in a new window."""
-        self._restore_macroflow_windows_after_diagnostic(hidden_states)
+        if hidden_states is not None:
+            self._restore_macroflow_windows_after_diagnostic(hidden_states)
         self._row_list_diagnostic_running = False
-        RowListDiagnosticResultDialog(
-            self.root, list(result_lines), error,
-        ).show()
+        self._row_list_diagnostic_kind = ""
+        if isinstance(diagnostic_result, dict):
+            GridRowDiagnosticResultDialog(
+                self.root, diagnostic_result, error,
+            ).show()
+        else:
+            RowListDiagnosticResultDialog(
+                self.root, list(result_lines), error,
+            ).show()
 
     def add_row_list_condition_click(self):
         ensure_action_ids(self.script.actions)
@@ -6106,39 +6162,28 @@ class MacroFlowApp:
             return selected[0] if selected else 0
         return min(len(self.script.actions), selected[-1] + 1) if selected else 0
 
-    def _pick_script_file(self) -> Path | None:
-        """文件选择 + 校验可解析为 MacroFlow 脚本，返回路径或 None。"""
-        path = filedialog.askopenfilename(
+    def _pick_script_files(self) -> list[Path] | None:
+        """文件多选 + 校验每个文件都可解析为 MacroFlow 脚本。"""
+        selected = filedialog.askopenfilenames(
             parent=self.root,
             initialdir=self._script_category_dir(),
-            title="选择要插入的脚本",
+            title="选择要插入的脚本（可 Ctrl/Shift 多选）",
             filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
         )
-        if not path:
+        if not selected:
             return None
-        try:
-            # Validate the file parses as a MacroFlow script before inserting it.
-            load_script(Path(path))
-        except Exception as exc:
-            self._notify("无法插入脚本", str(exc))
-            return None
-        return Path(path)
+        paths = [Path(path) for path in selected]
+        for path in paths:
+            try:
+                # Validate every selected file before changing the current script.
+                load_script(path)
+            except Exception as exc:
+                self._notify("无法插入脚本", f"{path.name}：{exc}")
+                return None
+        return paths
 
-    def _insert_script(self, expanded: bool):
-        """插入脚本：expanded=False 插入一行引用动作（实时读取原脚本），
-        expanded=True 逐行复制到当前位置（插入后可单独修改）。"""
-        insert_at = self._insert_script_position()
-        if insert_at is None:
-            return
-        path = self._pick_script_file()
-        if path is None:
-            return
-        if expanded:
-            self._insert_script_expanded(insert_at, path)
-        else:
-            self._insert_script_reference(insert_at, path)
-
-    def _insert_script_reference(self, insert_at: int, path: Path):
+    @staticmethod
+    def _script_reference_action(path: Path) -> dict:
         ref_action = {
             "type": "script_ref",
             "script": display_path(path),
@@ -6147,20 +6192,11 @@ class MacroFlowApp:
             "after_delay_ms": 0,
         }
         ref_action[ACTION_ID_KEY] = new_action_id()
-        self._checkpoint_action_edit()
-        self.script.actions[insert_at:insert_at] = [ref_action]
-        self._mark_dirty()
-        self.rebuild_action_tree()
-        if insert_at < MAX_TREE_ROWS:
-            self.action_tree.selection_set(str(insert_at))
-            self.action_tree.see(str(insert_at))
-        self._notify(
-            "已插入脚本引用",
-            f"{path.stem} · 执行时实时读取该脚本 · 插入到第 {insert_at + 1} 行",
-        )
+        return ref_action
 
-    def _insert_script_expanded(self, insert_at: int, path: Path):
-        """逐行插入：把脚本每一行复制进来，行 ID 全部重建、跳转引用同步映射。"""
+    @staticmethod
+    def _expanded_script_actions(path: Path) -> list[dict]:
+        """逐行复制一个脚本，重建行 ID 并同步映射跳转引用。"""
         script = load_script(path)
         actions = [dict(action) for action in (script.actions or [])]
         # 与 clone_actions_with_new_ids（向下复制）一致：先补全动作 ID 并把
@@ -6180,17 +6216,54 @@ class MacroFlowApp:
                 target = str(action.get(field, "")).strip()
                 if target in id_map:
                     action[field] = id_map[target]
+        return actions
+
+    def _insert_script_actions(self, insert_at: int, actions: list[dict]):
         self._checkpoint_action_edit()
         self.script.actions[insert_at:insert_at] = actions
         self._mark_dirty()
         self.rebuild_action_tree()
-        if actions and insert_at < MAX_TREE_ROWS:
-            self.action_tree.selection_set(str(insert_at))
-            self.action_tree.see(str(insert_at))
-        self._notify(
-            "已逐行插入脚本",
-            f"{path.stem} · 共 {len(actions)} 行插入到第 {insert_at + 1} 行，插入后可单独修改",
-        )
+        selected_rows = [
+            str(index)
+            for index in range(insert_at, insert_at + len(actions))
+            if index < MAX_TREE_ROWS
+        ]
+        if selected_rows:
+            self.action_tree.selection_set(*selected_rows)
+            self.action_tree.see(selected_rows[-1])
+
+    def _insert_script(self, expanded: bool):
+        """插入脚本：expanded=False 插入一行引用动作（实时读取原脚本），
+        expanded=True 逐行复制到当前位置（插入后可单独修改）。"""
+        insert_at = self._insert_script_position()
+        if insert_at is None:
+            return
+        paths = self._pick_script_files()
+        if paths is None:
+            return
+        if expanded:
+            actions = []
+            for path in paths:
+                actions.extend(self._expanded_script_actions(path))
+            self._insert_script_actions(insert_at, actions)
+            self._notify(
+                "已逐行插入脚本",
+                f"{len(paths)} 个脚本 · 共 {len(actions)} 行插入到第 {insert_at + 1} 行，插入后可单独修改",
+            )
+        else:
+            actions = [self._script_reference_action(path) for path in paths]
+            self._insert_script_actions(insert_at, actions)
+            if len(paths) == 1:
+                detail = (
+                    f"{paths[0].stem} · 执行时实时读取该脚本 · "
+                    f"插入到第 {insert_at + 1} 行"
+                )
+            else:
+                detail = (
+                    f"共 {len(paths)} 个脚本 · 执行时实时读取原脚本 · "
+                    f"插入到第 {insert_at + 1} 行起"
+                )
+            self._notify("已插入脚本引用", detail)
 
     def move_action(self, offset: int):
         index = self._selected_action_index()
@@ -8341,11 +8414,6 @@ class MacroFlowApp:
             self._hotkey_script_running = False
 
     def on_close(self):
-        self._finish_search_capture()
-        self._persist_workflow_draft()
-        if self.close_action_var.get() == "tray":
-            self._hide_main_to_tray()
-            return
         self._quit_app()
 
     def _quit_app(self):
@@ -8357,6 +8425,7 @@ class MacroFlowApp:
             # them into the editor before taking the shutdown snapshot.
             self.stop_recording(sound=False)
         self._persist_workflow_draft()
+        self._finish_search_capture()
         if self.backup_after_id is not None:
             try:
                 self.root.after_cancel(self.backup_after_id)
@@ -8380,6 +8449,11 @@ class MacroFlowApp:
 
     def run(self):
         self.root.mainloop()
+        if self.exiting and getattr(sys, "frozen", False):
+            # _quit_app saves drafts and releases hooks before destroying Tk.
+            # Native OCR teardown and third-party threads must not keep the
+            # packaged application (and its one-file bootloader) alive.
+            os._exit(0)
 
 
 def main():

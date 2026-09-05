@@ -1350,6 +1350,309 @@ class RowListDiagnosticResultDialog:
         return window
 
 
+class GridRowDiagnosticResultDialog:
+    """Show the selected grid image with the OCR text drawn inside each cell."""
+
+    def __init__(self, parent, result: dict, error: Exception | None = None):
+        self.parent = parent
+        self.result = dict(result or {})
+        self.error = error
+        self.window = None
+        self.photo = None
+        self.canvas = None
+        self.toggle_button = None
+        self.toolbar = None
+        self._toolbar_drag_start = None
+        self.overlay_visible = True
+        self.zoom_level = 1.0
+        self._source_image = None
+        self._image_size = (0, 0)
+        self._viewport_size = (1, 1)
+        self._image_origin = (0, 0)
+        self._cells = []
+        self._display_scale = 1.0
+        self._display_size = (0, 0)
+
+    @staticmethod
+    def cell_label(cell: dict) -> str:
+        """Format the text shown over one diagnostic cell."""
+        row = cell.get("row", "?")
+        column = cell.get("column", "?")
+        text = str(cell.get("text") or "未识别到文字")
+        return f"第{row}行第{column}列\n{text}"
+
+    @staticmethod
+    def cell_text(cell: dict) -> str:
+        """Return only OCR text so row and column headers do not crowd the cell."""
+        return str(cell.get("text") or "未识别到文字")
+
+    @staticmethod
+    def visible_result_columns(result: dict) -> list[int]:
+        """Return left/right recognition columns, excluding the click column."""
+        try:
+            click_column = int(result.get("click_column"))
+        except (TypeError, ValueError):
+            click_column = None
+        columns = []
+        for key in ("left_column", "right_column"):
+            try:
+                column = int(result.get(key))
+            except (TypeError, ValueError):
+                continue
+            if column != click_column and column not in columns:
+                columns.append(column)
+        return columns
+
+    @staticmethod
+    def display_scale(
+        image_size: tuple[int, int],
+        viewport_size: tuple[int, int],
+        zoom: float = 1.0,
+    ) -> float:
+        """Fit the complete selected image, then apply a uniform zoom factor."""
+        image_width, image_height = map(float, image_size)
+        viewport_width, viewport_height = map(float, viewport_size)
+        if image_width <= 0 or image_height <= 0:
+            return 1.0
+        fit_scale = min(
+            1.0,
+            viewport_width / image_width if viewport_width > 0 else 1.0,
+            viewport_height / image_height if viewport_height > 0 else 1.0,
+        )
+        bounded_zoom = min(4.0, max(0.25, float(zoom)))
+        return max(0.01, fit_scale * bounded_zoom)
+
+    @staticmethod
+    def resolve_viewport_size(
+        canvas_size: tuple[int, int], window_size: tuple[int, int],
+    ) -> tuple[int, int]:
+        """Use the real canvas size, or a safe geometry fallback before layout."""
+        canvas_width, canvas_height = map(int, canvas_size)
+        if canvas_width > 2 and canvas_height > 2:
+            return canvas_width, canvas_height
+        window_width, window_height = map(int, window_size)
+        return max(1, window_width - 80), max(1, window_height - 150)
+
+    @staticmethod
+    def next_zoom(current_zoom: float, delta: int) -> float:
+        """Return the next bounded zoom level for one mouse-wheel event."""
+        if delta == 0:
+            return min(4.0, max(0.25, float(current_zoom)))
+        step = 1.15 if delta > 0 else 1 / 1.15
+        return min(4.0, max(0.25, float(current_zoom) * step))
+
+    def _start_toolbar_drag(self, event):
+        if self.toolbar is None:
+            return
+        self._toolbar_drag_start = (
+            event.x_root, event.y_root,
+            self.toolbar.winfo_x(), self.toolbar.winfo_y(),
+        )
+
+    def _drag_toolbar(self, event):
+        if self.toolbar is None or self._toolbar_drag_start is None:
+            return
+        start_x, start_y, origin_x, origin_y = self._toolbar_drag_start
+        max_x = max(0, self.window.winfo_width() - self.toolbar.winfo_width())
+        max_y = max(0, self.window.winfo_height() - self.toolbar.winfo_height())
+        x = max(0, min(max_x, origin_x + event.x_root - start_x))
+        y = max(0, min(max_y, origin_y + event.y_root - start_y))
+        self.toolbar.place(x=x, y=y)
+
+    def _toggle_display_mode(self):
+        """Toggle the OCR/grid overlay while keeping the selected image visible."""
+        self.overlay_visible = not self.overlay_visible
+        state = "normal" if self.overlay_visible else "hidden"
+        self.canvas.itemconfigure("grid-result", state=state)
+        self.toggle_button.configure(
+            text="显示原图" if self.overlay_visible else "显示识别结果",
+        )
+
+    def _render_canvas(self, scale: float):
+        """Render the original image and the aligned grid overlay at one scale."""
+        if self.canvas is None or self._source_image is None:
+            return
+        image_width, image_height = self._image_size
+        display_size = (
+            max(1, round(image_width * scale)),
+            max(1, round(image_height * scale)),
+        )
+        image = self._source_image
+        if display_size != image.size:
+            image = image.resize(display_size, Image.LANCZOS)
+        self.photo = ImageTk.PhotoImage(image, master=self.window)
+        self.canvas.delete("all")
+        self.canvas.configure(scrollregion=(0, 0, *display_size))
+        self.canvas.create_image(0, 0, image=self.photo, anchor="nw")
+        visible_columns = set(self.visible_result_columns(self.result))
+        for cell in self._cells:
+            try:
+                column_index = int(cell.get("column")) - 1
+            except (TypeError, ValueError):
+                continue
+            if column_index not in visible_columns:
+                continue
+            x, y, width, height = map(int, cell["region"])
+            x1 = round((x - self._image_origin[0]) * scale)
+            y1 = round((y - self._image_origin[1]) * scale)
+            x2 = round((x + width - self._image_origin[0]) * scale)
+            y2 = round((y + height - self._image_origin[1]) * scale)
+            matched = cell.get("matched")
+            color = "#52D273" if matched is True else "#FF6978" if matched is False else "#F2C94C"
+            self.canvas.create_rectangle(
+                x1, y1, x2, y2, fill=COLOR_SURFACE,
+                outline=color, width=2, tags="grid-result",
+            )
+            cell_width = max(1, x2 - x1)
+            cell_height = max(1, y2 - y1)
+            font_size = max(8, min(18, round(min(cell_width, cell_height) * 0.24)))
+            self.canvas.create_text(
+                (x1 + x2) // 2, (y1 + y2) // 2,
+                text=self.cell_text(cell), fill=color,
+                width=max(20, cell_width - 10),
+                font=("Microsoft YaHei UI", font_size, "bold"),
+                justify="center", tags="grid-result",
+            )
+        self.canvas.itemconfigure(
+            "grid-result", state="normal" if self.overlay_visible else "hidden",
+        )
+        self._display_scale = scale
+        self._display_size = display_size
+
+    def _on_mouse_wheel(self, event):
+        """Zoom around the pointer while keeping the selected image's aspect ratio."""
+        delta = int(getattr(event, "delta", 0) or 0)
+        if self.canvas is None or self._source_image is None or delta == 0:
+            return "break"
+        next_zoom = self.next_zoom(self.zoom_level, delta)
+        if next_zoom == self.zoom_level:
+            return "break"
+        old_scale = self._display_scale
+        pointer_x = self.canvas.canvasx(event.x)
+        pointer_y = self.canvas.canvasy(event.y)
+        self.zoom_level = next_zoom
+        new_scale = self.display_scale(
+            self._image_size, self._viewport_size, self.zoom_level,
+        )
+        self._render_canvas(new_scale)
+        self.canvas.update_idletasks()
+        image_x = pointer_x / old_scale
+        image_y = pointer_y / old_scale
+        target_x = image_x * new_scale - event.x
+        target_y = image_y * new_scale - event.y
+        horizontal_range = max(1, self._display_size[0] - self.canvas.winfo_width())
+        vertical_range = max(1, self._display_size[1] - self.canvas.winfo_height())
+        self.canvas.xview_moveto(max(0.0, min(1.0, target_x / horizontal_range)))
+        self.canvas.yview_moveto(max(0.0, min(1.0, target_y / vertical_range)))
+        return "break"
+
+    def _on_canvas_configure(self, event):
+        """Refresh the fit scale once Tk has assigned the actual canvas size."""
+        if self.canvas is None or self._source_image is None:
+            return
+        viewport_size = self.resolve_viewport_size(
+            (event.width, event.height),
+            (self.window.winfo_width(), self.window.winfo_height()),
+        )
+        if viewport_size == self._viewport_size:
+            return
+        self._viewport_size = viewport_size
+        self._render_canvas(
+            self.display_scale(self._image_size, viewport_size, self.zoom_level),
+        )
+
+    def show(self):
+        window = tk.Toplevel(self.parent)
+        self.window = window
+        window.configure(background=COLOR_BG)
+        window.attributes("-fullscreen", True)
+        window.overrideredirect(True)
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        window.bind("<Escape>", lambda _event: window.destroy())
+        try:
+            window.grab_set()
+        except tk.TclError:
+            pass
+
+        canvas_frame = ttk.Frame(window)
+        canvas_frame.pack(fill="both", expand=True)
+        canvas_frame.rowconfigure(0, weight=1)
+        canvas_frame.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(
+            canvas_frame, background=COLOR_SURFACE, highlightthickness=0,
+        )
+        horizontal_scrollbar = ttk.Scrollbar(
+            canvas_frame, orient="horizontal", command=canvas.xview,
+        )
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(
+            xscrollcommand=horizontal_scrollbar.set, yscrollcommand=scrollbar.set,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        horizontal_scrollbar.grid(row=1, column=0, sticky="ew")
+        self.canvas = canvas
+        canvas.bind("<MouseWheel>", self._on_mouse_wheel)
+        canvas.bind("<Configure>", self._on_canvas_configure)
+
+        toolbar = tk.Frame(
+            window, background=COLOR_BG, highlightbackground=COLOR_TEXT,
+            highlightthickness=1, bd=0, padx=6, pady=5,
+        )
+        self.toolbar = toolbar
+        toolbar.place(x=18, y=18)
+        handle = tk.Label(
+            toolbar, text="☰ 网格识别", background=COLOR_BG,
+            foreground=COLOR_TEXT, cursor="fleur", padx=6,
+        )
+        handle.grid(row=0, column=0, padx=(0, 8))
+        handle.bind("<ButtonPress-1>", self._start_toolbar_drag)
+        handle.bind("<B1-Motion>", self._drag_toolbar)
+        self.toggle_button = ttk.Button(
+            toolbar, text="显示原图", command=self._toggle_display_mode,
+        )
+        self.toggle_button.grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(toolbar, text="关闭", command=window.destroy).grid(
+            row=0, column=2,
+        )
+
+        try:
+            self._source_image = Image.open(self.result["image_path"]).convert("RGB")
+            self._image_size = self._source_image.size
+            self._cells = list(self.result.get("cells", []))
+            self._image_origin = tuple(map(int, self.result.get("image_origin", (0, 0))))
+            window.update_idletasks()
+            canvas.update_idletasks()
+            self._viewport_size = (
+                self.resolve_viewport_size(
+                    (canvas.winfo_width(), canvas.winfo_height()),
+                    (
+                        max(window.winfo_width(), window.winfo_reqwidth()),
+                        max(window.winfo_height(), window.winfo_reqheight()),
+                    ),
+                )
+            )
+            self.zoom_level = 1.0
+            self._render_canvas(self.display_scale(self._image_size, self._viewport_size))
+        except Exception as exc:
+            error_text = self.error or exc
+            ttk.Label(
+                toolbar, text=f"无法显示网格底图：{error_text}",
+                foreground="#FF6978",
+            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+
+        if self.error is not None:
+            ttk.Label(
+                toolbar, text=f"识别失败：{self.error}", foreground="#FF6978",
+            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        window.update_idletasks()
+        set_dark_titlebar(window.winfo_id())
+        toolbar.lift()
+        window.lift()
+        window.focus_force()
+        return window
+
+
 class ScheduleDialog(ModalDialog):
     def __init__(self, parent, value: str = ""):
         super().__init__(parent, "选择工作流开始时间", 470, 245)
@@ -9122,6 +9425,7 @@ class GridRowConditionClickDialog(ModalDialog):
         self.button = tk.StringVar(value=str(action.get("button", "left")))
         self.click_count = tk.StringVar(value=str(action.get("click_count", 1)))
         self.state = {
+            "screenshot_path": str(action.get("screenshot_path", "")),
             "horizontal_lines": _parse_grid_int_list(action.get("horizontal_lines", [])),
             "vertical_lines": _parse_grid_int_list(action.get("vertical_lines", [])),
             "left_column": action.get("left_column"),
@@ -9282,7 +9586,10 @@ class GridRowConditionClickDialog(ModalDialog):
             return None
         return {
             "type": "grid_row_condition_click", "grid_region": region,
-            "screenshot_path": self.state.get("screenshot_path", ""),
+            "screenshot_path": (
+                self.state.get("screenshot_path", "").strip()
+                or self.source_image.get().strip()
+            ),
             "horizontal_lines": list(self.state["horizontal_lines"]),
             "vertical_lines": list(self.state["vertical_lines"]),
             "left_column": int(self.state["left_column"]),
