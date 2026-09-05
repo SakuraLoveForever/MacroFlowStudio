@@ -293,18 +293,24 @@ class MacroRecorder:
             self._append({"type": "mouse_move", "mode": "relative", "dx": dx, "dy": dy})
 
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
+        callback_at = time.perf_counter()
+        mode = self.current_mode()
         # 注入的点击（快捷键脚本回放）也先刷出未落的转向，保持动作顺序。
         self._flush_injected()
-        if self.current_mode() == "relative":
+        if mode == "relative":
             self._flush_raw(force=True)
         self._append({
             "type": "mouse_button", "button": _button_name(button),
             "down": bool(pressed), "x": int(x), "y": int(y),
-            INPUT_MODE_KEY: self.current_mode(),
-        })
+            INPUT_MODE_KEY: mode,
+        }, when=callback_at)
 
     def _on_scroll(self, x: int, y: int, dx: int, dy: int) -> None:
+        callback_at = time.perf_counter()
+        mode = self.current_mode()
         self._flush_injected()
-        if self.current_mode() == "relative":
+        if mode == "relative":
             self._flush_raw(force=True)
-        self._append({"type": "scroll", "dx": int(dx), "dy": int(dy), "x": int(x), "y": int(y)})
+        self._append({
+            "type": "scroll", "dx": int(dx), "dy": int(dy), "x": int(x), "y": int(y),
+        }, when=callback_at)

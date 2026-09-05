@@ -51,6 +51,33 @@ class RecorderTimelineTests(unittest.TestCase):
         self.assertEqual([action["type"] for action in rec.actions], ["mouse_move", "mouse_button"])
         self.assertEqual((rec.actions[0]["dx"], rec.actions[0]["dy"]), (4, -2))
 
+    def test_click_uses_callback_timestamp_captured_before_flush(self):
+        rec = make_running_recorder(mode="relative")
+        rec._recording_started_at = 100.0
+        rec._raw_dx, rec._raw_dy = 4, -2
+        rec._raw_last_flush = 0.0
+        with patch("macroflow.input.recorder.time.perf_counter", side_effect=[
+            100.123456,
+            200.0,
+            201.0,
+        ]):
+            rec._on_click(900, 700, mouse.Button.left, True)
+
+        self.assertAlmostEqual(rec.actions[-1][RECORDED_AT_KEY], 123.456, places=3)
+
+    def test_relative_scroll_flushes_pending_move_before_scroll(self):
+        rec = make_running_recorder(mode="relative")
+        rec._raw_dx, rec._raw_dy = 4, -2
+        rec._raw_last_flush = 0.0
+        rec._on_scroll(900, 700, 3, -1)
+
+        self.assertEqual([action["type"] for action in rec.actions], ["mouse_move", "scroll"])
+        self.assertEqual((rec.actions[0]["dx"], rec.actions[0]["dy"]), (4, -2))
+        self.assertEqual(
+            (rec.actions[1]["dx"], rec.actions[1]["dy"], rec.actions[1]["x"], rec.actions[1]["y"]),
+            (3, -1, 900, 700),
+        )
+
     def test_injected_pulse_saves_start_and_duration(self):
         rec = make_running_recorder()
         rec._recording_started_at = 100.0
