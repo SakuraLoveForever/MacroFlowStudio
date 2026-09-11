@@ -12,6 +12,12 @@ DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS = 1000
 DEFAULT_MOUSE_MOVE_INTERVAL_MS = 20
 DEFAULT_RECORDED_SCREEN = {"left": 0, "top": 0, "width": 1920, "height": 1080}
 ACTION_ID_KEY = "action_id"
+# 所有“跳转到某一行对象”的字段名。复制/逐行插入时必须一起重映射，否则目标
+# 仍指向源脚本里的 action_id，运行到该分支时报“跳转目标动作已被删除”。
+JUMP_TARGET_KEYS = (
+    "jump_action_id", "timeout_jump_action_id", "found_jump_action_id",
+    "equal_jump_action_id", "not_equal_jump_action_id",
+)
 RECORDED_AT_KEY = "recorded_at_ms"
 INPUT_MODE_KEY = "mode"
 PULSE_STARTED_AT_KEY = "pulse_started_at_ms"
@@ -99,7 +105,7 @@ def clone_actions_with_new_ids(actions: list[dict[str, Any]]) -> list[dict[str, 
         if source_id:
             id_map[source_id] = replacement
     for clone in clones:
-        for target_key in ("timeout_jump_action_id", "found_jump_action_id", "jump_action_id"):
+        for target_key in JUMP_TARGET_KEYS:
             target_id = str(clone.get(target_key, "")).strip()
             if target_id in id_map:
                 clone[target_key] = id_map[target_id]

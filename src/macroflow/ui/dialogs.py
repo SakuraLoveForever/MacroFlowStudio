@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import tkinter as tk
+import tkinter.font as tkfont
 import copy
 import threading
 import uuid
@@ -21,6 +22,10 @@ from macroflow.core.models import (
     SCRIPT_START_TARGET_ID, ensure_action_ids, script_ref_repeat_count,
     special_action_label,
 )
+from macroflow.core.resolution import (
+    build_resolution_action, normalize_resolution_style,
+    resolution_styles_from_settings, SUPPORTED_SCALE_PERCENTS,
+)
 from macroflow.execution.player import running_process_names
 from macroflow.core.storage import (
     BASE_DIR, DIRECTION_SCRIPTS_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
@@ -29,12 +34,14 @@ from macroflow.core.storage import (
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
     registered_module_object, resolve_path, save_module_images_dir, save_module_objects,
-    save_template_regions, save_script, update_module_object,
+    save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from macroflow.input.wininput import (
-    WindowInfo, enum_windows, get_cursor_pos, get_virtual_screen_rect,
-    is_current_process_window, make_window_no_activate, set_dark_titlebar,
-    show_window_no_activate, window_from_point,
+    WindowInfo, enum_windows, get_cursor_pos, get_monitor_work_area_for_point,
+    get_monitor_work_area_for_window, get_primary_screen_rect,
+    get_virtual_screen_rect, is_current_process_window, make_window_no_activate,
+    set_dark_titlebar, set_rounded_window, show_window_no_activate,
+    window_from_point,
 )
 
 
@@ -43,22 +50,100 @@ COLOR_SURFACE = "#182129"
 COLOR_TEXT = "#E8EDF2"
 COLOR_MUTED = "#94A1AD"
 COLOR_BLUE_SELECTION = "#244D78"
+# 与 app.py 保持同一套字体标尺（两个模块独立加载，避免循环导入）。
+FONT_FAMILY = "Microsoft YaHei UI"
+FONT_MONO = "Consolas"
+FONT_SMALL = 8
+FONT_BODY = 9
+FONT_SUBTITLE = 10
+FONT_TITLE = 12
+# ---- DPI 缩放 ----
+# 打包版进程是 DPI 感知的（SYSTEM_AWARE）：Tk 的字体按真实 DPI 放大，而
+# geometry/padding/rowheight/列宽这些像素值不会自动缩放。所有按 96 DPI
+# 设计的像素常量都必须经过 px()/pad() 换算，否则高 DPI 下文字会撑破行高与
+# 列宽（表现为“文字被裁切”“下一行文字被上一行遮挡”）。
+_UI_SCALE = 1.0
+
+
+def set_ui_scale(root) -> float:
+    """记录 Tk 的 DPI 缩放系数（1.0 = 96 DPI / 100%）。"""
+    global _UI_SCALE
+    try:
+        scaling = float(root.tk.call("tk", "scaling"))
+    except (AttributeError, tk.TclError, ValueError):
+        scaling = 96.0 / 72.0
+    _UI_SCALE = max(1.0, scaling / (96.0 / 72.0))
+    return _UI_SCALE
+
+
+def px(value) -> int:
+    """把按 96 DPI 设计的像素值换算到当前 DPI（0 仍为 0）。"""
+    number = float(value)
+    if number == 0:
+        return 0
+    return max(1, int(round(number * _UI_SCALE)))
+
+
+def pad(*values) -> tuple[int, ...]:
+    """换算一组像素值（padding/padx/pady）。"""
+    return tuple(px(value) for value in values)
+
+
+# ---------------- 多屏定位 ----------------
+# 弹窗必须摆在"父窗口所在显示器"的可用区域里。多屏下 winfo_screenwidth/height
+# 给的是主屏（虚拟桌面见 winfo_vroot*），用它去限制坐标会把父窗口在左侧副屏
+# （x 为负）的弹窗硬拽回主屏：笔记本扩展一块屏后，模块窗口全跑到另一块屏上、
+# 或者被压到屏幕外露出半个窗口，就是这么来的。
+# geometry 的宽高是客户区，标题栏和边框在外面：贴边时按这段余量留白。
+DIALOG_FRAME_MARGIN = 40
+
+
+def monitor_work_area_for(widget) -> dict[str, int]:
+    """widget（通常是父窗口）所在显示器的可用区域（桌面像素，可为负）。"""
+    try:
+        area = get_monitor_work_area_for_point(
+            int(widget.winfo_rootx()) + max(1, int(widget.winfo_width())) // 2,
+            int(widget.winfo_rooty()) + max(1, int(widget.winfo_height())) // 2,
+        )
+    except (AttributeError, tk.TclError, TypeError, ValueError):
+        area = None
+    if area:
+        return area
+    try:
+        hwnd = int(widget.winfo_id())
+    except (AttributeError, tk.TclError, TypeError, ValueError):
+        hwnd = 0
+    return (
+        (get_monitor_work_area_for_window(hwnd) if hwnd else None)
+        or get_primary_screen_rect()
+    )
+
+
+def clamp_to_work_area(area, width: int, height: int, x: int, y: int) -> tuple[int, int]:
+    """把窗口左上角收进显示器可用区域（副屏坐标可以为负，不能用 max(0, …)）。"""
+    right = int(area["left"]) + max(0, int(area["width"]) - int(width) - px(DIALOG_FRAME_MARGIN))
+    bottom = int(area["top"]) + max(0, int(area["height"]) - int(height) - px(DIALOG_FRAME_MARGIN))
+    return (
+        max(int(area["left"]), min(int(x), right)),
+        max(int(area["top"]), min(int(y), bottom)),
+    )
+
 
 GLOBAL_SCRIPT_END_LABEL = "脚本结束（结束当前执行）"
 SCRIPT_START_LABEL = "脚本开头（从第 1 行开始）"
 SCRIPT_END_LABEL = "脚本结尾（结束当前执行）"
 SCRIPT_CATEGORY_LABELS = {
     "all": "全部", "level": "关卡", "level_pack": "关卡封装",
-    "switch": "切换",
+    "switch": "切换", "direction": "方向",
 }
 
 TIME_UNITS = ("ms", "s", "min")
 
 _UNIT_TO_MS = {"ms": 1, "s": 1000, "min": 60000}
 
-DIALOG_SPACING = (4, 8, 12, 16, 24)
-DIALOG_FIELD_WIDTH = 12
-DIALOG_BUTTON_WIDTH = 12
+DIALOG_SPACING = (3, 6, 10, 14, 20)
+DIALOG_FIELD_WIDTH = 10
+DIALOG_BUTTON_WIDTH = 10
 DIALOG_PRIMARY_STYLE = "primary-outline"
 DIALOG_SECONDARY_STYLE = "secondary-outline"
 
@@ -82,48 +167,12 @@ def parse_named_region(value) -> list[int]:
     return result
 
 
-def format_grid_column_label(column: int | None) -> str:
-    return "未选择" if column is None else f"第{int(column) + 1}列"
-
-
 def condition_field_visibility(kind: str) -> set[str]:
     return {
         "image": {"module"},
         "text": {"text", "match"},
         "number": {"separator", "relation"},
     }.get(str(kind), set())
-
-
-def test_state_transition(state: str, event: str) -> str:
-    if event == "start":
-        return "running" if state != "running" else state
-    if event == "cancel":
-        return "idle"
-    if state == "running" and event in {"success", "error"}:
-        return event
-    return state
-
-
-def format_test_result(result, error, elapsed_ms: int) -> str:
-    elapsed = max(0, int(elapsed_ms))
-    if error:
-        return f"测试失败：{error}（耗时 {elapsed} ms）"
-    matched = result.get("matched_rows", 0) if isinstance(result, dict) else 0
-    return f"命中 {int(matched)} 行，耗时 {elapsed} ms"
-
-
-def test_callback_is_current(active_token: int, callback_token: int,
-                             destroyed: bool) -> bool:
-    return not destroyed and active_token == callback_token
-
-
-def _parse_grid_int_list(values):
-    """Parse saved grid line values while ignoring empty trailing entries."""
-    if values is None:
-        return []
-    if isinstance(values, str):
-        values = values.split(",")
-    return [int(str(value).strip()) for value in values if str(value).strip()]
 
 
 class DurationVar(tk.StringVar):
@@ -293,27 +342,6 @@ def configured_script_files(settings: dict | None = None) -> list[Path]:
     return sorted(paths.values(), key=lambda path: pinyin_sort_key(path.stem))
 
 
-def script_category_for_path(path: str | Path, settings: dict | None = None) -> str:
-    """Resolve a script's saved category, with configured-directory fallback."""
-    path = Path(path).resolve()
-    settings = settings or load_app_settings()
-    try:
-        script = load_script(path)
-    except Exception:
-        return "level"
-    saved = str(script.settings.get("category", "")).strip()
-    if saved in ("level", "level_pack", "switch", "direction"):
-        return saved
-    for category, setting_key, default in (
-        ("level_pack", "level_pack_scripts_dir", "scripts/关卡封装"),
-        ("switch", "switch_scripts_dir", "scripts/切换"),
-        ("direction", "direction_scripts_dir", DIRECTION_SCRIPTS_DIR),
-        ("level", "level_scripts_dir", "scripts/关卡"),
-    ):
-        root = resolve_path(str(settings.get(setting_key, default))).resolve()
-        if path == root or root in path.parents:
-            return category
-    return "level"
 
 
 def prepend_module_to_scripts(key: str, category: str,
@@ -453,7 +481,7 @@ def dark_checkbutton(parent, text: str, variable, command=None):
         background=COLOR_BG, foreground=COLOR_TEXT,
         activebackground=COLOR_BG, activeforeground=COLOR_TEXT,
         selectcolor=COLOR_SURFACE, highlightthickness=0, borderwidth=0,
-        font=("Microsoft YaHei UI", 10), cursor="hand2",
+        font=(FONT_FAMILY, FONT_BODY), cursor="hand2",
     )
 for _i in range(1, 25):
     VK_NAMES[f"F{_i}"] = 0x6F + _i
@@ -632,7 +660,7 @@ class ScreenPointPicker:
                     if not self.two_points else
                     "第一次点击记录起点，移动光标到终点后再次点击；Esc 取消"
                 ),
-                fill="#FFFFFF", font=("Microsoft YaHei UI", 13, "bold"),
+                fill="#FFFFFF", font=(FONT_FAMILY, FONT_TITLE, "bold"),
             )
             canvas.bind("<Button-1>", self._on_click)
             overlay.bind("<Escape>", lambda _event: self.close())
@@ -781,7 +809,7 @@ class ScreenRegionPicker:
                 text=self.tip_text or (
                     "按住鼠标左键，从左上角向右下角拖动；松开完成，Esc 取消"
                 ),
-                fill="#FFFFFF", font=("Microsoft YaHei UI", 13, "bold"),
+                fill="#FFFFFF", font=(FONT_FAMILY, FONT_TITLE, "bold"),
             )
             canvas.bind("<ButtonPress-1>", self._drag_begin)
             canvas.bind("<B1-Motion>", self._drag_move)
@@ -1107,8 +1135,6 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
             detail = f"启用 {len(enabled)}/3 个条件 · 点击 {int(action.get('click_count', 1))} 次"
         elif kind == "row_list_condition_click":
             detail = "从上到下查找首个匹配项"
-        elif kind == "grid_row_condition_click":
-            detail = "网格分隔线逐行识别并点击"
         elif kind == "notice":
             detail = clip(action.get("text", ""), 16)
         elif kind == "comment":
@@ -1210,12 +1236,16 @@ def show_floating_notice(parent, title: str, text: str, duration_ms: int = 4500)
     notice.overrideredirect(True)
     notice.attributes("-topmost", True)
     notice.configure(background="#263541", takefocus=False)
-    width, height = 360, 68
-    x = max(10, (notice.winfo_screenwidth() - width) // 2)
-    notice.geometry(f"{width}x{height}+{x}+36")
-    frame = ttk.Frame(notice, padding=(12, 10))
+    width, height = px(360), px(68)
+    # 提醒条摆在主界面所在显示器的顶部居中：用 winfo_screenwidth 会在副屏
+    # （尤其左侧副屏，x 为负）上被拽回主屏，提醒就跑到另一块屏去了。
+    area = monitor_work_area_for(root)
+    x = int(area["left"]) + max(px(10), (int(area["width"]) - width) // 2)
+    notice.geometry(f"{width}x{height}+{x}+{int(area['top']) + px(36)}")
+    set_rounded_window(notice.winfo_id(), px(10))
+    frame = ttk.Frame(notice, padding=pad(12, 10))
     frame.pack(fill="both", expand=True)
-    label = ttk.Label(frame, text=content, wraplength=330, justify="left")
+    label = ttk.Label(frame, text=content, wraplength=px(330), justify="left")
     label.pack(anchor="w", fill="both", expand=True)
     root._macroflow_fallback_notice_label = label
     notice.update_idletasks()
@@ -1274,7 +1304,7 @@ def vk_to_key_name(vk: int) -> str:
 
 
 class ModalDialog(tk.Toplevel):
-    def __init__(self, parent, title: str, width: int = 520, height: int = 360,
+    def __init__(self, parent, title: str, width: int = 480, height: int = 320,
                  align_top: bool = False, defer_show: bool = False):
         super().__init__(parent)
         self._deferred_show = bool(defer_show)
@@ -1287,23 +1317,31 @@ class ModalDialog(tk.Toplevel):
         self.configure(background=COLOR_BG)
         self.transient(parent)
         self.grab_set()
-        self.resizable(False, False)
-        self.geometry(f"{width}x{height}")
+        self._align_top = bool(align_top)
+        # 声明尺寸放不下当前显示器时按可用区域压缩：压缩后内容可能被裁，
+        # 所以同时放开拉伸，用户仍能把窗口拉回来。
+        area = monitor_work_area_for(parent)
+        declared = (px(width), px(height))
+        self._declared_size = (
+            min(declared[0], max(1, int(area["width"]) - px(DIALOG_FRAME_MARGIN))),
+            min(declared[1], max(1, int(area["height"]) - px(DIALOG_FRAME_MARGIN))),
+        )
+        clamped = self._declared_size != declared
+        self.resizable(clamped, clamped)
+        self.geometry(f"{self._declared_size[0]}x{self._declared_size[1]}")
         self.update_idletasks()
         set_dark_titlebar(self.winfo_id())
-        x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
         # 高表单可从创建第一帧就贴顶，避免先在屏幕中间显示、完成内容布局后
         # 再跳到顶部。普通对话框仍沿用父窗口内居中。
-        y = 0 if align_top else parent.winfo_rooty() + (parent.winfo_height() - height) // 2
-        screen_w = parent.winfo_screenwidth()
-        screen_h = parent.winfo_screenheight()
-        x = max(0, min(x, max(0, screen_w - width)))
-        y = max(0, min(y, max(0, screen_h - height)))
-        self.geometry(f"+{x}+{y}")
+        place_window_on_parent(
+            self, parent, self._declared_size[0], self._declared_size[1],
+            self._align_top, area,
+        )
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def show(self):
         self._install_duration_units()
+        self._shrink_to_content()
         # 置前并抢占 OS 焦点：模态框从后台窗口打开时若不激活，真实点击
         # 会被其他窗口截走，输入框永远得不到焦点（v1.82.6）。
         if getattr(self, "_deferred_show", False):
@@ -1313,6 +1351,24 @@ class ModalDialog(tk.Toplevel):
         self.focus_force()
         self.wait_window()
         return self.result
+
+    def _shrink_to_content(self):
+        """把没显式定过尺寸的对话框收缩到内容需求，去掉底部那片空白。
+
+        只缩不放：声明尺寸大于内容需求时缩到需求（内容照样装得下），小于需求时
+        保持原样。已按内容定过尺寸的跳过——可滚动表单的窗口尺寸来自 content_*
+        而不是自身 reqsize，再缩一次会把表单压扁。
+        """
+        if getattr(self, "_macroflow_fitted_to_content", False):
+            return
+        self.update_idletasks()
+        width = min(self._declared_size[0], self.winfo_reqwidth())
+        height = min(self._declared_size[1], self.winfo_reqheight())
+        self.geometry(f"{width}x{height}")
+        # 只改尺寸会让窗口偏向右下，按新尺寸重新居中。
+        place_window_on_parent(
+            self, self.master, width, height, getattr(self, "_align_top", False),
+        )
 
     def _install_duration_units(self):
         """Add one ms/s selector beside every entry backed by DurationVar."""
@@ -1347,10 +1403,10 @@ class ModalDialog(tk.Toplevel):
                     info = widget.grid_info()
                     combo.grid(
                         row=int(info["row"]), column=int(info["column"]) + 1,
-                        sticky="w", padx=(6, 0), pady=info.get("pady", 0),
+                        sticky="w", padx=pad(6, 0), pady=info.get("pady", 0),
                     )
                 elif manager == "pack":
-                    combo.pack(side="left", padx=(6, 0))
+                    combo.pack(side="left", padx=pad(6, 0))
             self._install_duration_units_in(widget)
 
 
@@ -1368,18 +1424,24 @@ class RowListDiagnosticResultDialog:
         self.window = window
         window.title("列表逐行识别结果")
         window.configure(background=COLOR_BG)
-        window.geometry("780x520")
-        window.minsize(560, 320)
+        # 尺寸按父窗口所在显示器封顶，并摆在同一块屏上：新建顶层窗口默认落在
+        # 主屏，扩展屏上打开的识别结果窗口会跑到笔记本屏幕上。
+        area = monitor_work_area_for(self.parent)
+        width = min(px(780), max(px(320), int(area["width"]) - px(DIALOG_FRAME_MARGIN)))
+        height = min(px(520), max(px(220), int(area["height"]) - px(DIALOG_FRAME_MARGIN)))
+        window.geometry(f"{width}x{height}")
+        window.minsize(min(px(560), width), min(px(320), height))
+        place_window_on_parent(window, self.parent, width, height)
         window.protocol("WM_DELETE_WINDOW", window.destroy)
 
-        body = ttk.Frame(window, padding=14)
+        body = ttk.Frame(window, padding=px(14))
         body.pack(fill="both", expand=True)
         body.rowconfigure(1, weight=1)
         body.columnconfigure(0, weight=1)
         ttk.Label(
             body, text="识别已完成，以下结果不会执行点击。",
             foreground=COLOR_TEXT,
-        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ).grid(row=0, column=0, sticky="w", pady=pad(0, 8))
 
         text_frame = ttk.Frame(body)
         text_frame.grid(row=1, column=0, sticky="nsew")
@@ -1389,7 +1451,7 @@ class RowListDiagnosticResultDialog:
             text_frame, wrap="word", state="normal", background=COLOR_SURFACE,
             foreground=COLOR_TEXT, insertbackground=COLOR_TEXT,
             selectbackground=COLOR_BLUE_SELECTION, relief="flat", bd=0,
-            font=("Consolas", 10), padx=12, pady=10,
+            font=(FONT_MONO, FONT_BODY), padx=px(12), pady=px(10),
         )
         scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=output.yview)
         output.configure(yscrollcommand=scrollbar.set)
@@ -1402,7 +1464,7 @@ class RowListDiagnosticResultDialog:
         output.configure(state="disabled")
 
         ttk.Button(body, text="关闭", command=window.destroy).grid(
-            row=2, column=0, sticky="e", pady=(10, 0),
+            row=2, column=0, sticky="e", pady=pad(10, 0),
         )
         window.update_idletasks()
         set_dark_titlebar(window.winfo_id())
@@ -1411,12 +1473,13 @@ class RowListDiagnosticResultDialog:
         return window
 
 
-class GridRowDiagnosticResultDialog:
-    """Show the selected grid image with the OCR text drawn inside each cell."""
+class RowRecognitionResultDialog:
+    """Show a diagnostic image with each recognition cell's text drawn inside it."""
 
     def __init__(self, parent, result: dict, error: Exception | None = None):
         self.parent = parent
         self.result = dict(result or {})
+        self.subject = str(self.result.get("subject") or "列表逐行")
         self.error = error
         self.window = None
         self.photo = None
@@ -1626,8 +1689,14 @@ class GridRowDiagnosticResultDialog:
         window = tk.Toplevel(self.parent)
         self.window = window
         window.configure(background=COLOR_BG)
-        window.attributes("-fullscreen", True)
+        # 不用 Tk 的 -fullscreen：多屏下它按主屏/虚拟桌面铺满，识别结果窗口会
+        # 跑到另一块屏上。直接铺满"父窗口所在显示器"的可用区域，与主界面同屏。
+        area = monitor_work_area_for(self.parent)
         window.overrideredirect(True)
+        window.geometry(
+            f"{int(area['width'])}x{int(area['height'])}"
+            f"+{int(area['left'])}+{int(area['top'])}"
+        )
         window.protocol("WM_DELETE_WINDOW", window.destroy)
         window.bind("<Escape>", lambda _event: window.destroy())
         try:
@@ -1658,27 +1727,32 @@ class GridRowDiagnosticResultDialog:
 
         toolbar = tk.Frame(
             window, background=COLOR_BG, highlightbackground=COLOR_TEXT,
-            highlightthickness=1, bd=0, padx=6, pady=5,
+            highlightthickness=1, bd=0, padx=px(6), pady=px(5),
         )
         self.toolbar = toolbar
         toolbar.place(x=18, y=18)
         handle = tk.Label(
-            toolbar, text="☰ 网格识别", background=COLOR_BG,
-            foreground=COLOR_TEXT, cursor="fleur", padx=6,
+            toolbar, text=f"☰ {self.subject}识别", background=COLOR_BG,
+            foreground=COLOR_TEXT, cursor="fleur", padx=px(6),
         )
-        handle.grid(row=0, column=0, padx=(0, 8))
+        handle.grid(row=0, column=0, padx=pad(0, 8))
         handle.bind("<ButtonPress-1>", self._start_toolbar_drag)
         handle.bind("<B1-Motion>", self._drag_toolbar)
         self.toggle_button = ttk.Button(
             toolbar, text="显示原图", command=self._toggle_display_mode,
         )
-        self.toggle_button.grid(row=0, column=1, padx=(0, 6))
+        self.toggle_button.grid(row=0, column=1, padx=pad(0, 6))
         ttk.Button(toolbar, text="关闭", command=window.destroy).grid(
             row=0, column=2,
         )
 
         try:
-            self._source_image = Image.open(self.result["image_path"]).convert("RGB")
+            array = self.result.get("image_array")
+            if array is not None:
+                # 屏幕截图直接用内存里的 BGR 数组，避免为一次测试落临时文件。
+                self._source_image = Image.fromarray(array[:, :, ::-1]).convert("RGB")
+            else:
+                self._source_image = Image.open(self.result["image_path"]).convert("RGB")
             self._image_size = self._source_image.size
             self._cells = list(self.result.get("cells", []))
             self._image_origin = tuple(map(int, self.result.get("image_origin", (0, 0))))
@@ -1698,14 +1772,14 @@ class GridRowDiagnosticResultDialog:
         except Exception as exc:
             error_text = self.error or exc
             ttk.Label(
-                toolbar, text=f"无法显示网格底图：{error_text}",
+                toolbar, text=f"无法显示{self.subject}底图：{error_text}",
                 foreground="#FF6978",
-            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=pad(5, 0))
 
         if self.error is not None:
             ttk.Label(
                 toolbar, text=f"识别失败：{self.error}", foreground="#FF6978",
-            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(5, 0))
+            ).grid(row=1, column=0, columnspan=3, sticky="w", pady=pad(5, 0))
         window.update_idletasks()
         set_dark_titlebar(window.winfo_id())
         toolbar.lift()
@@ -1722,21 +1796,21 @@ class ScheduleDialog(ModalDialog):
         except ValueError:
             initial = datetime.now() + timedelta(minutes=1)
 
-        body = ttk.Frame(self, padding=20)
+        body = ttk.Frame(self, padding=px(13))
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="日期").grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(body, text="日期").grid(row=0, column=0, sticky="w", pady=pad(0, 8))
         self.date_entry = DateEntry(
             body, dateformat="%Y-%m-%d", startdate=initial.date(),
             popup_title="选择日期", width=16,
         )
-        self.date_entry.grid(row=1, column=0, sticky="ew", padx=(0, 14))
+        self.date_entry.grid(row=1, column=0, sticky="ew", padx=pad(0, 14))
 
         time_frame = ttk.Frame(body)
         time_frame.grid(row=1, column=1, sticky="w")
         self.hour_var = tk.StringVar(value=f"{initial.hour:02d}")
         self.minute_var = tk.StringVar(value=f"{initial.minute:02d}")
         self.second_var = tk.StringVar(value=f"{initial.second:02d}")
-        ttk.Label(body, text="时间").grid(row=0, column=1, sticky="w", pady=(0, 8))
+        ttk.Label(body, text="时间").grid(row=0, column=1, sticky="w", pady=pad(0, 8))
         for index, (variable, values) in enumerate((
             (self.hour_var, [f"{n:02d}" for n in range(24)]),
             (self.minute_var, [f"{n:02d}" for n in range(60)]),
@@ -1744,14 +1818,14 @@ class ScheduleDialog(ModalDialog):
         )):
             ttk.Combobox(time_frame, textvariable=variable, values=values, state="readonly", width=3).pack(side="left")
             if index < 2:
-                ttk.Label(time_frame, text=":").pack(side="left", padx=3)
+                ttk.Label(time_frame, text=":").pack(side="left", padx=px(3))
 
         ttk.Label(body, text="点击日期框右侧的日历按钮选择日期；时间使用下拉框选择。",
-                  foreground=COLOR_MUTED).grid(row=2, column=0, columnspan=2, sticky="w", pady=(18, 0))
+                  foreground=COLOR_MUTED).grid(row=2, column=0, columnspan=2, sticky="w", pady=pad(18, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(24, 0))
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=pad(24, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=px(8))
         ttk.Button(buttons, text="立即执行（清除时间）", command=self.clear).pack(side="left")
         body.columnconfigure(0, weight=1)
 
@@ -1778,20 +1852,20 @@ class DurationDialog(ModalDialog):
         # 单位框已在下方手动放置；show() 的自动安装器会再插一个，必须跳过。
         self._skip_auto_duration_units = True
         self.value = duration_var(max(0, int(initial_ms)))
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         ttk.Label(body, text=prompt).pack(anchor="w")
         row = ttk.Frame(body)
-        row.pack(fill="x", pady=(12, 0))
+        row.pack(fill="x", pady=pad(12, 0))
         ttk.Entry(row, textvariable=self.value).pack(side="left", fill="x", expand=True)
         ttk.Combobox(
             row, textvariable=self.value.unit, values=TIME_UNITS,
             state="readonly", width=4,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(20, 0))
+        buttons.pack(fill="x", pady=pad(20, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def save(self):
         try:
@@ -1820,10 +1894,10 @@ class WorkflowBatchSettingsDialog(ModalDialog):
         }
         self.value_widgets = {}
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         ttk.Label(body, text="只勾选需要统一的参数，未勾选项保持每行原值。",
-                  foreground=COLOR_MUTED).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
+                  foreground=COLOR_MUTED).grid(row=0, column=0, columnspan=3, sticky="w", pady=pad(0, 18))
         for row, (key, label, variable, minimum, maximum, unit) in enumerate((
             ("repeats", "执行次数", self.repeats_var, 0, 999999, "次"),
             ("before_ms", "开始前等待", self.before_var, 0, 86400000, ""),
@@ -1832,10 +1906,10 @@ class WorkflowBatchSettingsDialog(ModalDialog):
             dark_checkbutton(
                 body, text=label, variable=self.enabled_vars[key],
                 command=lambda selected=key: self._toggle_field(selected),
-            ).grid(row=row, column=0, sticky="w", pady=7)
+            ).grid(row=row, column=0, sticky="w", pady=px(7))
             widget = ttk.Spinbox(body, textvariable=variable, from_=minimum, to=maximum,
                                  width=16, state="disabled")
-            widget.grid(row=row, column=1, sticky="ew", padx=(18, 8), pady=7)
+            widget.grid(row=row, column=1, sticky="ew", padx=pad(18, 8), pady=px(7))
             self.value_widgets[key] = widget
             ttk.Label(body, text=unit, foreground=COLOR_MUTED).grid(row=row, column=2, sticky="w")
 
@@ -1843,16 +1917,16 @@ class WorkflowBatchSettingsDialog(ModalDialog):
             body,
             text="不计次数（每次到达这一行都执行一次，不扣减）",
             variable=self.unlimited_var,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=7)
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=px(7))
         ttk.Label(
             body, text="勾选后所有行都设为不计次数。",
             foreground=COLOR_MUTED,
         ).grid(row=5, column=0, columnspan=3, sticky="w")
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(22, 0))
+        buttons.grid(row=6, column=0, columnspan=3, sticky="ew", pady=pad(22, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="应用到全部任务", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="应用到全部任务", command=self.save).pack(side="right", padx=px(8))
         body.columnconfigure(1, weight=1)
 
     def _toggle_field(self, key: str):
@@ -1918,27 +1992,27 @@ class WorkflowRepeatDialog(ModalDialog):
         )
         self._preserved_repeat_start_id = str(repeat_start_action_id).strip()
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
             text="不计次数：只要轮到这一行就执行一次，不扣减次数。",
             foreground=COLOR_MUTED,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=pad(0, 14))
         dark_checkbutton(
             body,
             text="不计次数（始终执行）",
             variable=self.unlimited_var,
             command=self._update_count_state,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=6)
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=px(6))
 
         count_row = ttk.Frame(body)
-        count_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=6)
+        count_row.grid(row=2, column=0, columnspan=2, sticky="ew", pady=px(6))
         ttk.Label(count_row, text="剩余次数").pack(side="left")
         self.repeats_spin = ttk.Spinbox(
             count_row, textvariable=self.repeats_var, from_=0, to=999999, width=16,
         )
-        self.repeats_spin.pack(side="left", padx=(18, 8))
+        self.repeats_spin.pack(side="left", padx=pad(18, 8))
         ttk.Label(count_row, text="次", foreground=COLOR_MUTED).pack(side="left")
         self._update_count_state()
 
@@ -1947,10 +2021,10 @@ class WorkflowRepeatDialog(ModalDialog):
             text="第 2 次及以后从指定行开始",
             variable=self.repeat_start_var,
             command=self._update_repeat_start_state,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 6))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(10, 6))
 
         start_row = ttk.Frame(body)
-        start_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=6)
+        start_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=px(6))
         ttk.Label(start_row, text="起始行").pack(side="left")
         if self.jump_options:
             labels = [label for label, _action_id in self.jump_options]
@@ -1968,7 +2042,7 @@ class WorkflowRepeatDialog(ModalDialog):
             self.repeat_start_combo = ttk.Combobox(
                 start_row, values=[], state="disabled", width=52,
             )
-        self.repeat_start_combo.pack(side="left", padx=(18, 8))
+        self.repeat_start_combo.pack(side="left", padx=pad(18, 8))
 
         if not self.jump_options:
             hint = "脚本文件不存在，无法选择起始行。"
@@ -1976,13 +2050,13 @@ class WorkflowRepeatDialog(ModalDialog):
             hint = "第 1 次始终从脚本第 1 行开始；不计次数时此项不生效。"
         ttk.Label(
             body, text=hint, foreground=COLOR_MUTED,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(2, 0))
         self._update_repeat_start_state()
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(20, 0))
+        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(20, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
         body.columnconfigure(1, weight=1)
 
     def _update_count_state(self, _event=None):
@@ -2068,22 +2142,22 @@ class JumpActionDialog(ModalDialog):
             value=bool(action.get("workflow_repeat_at_least_2", True)),
         )
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=8)
+        ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
         ttk.Combobox(
             body, textvariable=self.target, values=list(self.target_ids),
             state="readonly", width=50,
-        ).grid(row=0, column=1, sticky="ew", pady=8)
+        ).grid(row=0, column=1, sticky="ew", pady=px(8))
         ttk.Label(
             body,
             text=("脚本开头会从第 1 行重新执行；指定行会跟随该动作移动；"
                   "脚本结尾会结束当前脚本执行；引用脚本继续下一次，顶层脚本进入工作流下一项。"),
-            foreground=COLOR_MUTED, wraplength=530,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        condition_frame = ttk.LabelFrame(body, text="跳转生效条件", padding=(12, 8))
-        condition_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+            foreground=COLOR_MUTED, wraplength=px(530),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
+        condition_frame = ttk.LabelFrame(body, text="跳转生效条件", padding=pad(12, 8))
+        condition_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Radiobutton(
             condition_frame,
             text="每次执行到该动作都跳转",
@@ -2095,17 +2169,17 @@ class JumpActionDialog(ModalDialog):
             text="仅当工作流第 2 次或脚本多次执行的第 2 次及以后时跳转",
             variable=self.workflow_repeat_at_least_2,
             value=True,
-        ).pack(anchor="w", pady=(6, 0))
+        ).pack(anchor="w", pady=pad(6, 0))
         ttk.Label(
             body,
             text=("选择第二项后：工作流第 1 次、脚本重复执行的第 1 次和单次运行脚本时"
                   "都会继续下一行；从第 2 次开始才跳到上方选择的行对象。"),
-            foreground=COLOR_MUTED, wraplength=530,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            foreground=COLOR_MUTED, wraplength=px(530),
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=pad(0, 8))
 
     def save(self):
         label = self.target.get()
@@ -2184,12 +2258,11 @@ class GlobalDetectDialog(ModalDialog):
         self.jump_target_combo = None
         self.picker = None
 
-        body = ttk.Frame(self, padding=22)
-        body.pack(fill="both", expand=True)
+        body, self._form_canvas, form_scrollbar = scrollable_dialog_body(self, padding=14)
         body.columnconfigure(1, weight=1)
 
         ttk.Label(body, text="模块" if self.jump else "模板").grid(
-            row=0, column=0, sticky="w", pady=8,
+            row=0, column=0, sticky="w", pady=px(8),
         )
         template_row = ttk.Frame(body)
         template_row.grid(row=0, column=1, sticky="ew")
@@ -2199,7 +2272,7 @@ class GlobalDetectDialog(ModalDialog):
             ).pack(side="left", fill="x", expand=True)
             ttk.Button(
                 template_row, text="选择模块…", command=self.select_image_module,
-            ).pack(side="left", padx=(6, 0))
+            ).pack(side="left", padx=pad(6, 0))
         else:
             self.template_combo = ttk.Combobox(
                 template_row, textvariable=self.template,
@@ -2212,9 +2285,9 @@ class GlobalDetectDialog(ModalDialog):
             )
             ttk.Button(
                 template_row, text="选择模块…", command=self.select_image_module,
-            ).pack(side="left", padx=(6, 0))
+            ).pack(side="left", padx=pad(6, 0))
             ttk.Button(template_row, text="模板区域…", command=self.open_template_region_manager).pack(
-                side="left", padx=(6, 0),
+                side="left", padx=pad(6, 0),
             )
 
         rows = [
@@ -2223,13 +2296,13 @@ class GlobalDetectDialog(ModalDialog):
             ("持续超过", self.hold, 0, 60000, 100),
         ]
         for offset, (label, variable, low, high, increment) in enumerate(rows, start=1):
-            ttk.Label(body, text=label).grid(row=offset, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=offset, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(
                 body, from_=low, to=high, increment=increment,
                 textvariable=variable, width=10,
             ).grid(row=offset, column=1, sticky="ew")
         if self.require_click:
-            ttk.Label(body, text="点击后延时").grid(row=4, column=0, sticky="w", pady=8)
+            ttk.Label(body, text="点击后延时").grid(row=4, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(
                 body, from_=0, to=60000, increment=100,
                 textvariable=self.restart_delay, width=10,
@@ -2243,7 +2316,7 @@ class GlobalDetectDialog(ModalDialog):
             ttk.Checkbutton(
                 body, text="启用触发后跳转", variable=self.jump_enabled_var,
                 command=self._sync_jump_target_state,
-            ).grid(row=jump_row_index, column=0, sticky="w", pady=8)
+            ).grid(row=jump_row_index, column=0, sticky="w", pady=px(8))
             jump_row_frame = ttk.Frame(body)
             jump_row_frame.grid(row=jump_row_index, column=1, sticky="ew")
             self.jump_target_ids: dict[str, str] = {}
@@ -2280,7 +2353,7 @@ class GlobalDetectDialog(ModalDialog):
                     jump_row_frame,
                     text="（引用脚本结束本次并进入下一次；顶层脚本进入工作流下一项）",
                     foreground=COLOR_MUTED,
-                ).pack(side="left", padx=(6, 0))
+                ).pack(side="left", padx=pad(6, 0))
             else:
                 # 脚本里没有可跳转的行（防御）：退回数字行号输入。
                 self.jump_target_combo = ttk.Spinbox(
@@ -2289,15 +2362,15 @@ class GlobalDetectDialog(ModalDialog):
                 self.jump_target_combo.pack(side="left")
                 ttk.Label(
                     jump_row_frame, text="行", foreground=COLOR_MUTED,
-                ).pack(side="left", padx=(6, 0))
+                ).pack(side="left", padx=pad(6, 0))
                 ttk.Label(
                     jump_row_frame, text="（跳转后继续播放到脚本末尾）", foreground=COLOR_MUTED,
-                ).pack(side="left", padx=(6, 0))
+                ).pack(side="left", padx=pad(6, 0))
             self._sync_jump_target_state()
 
         hint_row_index = 6 if self.require_click else (5 if self.jump else 4)
         if self.require_click:
-            ttk.Label(body, text="点击位置 (x,y) 留空=点识别处").grid(row=5, column=0, sticky="w", pady=8)
+            ttk.Label(body, text="点击位置 (x,y) 留空=点识别处").grid(row=5, column=0, sticky="w", pady=px(8))
             click_row = ttk.Frame(body)
             # 与标签同行（row 5）；按钮行在 hint_row_index + 1 = row 7，
             # 若放在 row 7 会与按钮行重叠，输入框和“点击屏幕选取…”被遮住。
@@ -2306,7 +2379,7 @@ class GlobalDetectDialog(ModalDialog):
                 side="left", fill="x", expand=True,
             )
             ttk.Button(click_row, text="点击屏幕选取…", command=self.pick_click_point).pack(
-                side="left", padx=(6, 0),
+                side="left", padx=pad(6, 0),
             )
             hint_text = (
                 "该模块会启用全局检测：所选模板在检测区域内持续出现超过设定时长后，点击指定位置并延时；"
@@ -2326,13 +2399,16 @@ class GlobalDetectDialog(ModalDialog):
         ttk.Label(
             body,
             text=hint_text,
-            foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=hint_row_index, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(480),
+        ).grid(row=hint_row_index, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=hint_row_index + 1, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=hint_row_index + 1, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_scrollable_window_to_content(
+            self, parent, body, form_scrollbar, align_top=True,
+        )
 
     def open_template_region_manager(self):
         TemplateRegionManagerDialog(self).show()
@@ -2509,11 +2585,43 @@ def fallback_template_options(current: str = "") -> list[str]:
     return options
 
 
-def fit_window_to_content(window, parent, minimum_width=640, minimum_height=360,
+def place_window_on_parent(window, parent, width: int, height: int, align_top: bool = False,
+                           area: dict[str, int] | None = None) -> dict[str, int]:
+    """把已定好尺寸的窗口摆到父窗口中央，并限制在父窗口所在显示器内。
+
+    align_top=True 时只水平居中、垂直贴该显示器顶部（较高的编辑表单用）。
+    """
+    if area is None:
+        area = monitor_work_area_for(parent)
+    x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+    y = int(area["top"]) if align_top else parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+    x, y = clamp_to_work_area(area, width, height, x, y)
+    window.geometry(f"+{x}+{y}")
+    return area
+
+
+def fit_scrollable_window_to_content(window, parent, body, scrollbar,
+                                     align_top: bool = False):
+    """可滚动表单窗口按内容实际需求定尺寸。
+
+    表单挂在 Canvas 里，grid/pack 的需求尺寸要等一次空闲布局才算出来：紧接着
+    读 body.winfo_reqwidth/reqheight 只会拿到 1×1，窗口于是被设成一条缝
+    （内容只露出一点点）。这里先跑一次空闲布局再读，读到的才是真实内容尺寸。
+    """
+    window.update_idletasks()
+    fit_window_to_content(
+        window, parent,
+        content_width=body.winfo_reqwidth() + scrollbar.winfo_reqwidth(),
+        content_height=body.winfo_reqheight() + 4,
+        align_top=align_top,
+    )
+
+
+def fit_window_to_content(window, parent,
                           content_width: int | None = None,
                           content_height: int | None = None,
                           align_top: bool = False):
-    """按内容实际需求重设窗口尺寸并居中（防高 DPI 下内容被裁掉）。
+    """把窗口尺寸设成内容的实际需求尺寸并居中（防高 DPI 下内容被裁掉）。
 
     打包后的 EXE（PyInstaller onefile）按显示器真实 DPI 渲染（125% 缩放时
     内容需求高度约为开发环境的 1.3 倍），固定高度窗口会把底部内容挤出窗口。
@@ -2524,26 +2632,22 @@ def fit_window_to_content(window, parent, minimum_width=640, minimum_height=360,
     的 reqsize 不再反映内容尺寸，需显式传入内容实际需求尺寸（如 body 的
     winfo_reqwidth / winfo_reqheight）。
     align_top=True：保持水平居中，但窗口顶部贴到屏幕顶部；适合较高的编辑表单。
+
+    这里不再有 minimum_width / minimum_height 兜底：窗口一旦被抬高到内容需求
+    之上，多出来的高度就被 expand 的表格/文本框吃掉，表现为“明明装得下文字却
+    空出一大片”。req* 值本身已随 DPI 缩放，按内容定尺寸内容永远装得下。
     """
     window.update_idletasks()
-    width = max(
-        minimum_width,
-        content_width if content_width is not None else window.winfo_reqwidth(),
-    )
-    height = max(
-        minimum_height,
-        content_height if content_height is not None else window.winfo_reqheight(),
-    )
-    screen_w = window.winfo_screenwidth()
-    screen_h = window.winfo_screenheight()
-    if height > screen_h - 80:
-        height = max(minimum_height, screen_h - 80)
+    width = int(content_width if content_width is not None else window.winfo_reqwidth())
+    height = int(content_height if content_height is not None else window.winfo_reqheight())
+    area = monitor_work_area_for(parent)
+    width = min(width, max(1, int(area["width"]) - px(DIALOG_FRAME_MARGIN)))
+    height = min(height, max(1, int(area["height"]) - px(DIALOG_FRAME_MARGIN)))
     window.geometry(f"{width}x{height}")
-    x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
-    y = 0 if align_top else parent.winfo_rooty() + (parent.winfo_height() - height) // 2
-    x = max(0, min(x, max(0, screen_w - width)))
-    y = max(0, min(y, max(0, screen_h - height)))
-    window.geometry(f"+{x}+{y}")
+    place_window_on_parent(window, parent, width, height, align_top, area)
+    # 已按内容定过尺寸：ModalDialog.show() 不再重复收缩（可滚动表单的尺寸来自
+    # content_* 而不是自身 reqsize，再缩一次会把表单压扁）。
+    window._macroflow_fitted_to_content = True
     # 兜底：若内容仍超出屏幕可手动拉伸，按钮行始终可达。
     window.resizable(True, True)
 
@@ -2583,16 +2687,16 @@ class Tooltip:
         tip.attributes("-topmost", True)
         tk.Label(
             tip, text=self.text, background="#ffffe0", foreground="#333333",
-            justify="left", padx=10, pady=6, font=("Microsoft YaHei UI", 9),
+            justify="left", padx=px(10), pady=px(6), font=(FONT_FAMILY, FONT_BODY),
         ).pack()
         tip.update_idletasks()
-        sw, sh = tip.winfo_screenwidth(), tip.winfo_screenheight()
+        area = monitor_work_area_for(anchor)
         w, h = tip.winfo_width(), tip.winfo_height()
-        if x + w > sw:
-            x = max(0, sw - w - 4)
-        if y + h > sh:
+        if x + w > area["left"] + area["width"]:
+            x = max(area["left"], area["left"] + area["width"] - w - px(4))
+        if y + h > area["top"] + area["height"]:
             # 下方放不下就翻到 anchor 上方。
-            y = max(0, anchor.winfo_rooty() - h - 6)
+            y = max(area["top"], anchor.winfo_rooty() - h - px(6))
         tip.geometry(f"+{x}+{y}")
         self._tip = tip
 
@@ -2765,43 +2869,43 @@ class RestartWorkflowTargetDialog(ModalDialog):
         self.row_spin_var = tk.StringVar(value=str(saved_row if saved_row > 0 else 1))
         self._reload_options(selected_row=saved_row)
 
-        body = ttk.Frame(self, padding=20)
+        body = ttk.Frame(self, padding=px(13))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=(0, 8))
+        ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=pad(0, 12), pady=pad(0, 8))
         self.row_combo = ttk.Combobox(
             body, textvariable=self.row_var, values=self.row_labels,
             state="readonly", width=46,
         )
-        self.row_combo.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self.row_combo.grid(row=0, column=1, sticky="ew", pady=pad(0, 8))
         self.row_combo.bind("<<ComboboxSelected>>", self._on_row_selected)
         ttk.Label(
             body,
             text=("选择工作流里的行对象，触发后从该行重新执行工作流；"
                   "选“使用默认跳转行”时按工作流页面统一设置的默认决定。"
                   "未打开工作流时可勾选“自定义行号…”直接输入。"),
-            foreground=COLOR_MUTED, wraplength=540,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            foreground=COLOR_MUTED, wraplength=px(540),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
         row_frame = ttk.Frame(body)
-        row_frame.grid(row=2, column=1, sticky="w", pady=(10, 0))
+        row_frame.grid(row=2, column=1, sticky="w", pady=pad(10, 0))
         ttk.Label(row_frame, text="行号", foreground=COLOR_MUTED).pack(side="left")
         self.row_spin = ttk.Spinbox(
             row_frame, from_=1, to=99999, textvariable=self.row_spin_var,
             width=8,
         )
-        self.row_spin.pack(side="left", padx=(8, 0))
+        self.row_spin.pack(side="left", padx=pad(8, 0))
         self._on_row_selected()
         hint_frame = ttk.Frame(body)
-        hint_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(14, 0))
+        hint_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(14, 0))
         self.default_label = ttk.Label(
             hint_frame,
             text=self._default_hint(), foreground=COLOR_MUTED,
         )
         self.default_label.pack(side="left")
         buttons = ttk.Frame(body)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(20, 0))
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(20, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def _default_hint(self) -> str:
         if not self.default_row:
@@ -2895,7 +2999,288 @@ def segment_row_label(action: dict) -> str:
     return f"动作 {kind}"
 
 
-class TemplateRegionFormDialog(ModalDialog):
+class SegmentEditorMixin:
+    """可复用的“动作代码段”编辑器（模块对象表单与脚本行共用）。
+
+    使用方通过 segment_attr / listbox_attr 指定要编辑的列表属性；
+    嵌套深度由 segment_depth 控制（默认 0）。
+    """
+
+    segment_depth = 0
+
+    def _build_segment_panel(self, body, row, *, segment_attr="segment",
+                             listbox_attr="segment_listbox",
+                             title="主动作完成后执行的代码段",
+                             pack=False, columnspan=2, height=5):
+        frame = ttk.LabelFrame(body, text=title)
+        if pack:
+            frame.pack(fill="x", pady=pad(6, 0))
+        else:
+            frame.grid(row=row, column=0, columnspan=columnspan, sticky="ew",
+                       pady=pad(12, 0))
+        list_frame = ttk.Frame(frame)
+        list_frame.pack(fill="both", expand=True, padx=px(10), pady=pad(6, 0))
+        listbox = tk.Listbox(
+            list_frame, background=COLOR_SURFACE, foreground=COLOR_TEXT,
+            selectbackground=COLOR_BLUE_SELECTION, height=height,
+            font=(FONT_FAMILY, FONT_BODY), relief="flat", borderwidth=0,
+            selectmode="extended", exportselection=False,
+        )
+        setattr(self, listbox_attr, listbox)
+        listbox.pack(side="left", fill="both", expand=True)
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        scroll.pack(side="right", fill="y")
+        listbox.configure(yscrollcommand=scroll.set)
+        listbox.bind(
+            "<Double-1>",
+            lambda _event: self._edit_segment_item(segment_attr, listbox_attr),
+        )
+        listbox.bind(
+            "<Control-a>",
+            lambda _event: self._select_all_segment_items(listbox_attr),
+        )
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", padx=px(10), pady=pad(6, 10))
+        ttk.Button(
+            buttons, text="添加…",
+            command=lambda: self._add_segment_item(segment_attr, listbox_attr),
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="编辑",
+            command=lambda: self._edit_segment_item(segment_attr, listbox_attr),
+        ).pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            buttons, text="移除",
+            command=lambda: self._remove_segment_item(segment_attr, listbox_attr),
+        ).pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            buttons, text="上移",
+            command=lambda: self._move_segment_item(-1, segment_attr, listbox_attr),
+        ).pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            buttons, text="下移",
+            command=lambda: self._move_segment_item(1, segment_attr, listbox_attr),
+        ).pack(side="left", padx=pad(8, 0))
+        self._reload_segment_list(segment_attr, listbox_attr)
+        return frame
+
+    def _reload_segment_list(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        segment = getattr(self, segment_attr)
+        listbox = getattr(self, listbox_attr)
+        listbox.delete(0, "end")
+        for index, item in enumerate(segment):
+            listbox.insert("end", f"{index + 1}. {segment_row_label(item)}")
+            if segment_action_is_blocking(item):
+                listbox.itemconfigure(index, foreground="#F2B84B")
+
+    def _segment_selection(self, listbox_attr="segment_listbox"):
+        selection = getattr(self, listbox_attr).curselection()
+        return selection[0] if selection else None
+
+    def _select_all_segment_items(self, listbox_attr="segment_listbox"):
+        """Select every row in one of the module's internal action segments."""
+        listbox = getattr(self, listbox_attr)
+        listbox.selection_set(0, "end")
+        return "break"
+
+    def _add_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        menu = tk.Menu(self, tearoff=0)
+        target = (segment_attr, listbox_attr)
+        menu.add_command(label="延时", command=lambda: self._add_segment_delay(*target))
+        menu.add_command(label="键盘", command=lambda: self._add_segment_dialog(KeyActionDialog, *target))
+        menu.add_command(label="文本", command=lambda: self._add_segment_dialog(TextActionDialog, *target))
+        menu.add_command(label="点击", command=lambda: self._add_segment_dialog(ClickDialog, *target))
+        menu.add_command(label="连续点击", command=lambda: self._add_segment_dialog(RepeatClickDialog, *target))
+        menu.add_command(label="移动", command=lambda: self._add_segment_dialog(MouseMoveDialog, *target))
+        menu.add_command(
+            label="识别模块…", command=lambda: self._add_segment_module_ref(*target),
+            state="normal" if self.segment_depth < SEGMENT_DEPTH_LIMIT else "disabled",
+        )
+        menu.add_command(label="引用脚本", command=lambda: self._add_segment_dialog(ScriptRefDialog, *target))
+        menu.add_command(label="打开软件", command=lambda: self._add_segment_dialog(OpenAppDialog, *target))
+        menu.add_command(label="关闭软件", command=lambda: self._add_segment_dialog(CloseAppDialog, *target))
+        menu.add_command(label="提醒", command=lambda: self._add_segment_notice(*target))
+        menu.add_command(label="前置指定窗口…", command=lambda: self._add_segment_activate_window(*target))
+        menu.add_separator()
+        menu.add_command(
+            label="跳转到当前脚本最后一行",
+            command=lambda: self._add_segment_jump_current_script_last(*target),
+        )
+        menu.add_command(
+            label=END_CURRENT_SCRIPT_LABEL,
+            command=lambda: self._add_segment_end_current_script(*target),
+        )
+        if self.segment_depth >= SEGMENT_DEPTH_LIMIT:
+            menu.add_command(label="（代码段嵌套最多 8 层）", state="disabled")
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _append_segment(self, action: dict, segment_attr="segment",
+                        listbox_attr="segment_listbox"):
+        ensure_action_ids([action])
+        getattr(self, segment_attr).append(action)
+        self._reload_segment_list(segment_attr, listbox_attr)
+
+    def _add_segment_delay(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        value = DurationDialog(self, "添加延时", "延时时间：", 100).show()
+        if value is not None:
+            self._append_segment({"type": "delay", "ms": value}, segment_attr, listbox_attr)
+
+    def _add_segment_notice(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        text = simpledialog.askstring("添加提醒", "提示文字：", parent=self, initialvalue="")
+        if text is not None and text.strip():
+            self._append_segment({"type": "notice", "text": text.strip()}, segment_attr, listbox_attr)
+
+    def _add_segment_end_current_script(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        self._append_segment({"type": "end_current_script"}, segment_attr, listbox_attr)
+
+    def _add_segment_jump_current_script_last(self, segment_attr="segment",
+                                               listbox_attr="segment_listbox"):
+        self._append_segment({"type": "jump_current_script_last"}, segment_attr, listbox_attr)
+
+    def _add_segment_activate_window(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        selected = WindowPicker(self).show()
+        if selected:
+            self._append_segment({
+                "type": "activate_window",
+                "window": {
+                    "title": selected.title,
+                    "class_name": selected.class_name,
+                    "process_path": selected.process_path,
+                },
+            }, segment_attr, listbox_attr)
+
+    def _add_segment_dialog(self, dialog_class, segment_attr="segment", listbox_attr="segment_listbox"):
+        result = dialog_class(self, None).show()
+        if result is not None:
+            self._append_segment(result, segment_attr, listbox_attr)
+
+    def _add_segment_module_ref(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        result = ModulePickerDialog(
+            self, nested=True, segment_depth=self.segment_depth + 1,
+        ).show()
+        if result is not None:
+            self._append_segment(result, segment_attr, listbox_attr)
+
+    def _edit_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        index = self._segment_selection(listbox_attr)
+        if index is None:
+            return
+        updated = edit_action(
+            self, getattr(self, segment_attr)[index], all_actions=getattr(self, segment_attr),
+            segment_depth=self.segment_depth + 1,
+        )
+        if updated is not None:
+            getattr(self, segment_attr)[index] = updated
+            self._reload_segment_list(segment_attr, listbox_attr)
+
+    def _remove_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
+        selection = getattr(self, listbox_attr).curselection()
+        if not selection:
+            return
+        segment = getattr(self, segment_attr)
+        for index in sorted((int(item) for item in selection), reverse=True):
+            del segment[index]
+        self._reload_segment_list(segment_attr, listbox_attr)
+
+    def _move_segment_item(self, delta: int, segment_attr="segment", listbox_attr="segment_listbox"):
+        index = self._segment_selection(listbox_attr)
+        if index is None:
+            return
+        target = index + delta
+        segment = getattr(self, segment_attr)
+        if not 0 <= target < len(segment):
+            return
+        item = segment.pop(index)
+        segment.insert(target, item)
+        self._reload_segment_list(segment_attr, listbox_attr)
+        getattr(self, listbox_attr).selection_set(target)
+
+
+def scrollable_dialog_body(window, *, padding: int = 12):
+    """把对话框内容包进带纵向滚动条的 Canvas，返回内容容器。
+
+    识别类动作表单行数多，固定高度窗口在高 DPI / 小屏下会把底部按钮挤出
+    窗口；统一用 Canvas 包住后所有行始终可滚动到达。
+    """
+    canvas = tk.Canvas(window, background=COLOR_BG, highlightthickness=0, borderwidth=0)
+    scrollbar = ttk.Scrollbar(window, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    body = ttk.Frame(canvas, padding=px(padding))
+    body_window = canvas.create_window((0, 0), window=body, anchor="nw")
+
+    def scroll(event):
+        if event.delta:
+            canvas.yview_scroll(-int(event.delta / 120), "units")
+        return "break"
+
+    window.bind("<MouseWheel>", scroll)
+    canvas.bind("<MouseWheel>", scroll, add="+")
+    body.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_window, width=event.width))
+    canvas.bind("<Map>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.after_idle(lambda: canvas.configure(scrollregion=canvas.bbox("all")))
+    return body, canvas, scrollbar
+
+
+class FailureSegmentMixin(SegmentEditorMixin):
+    """脚本行级“失败后执行代码段”：识别类动作失败时先跑这段，再走失败分支。"""
+
+    def _init_failure_segment(self, action: dict) -> None:
+        # 行级代码段里还能再引用识别模块，嵌套深度从 1 起算。
+        self.segment_depth = 1
+        self.failure_segment = [
+            dict(item) for item in (action.get("failure_actions") or [])
+            if isinstance(item, dict)
+        ]
+        self.failure_segment_enabled = tk.BooleanVar(
+            value=bool(action.get("failure_segment_enabled", False)),
+        )
+
+    FAILURE_SEGMENT_LABEL = "失败后执行代码段（失败时先跑这段，再走失败分支）"
+
+    def _build_failure_segment_controls(self, parent, *, row=None, pack=False,
+                                        columnspan=2):
+        """放一行开关 + 内联代码段编辑器（与模块对象里的代码段同一套控件）。"""
+        if pack:
+            dark_checkbutton(
+                parent, text=self.FAILURE_SEGMENT_LABEL,
+                variable=self.failure_segment_enabled,
+            ).pack(anchor="w", pady=pad(8, 0))
+            self._build_segment_panel(
+                parent, None, segment_attr="failure_segment",
+                listbox_attr="failure_segment_listbox",
+                title="失败后执行的代码段", pack=True, height=4,
+            )
+            return None
+        dark_checkbutton(
+            parent, text=self.FAILURE_SEGMENT_LABEL,
+            variable=self.failure_segment_enabled,
+        ).grid(row=row, column=0, columnspan=columnspan, sticky="w", pady=pad(8, 0))
+        self._build_segment_panel(
+            parent, row + 1, segment_attr="failure_segment",
+            listbox_attr="failure_segment_listbox",
+            title="失败后执行的代码段", columnspan=columnspan, height=4,
+        )
+        return row + 2
+
+    def _failure_segment_fields(self, result: dict) -> None:
+        """写入本行失败代码段字段；未初始化时按空处理（兼容测试构造的实例）。"""
+        variable = getattr(self, "failure_segment_enabled", None)
+        segment = getattr(self, "failure_segment", None)
+        result["failure_segment_enabled"] = bool(
+            variable.get() if variable is not None else False
+        )
+        result["failure_actions"] = (
+            [dict(item) for item in segment] if isinstance(segment, list) else []
+        )
+
+
+class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
     """新增 / 编辑模块对象表单：模板图片 + 框选区域 + 行为属性。
 
     保存时校验图片、区域、识别成功后动作相关字段都有效，通过后把
@@ -3055,7 +3440,7 @@ class TemplateRegionFormDialog(ModalDialog):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        body = ttk.Frame(canvas, padding=18)
+        body = ttk.Frame(canvas, padding=px(12))
         body_window = canvas.create_window((0, 0), window=body, anchor="nw")
         self.body = body
         self._canvas = canvas
@@ -3078,13 +3463,13 @@ class TemplateRegionFormDialog(ModalDialog):
         row = 0
         ttk.Label(
             body, text="模块对象设置", foreground=COLOR_TEXT,
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=(FONT_FAMILY, 14, "bold"),
         ).grid(row=row, column=0, columnspan=2, sticky="w")
         row += 1
         ttk.Label(
             body, text="只填写当前模块需要的内容；将鼠标停在 ? 上可查看说明。",
             foreground=COLOR_MUTED,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(2, 12))
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=pad(2, 12))
         row += 1
         self.basic_section_heading = self._section_heading(body, row, "基本信息")
         row += 1
@@ -3174,9 +3559,10 @@ class TemplateRegionFormDialog(ModalDialog):
         )
         row += 1
         self.row_start_delay = self._labeled_row(
-            body, row, "开始识别前延时",
+            body, row, "进入模块前延时",
             lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
-            "仅脚本全局模块使用。脚本开始执行后先等待这段时间，再启动图片、文字或其他识别；支持 ms / s / min。",
+            "进入该模块后、开始识别前的等待毫秒数；和下面「延时」（识别成功后才等、执行动作前）不是一回事。"
+            "脚本全局模块表示脚本开始执行后先等这段再开始识别。支持 ms / s / min。",
         )
         row += 1
         self.row_fallback_module = self._labeled_row(
@@ -3345,24 +3731,21 @@ class TemplateRegionFormDialog(ModalDialog):
             listbox_attr="timeout_segment_listbox", title="未识别超时后执行的代码段",
         )
         row += 1
-        ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=(16, 0))
+        ttk.Separator(body).grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(16, 0))
         row += 1
         ttk.Label(
             body,
             text="保存后所有引用该模块的脚本自动生效。",
-            foreground=COLOR_MUTED, wraplength=560,
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(560),
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         row += 1
         buttons = ttk.Frame(body)
-        buttons.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存模块", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="保存模块", command=self.save).pack(side="right", padx=px(8))
         self._toggle_sections()
-        fit_window_to_content(
-            self, parent, minimum_width=680, minimum_height=600,
-            content_width=body.winfo_reqwidth() + self._scrollbar.winfo_reqwidth(),
-            content_height=body.winfo_reqheight() + 4,
-            align_top=True,
+        fit_scrollable_window_to_content(
+            self, parent, body, self._scrollbar, align_top=True,
         )
 
     def _build_hold_control(self, master):
@@ -3372,7 +3755,7 @@ class TemplateRegionFormDialog(ModalDialog):
             command=self._toggle_hold_control,
         ).pack(side="left")
         self.hold_entry = ttk.Entry(frame, textvariable=self.hold_var, width=14)
-        self.hold_entry.pack(side="left", padx=(10, 0))
+        self.hold_entry.pack(side="left", padx=pad(10, 0))
         return frame
 
     def _build_ocr_offset_control(self, master):
@@ -3385,7 +3768,7 @@ class TemplateRegionFormDialog(ModalDialog):
             ttk.Entry(frame, textvariable=variable, width=6).pack(side="left")
         ttk.Button(
             frame, text="拖拽选取…", command=self._pick_ocr_offset,
-        ).pack(side="left", padx=(10, 0))
+        ).pack(side="left", padx=pad(10, 0))
         return frame
 
     def _pick_ocr_offset(self):
@@ -3418,19 +3801,19 @@ class TemplateRegionFormDialog(ModalDialog):
         因直接 grid 到 body 的 (0,1) 与分类下拉重叠，故必须由工厂创建。
         """
         frame = ttk.Frame(body)
-        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        frame.columnconfigure(0, minsize=180)
+        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(10, 0))
+        frame.columnconfigure(0, minsize=px(180))
         frame.columnconfigure(1, weight=1)
         name_box = ttk.Frame(frame)
-        name_box.grid(row=0, column=0, sticky="w", padx=(0, 14))
+        name_box.grid(row=0, column=0, sticky="w", padx=pad(0, 14))
         ttk.Label(name_box, text=label).pack(side="left")
         if tip:
             help_badge = tk.Label(
                 name_box, text="?", width=2, cursor="hand2",
                 background=COLOR_BLUE_SELECTION, foreground="#EAF4FF",
-                font=("Microsoft YaHei UI", 9, "bold"), relief="flat",
+                font=(FONT_FAMILY, FONT_BODY, "bold"), relief="flat",
             )
-            help_badge.pack(side="left", padx=(6, 0))
+            help_badge.pack(side="left", padx=pad(6, 0))
             Tooltip(help_badge, tip, anchor=frame)
         control = control_factory(frame)
         control.grid(row=0, column=1, sticky="ew")
@@ -3439,12 +3822,12 @@ class TemplateRegionFormDialog(ModalDialog):
     @staticmethod
     def _section_heading(body, row: int, text: str):
         frame = ttk.Frame(body)
-        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(8, 0))
         ttk.Label(
             frame, text=text, foreground="#79BFFF",
-            font=("Microsoft YaHei UI", 11, "bold"),
+            font=(FONT_FAMILY, FONT_SUBTITLE, "bold"),
         ).pack(side="left")
-        ttk.Separator(frame).pack(side="left", fill="x", expand=True, padx=(10, 0))
+        ttk.Separator(frame).pack(side="left", fill="x", expand=True, padx=pad(10, 0))
         return frame
 
     def _image_picker_row(self, frame):
@@ -3454,10 +3837,10 @@ class TemplateRegionFormDialog(ModalDialog):
             row=0, column=0, sticky="ew",
         )
         ttk.Button(row, text="选择图片…", command=self._choose_image).grid(
-            row=0, column=1, padx=(8, 0),
+            row=0, column=1, padx=pad(8, 0),
         )
         ttk.Button(row, text="截图新建…", command=self._capture).grid(
-            row=0, column=2, padx=(8, 0),
+            row=0, column=2, padx=pad(8, 0),
         )
         return row
 
@@ -3499,7 +3882,7 @@ class TemplateRegionFormDialog(ModalDialog):
         entry.grid(row=0, column=1, sticky="we" if expand else "w")
         if button_text:
             ttk.Button(frame, text=button_text, command=command).grid(
-                row=0, column=2, padx=(8, 0), sticky="w",
+                row=0, column=2, padx=pad(8, 0), sticky="w",
             )
         return entry
 
@@ -3507,9 +3890,9 @@ class TemplateRegionFormDialog(ModalDialog):
         """Two compact numeric entries used for count plus interval settings."""
         row = ttk.Frame(frame)
         ttk.Entry(row, textvariable=first_var, width=8).grid(row=0, column=0, sticky="w")
-        ttk.Label(row, text=first_label).grid(row=0, column=1, padx=(6, 12), sticky="w")
+        ttk.Label(row, text=first_label).grid(row=0, column=1, padx=pad(6, 12), sticky="w")
         ttk.Entry(row, textvariable=second_var, width=10).grid(row=0, column=2, sticky="w")
-        ttk.Label(row, text=second_label).grid(row=0, column=3, padx=(6, 0), sticky="w")
+        ttk.Label(row, text=second_label).grid(row=0, column=3, padx=pad(6, 0), sticky="w")
         return row
 
     def _fallback_on_match_value(self) -> str:
@@ -3560,7 +3943,7 @@ class TemplateRegionFormDialog(ModalDialog):
         self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode)
         self._set_row(self.row_ignore_background, not pure and not text_mode and not number_mode and not direct_mode)
         self._set_row(self.row_interval, not pure and not direct_mode)
-        self._set_row(self.row_start_delay, category == "脚本全局模块")
+        self._set_row(self.row_start_delay, not pure)
         fallback_supported = not pure and not number_mode and not direct_mode
         self._set_row(self.row_fallback_module, fallback_supported)
         self._set_row(
@@ -3646,18 +4029,26 @@ class TemplateRegionFormDialog(ModalDialog):
 
     def _resize_for_content(self):
         # 内容在 Canvas 里滚动，窗口自身 reqsize 不再反映内容尺寸：从 body 的
-        # 实际需求尺寸计算窗口大小；超出屏幕时保持窗口不变（内容可滚动到达）。
+        # 实际需求尺寸计算窗口大小；超出显示器可用区域时封顶（内容可滚动到达）。
+        # winfo_* 返回的已经是当前 DPI 下的像素，不能再过一次 px()——那会在
+        # 200% 缩放下把窗口放大一倍并越过屏幕右下角。
         try:
             self.update_idletasks()
-            width = max(
-                self.winfo_width(),
-                self.body.winfo_reqwidth() + self._scrollbar.winfo_reqwidth(),
+            area = monitor_work_area_for(self.master)
+            width = min(
+                max(
+                    self.winfo_width(),
+                    self.body.winfo_reqwidth() + self._scrollbar.winfo_reqwidth(),
+                ),
+                max(1, int(area["width"]) - px(DIALOG_FRAME_MARGIN)),
             )
-            height = max(
-                self.winfo_height(),
-                min(self.body.winfo_reqheight() + 4, self.winfo_screenheight() - 80),
+            height = min(
+                max(self.winfo_height(), self.body.winfo_reqheight() + 4),
+                max(1, int(area["height"]) - px(DIALOG_FRAME_MARGIN)),
             )
-            self.geometry(f"{width}x{height}")
+            # 放大后仍留在同一块屏内：位置按新尺寸收进可用区域，不跳屏。
+            x, y = clamp_to_work_area(area, width, height, self.winfo_x(), self.winfo_y())
+            self.geometry(f"{width}x{height}+{x}+{y}")
         except tk.TclError:
             pass
 
@@ -3666,191 +4057,6 @@ class TemplateRegionFormDialog(ModalDialog):
         if not event.delta or isinstance(event.widget, tk.Listbox):
             return
         self._canvas.yview_scroll(-int(event.delta / 120), "units")
-
-    def _build_segment_panel(self, body, row, *, segment_attr="segment",
-                             listbox_attr="segment_listbox",
-                             title="主动作完成后执行的代码段"):
-        frame = ttk.LabelFrame(body, text=title)
-        frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        list_frame = ttk.Frame(frame)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=(6, 0))
-        listbox = tk.Listbox(
-            list_frame, background=COLOR_SURFACE, foreground=COLOR_TEXT,
-            selectbackground=COLOR_BLUE_SELECTION, height=5,
-            font=("Microsoft YaHei UI", 10), relief="flat", borderwidth=0,
-            selectmode="extended", exportselection=False,
-        )
-        setattr(self, listbox_attr, listbox)
-        listbox.pack(side="left", fill="both", expand=True)
-        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
-        scroll.pack(side="right", fill="y")
-        listbox.configure(yscrollcommand=scroll.set)
-        listbox.bind(
-            "<Double-1>",
-            lambda _event: self._edit_segment_item(segment_attr, listbox_attr),
-        )
-        listbox.bind(
-            "<Control-a>",
-            lambda _event: self._select_all_segment_items(listbox_attr),
-        )
-        buttons = ttk.Frame(frame)
-        buttons.pack(fill="x", padx=10, pady=(6, 10))
-        ttk.Button(
-            buttons, text="添加…",
-            command=lambda: self._add_segment_item(segment_attr, listbox_attr),
-        ).pack(side="left")
-        ttk.Button(
-            buttons, text="编辑",
-            command=lambda: self._edit_segment_item(segment_attr, listbox_attr),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            buttons, text="移除",
-            command=lambda: self._remove_segment_item(segment_attr, listbox_attr),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            buttons, text="上移",
-            command=lambda: self._move_segment_item(-1, segment_attr, listbox_attr),
-        ).pack(side="left", padx=(8, 0))
-        ttk.Button(
-            buttons, text="下移",
-            command=lambda: self._move_segment_item(1, segment_attr, listbox_attr),
-        ).pack(side="left", padx=(8, 0))
-        self._reload_segment_list(segment_attr, listbox_attr)
-        return frame
-
-    def _reload_segment_list(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        segment = getattr(self, segment_attr)
-        listbox = getattr(self, listbox_attr)
-        listbox.delete(0, "end")
-        for index, item in enumerate(segment):
-            listbox.insert("end", f"{index + 1}. {segment_row_label(item)}")
-            if segment_action_is_blocking(item):
-                listbox.itemconfigure(index, foreground="#F2B84B")
-
-    def _segment_selection(self, listbox_attr="segment_listbox"):
-        selection = getattr(self, listbox_attr).curselection()
-        return selection[0] if selection else None
-
-    def _select_all_segment_items(self, listbox_attr="segment_listbox"):
-        """Select every row in one of the module's internal action segments."""
-        listbox = getattr(self, listbox_attr)
-        listbox.selection_set(0, "end")
-        return "break"
-
-    def _add_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        menu = tk.Menu(self, tearoff=0)
-        target = (segment_attr, listbox_attr)
-        menu.add_command(label="延时", command=lambda: self._add_segment_delay(*target))
-        menu.add_command(label="键盘", command=lambda: self._add_segment_dialog(KeyActionDialog, *target))
-        menu.add_command(label="文本", command=lambda: self._add_segment_dialog(TextActionDialog, *target))
-        menu.add_command(label="点击", command=lambda: self._add_segment_dialog(ClickDialog, *target))
-        menu.add_command(label="连续点击", command=lambda: self._add_segment_dialog(RepeatClickDialog, *target))
-        menu.add_command(label="移动", command=lambda: self._add_segment_dialog(MouseMoveDialog, *target))
-        menu.add_command(
-            label="识别模块…", command=lambda: self._add_segment_module_ref(*target),
-            state="normal" if self.segment_depth < SEGMENT_DEPTH_LIMIT else "disabled",
-        )
-        menu.add_command(label="引用脚本", command=lambda: self._add_segment_dialog(ScriptRefDialog, *target))
-        menu.add_command(label="打开软件", command=lambda: self._add_segment_dialog(OpenAppDialog, *target))
-        menu.add_command(label="关闭软件", command=lambda: self._add_segment_dialog(CloseAppDialog, *target))
-        menu.add_command(label="提醒", command=lambda: self._add_segment_notice(*target))
-        menu.add_command(label="前置指定窗口…", command=lambda: self._add_segment_activate_window(*target))
-        menu.add_separator()
-        menu.add_command(
-            label="跳转到当前脚本最后一行",
-            command=lambda: self._add_segment_jump_current_script_last(*target),
-        )
-        menu.add_command(
-            label=END_CURRENT_SCRIPT_LABEL,
-            command=lambda: self._add_segment_end_current_script(*target),
-        )
-        if self.segment_depth >= SEGMENT_DEPTH_LIMIT:
-            menu.add_command(label="（代码段嵌套最多 8 层）", state="disabled")
-        try:
-            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
-        finally:
-            menu.grab_release()
-
-    def _append_segment(self, action: dict, segment_attr="segment",
-                        listbox_attr="segment_listbox"):
-        ensure_action_ids([action])
-        getattr(self, segment_attr).append(action)
-        self._reload_segment_list(segment_attr, listbox_attr)
-
-    def _add_segment_delay(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        value = DurationDialog(self, "添加延时", "延时时间：", 100).show()
-        if value is not None:
-            self._append_segment({"type": "delay", "ms": value}, segment_attr, listbox_attr)
-
-    def _add_segment_notice(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        text = simpledialog.askstring("添加提醒", "提示文字：", parent=self, initialvalue="")
-        if text is not None and text.strip():
-            self._append_segment({"type": "notice", "text": text.strip()}, segment_attr, listbox_attr)
-
-    def _add_segment_end_current_script(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        self._append_segment({"type": "end_current_script"}, segment_attr, listbox_attr)
-
-    def _add_segment_jump_current_script_last(self, segment_attr="segment",
-                                               listbox_attr="segment_listbox"):
-        self._append_segment({"type": "jump_current_script_last"}, segment_attr, listbox_attr)
-
-    def _add_segment_activate_window(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        selected = WindowPicker(self).show()
-        if selected:
-            self._append_segment({
-                "type": "activate_window",
-                "window": {
-                    "title": selected.title,
-                    "class_name": selected.class_name,
-                    "process_path": selected.process_path,
-                },
-            }, segment_attr, listbox_attr)
-
-    def _add_segment_dialog(self, dialog_class, segment_attr="segment", listbox_attr="segment_listbox"):
-        result = dialog_class(self, None).show()
-        if result is not None:
-            self._append_segment(result, segment_attr, listbox_attr)
-
-    def _add_segment_module_ref(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        result = ModulePickerDialog(
-            self, nested=True, segment_depth=self.segment_depth + 1,
-        ).show()
-        if result is not None:
-            self._append_segment(result, segment_attr, listbox_attr)
-
-    def _edit_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        index = self._segment_selection(listbox_attr)
-        if index is None:
-            return
-        updated = edit_action(
-            self, getattr(self, segment_attr)[index], all_actions=getattr(self, segment_attr),
-            segment_depth=self.segment_depth + 1,
-        )
-        if updated is not None:
-            getattr(self, segment_attr)[index] = updated
-            self._reload_segment_list(segment_attr, listbox_attr)
-
-    def _remove_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        selection = getattr(self, listbox_attr).curselection()
-        if not selection:
-            return
-        segment = getattr(self, segment_attr)
-        for index in sorted((int(item) for item in selection), reverse=True):
-            del segment[index]
-        self._reload_segment_list(segment_attr, listbox_attr)
-
-    def _move_segment_item(self, delta: int, segment_attr="segment", listbox_attr="segment_listbox"):
-        index = self._segment_selection(listbox_attr)
-        if index is None:
-            return
-        target = index + delta
-        segment = getattr(self, segment_attr)
-        if not 0 <= target < len(segment):
-            return
-        item = segment.pop(index)
-        segment.insert(target, item)
-        self._reload_segment_list(segment_attr, listbox_attr)
-        getattr(self, listbox_attr).selection_set(target)
 
     def _choose_image(self):
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -3973,7 +4179,7 @@ class TemplateRegionFormDialog(ModalDialog):
             canvas.create_text(
                 width // 2, 34,
                 text="点击要执行操作的位置；只记录坐标，不会点击下方窗口；Esc 取消",
-                fill="#FFFFFF", font=("Microsoft YaHei UI", 13, "bold"),
+                fill="#FFFFFF", font=(FONT_FAMILY, FONT_TITLE, "bold"),
             )
             canvas.bind("<Button-1>", self._select_click_point)
             overlay.bind("<Escape>", lambda _event: self._close_click_point_selection())
@@ -4197,7 +4403,7 @@ class TemplateRegionFormDialog(ModalDialog):
             "region": region,
             "threshold": threshold,
             "interval_ms": interval,
-            "start_delay_ms": start_delay if self.category_var.get() == "脚本全局模块" else 0,
+            "start_delay_ms": start_delay,
             "fallback_module_key": (
                 getattr(self, "fallback_module_keys", {}).get(
                     self.fallback_module_key_var.get(), self.fallback_module_key_var.get().strip(),
@@ -4347,6 +4553,9 @@ def module_manager_selection_colors(obj: dict | None) -> tuple[str, str]:
 def configure_module_tree_styles(style) -> None:
     """Clone the base Treeview layout and keep all manager variants readable."""
     base_tree_layout = style.layout("Treeview")
+    # 行高按字体实际行高算（与主窗口列表同一套算法）。写死 42 会让每行比文字
+    # 高出一倍多：10 行表格凭空多出两百多像素空白，窗口也被一并撑大。
+    rowheight = tkfont.Font(family=FONT_FAMILY, size=FONT_SUBTITLE).metrics("linespace") + px(8)
     for style_name, obj in (
         ("ModuleManagerNeutral.Treeview", None),
         ("ModuleManagerEnabled.Treeview", {"enabled": True}),
@@ -4364,8 +4573,8 @@ def configure_module_tree_styles(style) -> None:
             background=COLOR_SURFACE,
             fieldbackground=COLOR_SURFACE,
             foreground=COLOR_TEXT,
-            rowheight=42,
-            font=("Microsoft YaHei UI", 11),
+            rowheight=rowheight,
+            font=(FONT_FAMILY, FONT_SUBTITLE),
         )
         selected_fg, selected_bg = module_manager_selection_colors(obj)
         style.map(
@@ -4401,32 +4610,32 @@ class ModuleImageInventoryDialog(ModalDialog):
         self.module_tree_style = ttk.Style(self)
         configure_module_tree_styles(self.module_tree_style)
 
-        body = ttk.Frame(self, padding=18)
+        body = ttk.Frame(self, padding=px(12))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
             text="查看图片是否已被模块采用；双击已采用图片可编辑对应模块。",
-            foreground=COLOR_MUTED, wraplength=720,
+            foreground=COLOR_MUTED, wraplength=px(720),
         ).pack(anchor="w")
         directory_row = ttk.Frame(body)
-        directory_row.pack(fill="x", pady=(10, 0))
+        directory_row.pack(fill="x", pady=pad(10, 0))
         ttk.Label(directory_row, text="识图文件夹").pack(side="left")
         ttk.Entry(
             directory_row, textvariable=self.images_dir_var, state="readonly",
-        ).pack(side="left", fill="x", expand=True, padx=(10, 8))
+        ).pack(side="left", fill="x", expand=True, padx=pad(10, 8))
         ttk.Button(
             directory_row, text="选择目录…", command=self._choose_images_dir,
         ).pack(side="left")
         ttk.Button(
             directory_row, text="刷新", command=self._refresh_inventory,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         self.inventory_summary_var = tk.StringVar(value="")
         ttk.Label(
             body, textvariable=self.inventory_summary_var, foreground=COLOR_MUTED,
-        ).pack(anchor="w", pady=(5, 0))
+        ).pack(anchor="w", pady=pad(5, 0))
 
         filter_row = ttk.Frame(body)
-        filter_row.pack(fill="x", pady=(8, 2))
+        filter_row.pack(fill="x", pady=pad(8, 2))
         ttk.Label(filter_row, text="查看：", foreground=COLOR_MUTED).pack(side="left")
         for value, label in (("all", "全部图片"), ("adopted", "已采用"), ("unused", "未采用")):
             button = tk.Button(
@@ -4435,14 +4644,18 @@ class ModuleImageInventoryDialog(ModalDialog):
                 background=COLOR_BLUE_SELECTION if value == "all" else COLOR_SURFACE,
                 foreground="#FFFFFF" if value == "all" else COLOR_TEXT,
                 activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
-                relief="flat", borderwidth=0, padx=12, pady=4, cursor="hand2",
-                font=("Microsoft YaHei UI", 10),
+                relief="flat", borderwidth=0, padx=px(12), pady=px(4), cursor="hand2",
+                font=(FONT_FAMILY, FONT_BODY),
             )
-            button.pack(side="left", padx=(0, 6))
+            button.pack(side="left", padx=pad(0, 6))
             self.inventory_filter_buttons[value] = button
 
+        # 按钮行先按 side="bottom" 占位：屏幕放不下时最后挂的控件先被裁，
+        # 按钮排在列表后面就会被挤出窗口底部。
+        buttons = ttk.Frame(body)
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
         list_frame = ttk.Frame(body)
-        list_frame.pack(fill="both", expand=True, pady=(4, 0))
+        list_frame.pack(fill="both", expand=True, pady=pad(4, 0))
         tree = ttk.Treeview(
             list_frame, columns=("status", "kind"), show="tree headings", height=10,
             style="ModuleManagerNeutral.Treeview",
@@ -4450,9 +4663,9 @@ class ModuleImageInventoryDialog(ModalDialog):
         tree.heading("#0", text="图片文件")
         tree.heading("status", text="采用情况")
         tree.heading("kind", text="模块类型")
-        tree.column("#0", width=480)
-        tree.column("status", width=135, anchor="center")
-        tree.column("kind", width=150, anchor="center")
+        tree.column("#0", width=px(480))
+        tree.column("status", width=px(135), anchor="center")
+        tree.column("kind", width=px(150), anchor="center")
         tree.tag_configure("adopted", foreground="#7BC96F")
         tree.tag_configure("unused", foreground="#F2B84B")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
@@ -4464,8 +4677,6 @@ class ModuleImageInventoryDialog(ModalDialog):
         self.trees["images"] = tree
         self._apply_sort_heading(tree)
 
-        buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
         self.add_button = ttk.Button(
             buttons, text="采用为模块", command=lambda: self._open_inventory_item(require_unused=True),
         )
@@ -4473,11 +4684,11 @@ class ModuleImageInventoryDialog(ModalDialog):
         self.edit_button = ttk.Button(
             buttons, text="编辑模块", command=self._open_inventory_item,
         )
-        self.edit_button.pack(side="left", padx=(8, 0))
+        self.edit_button.pack(side="left", padx=pad(8, 0))
         ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
         self._reload_tree()
         self._update_action_buttons()
-        fit_window_to_content(self, parent, minimum_width=900, minimum_height=500)
+        fit_window_to_content(self, parent)
 
     def _apply_sort_heading(self, tree):
         arrow = "↑" if self.sort_direction == "asc" else "↓"
@@ -4631,15 +4842,20 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.sort_direction = "asc"
         self.module_tree_style = ttk.Style(self)
         configure_module_tree_styles(self.module_tree_style)
-        body = ttk.Frame(self, padding=18)
+        body = ttk.Frame(self, padding=px(12))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
             text="双击普通模块直接编辑；特殊模块为固定动作，不提供编辑设置。",
-            foreground=COLOR_MUTED, wraplength=670,
+            foreground=COLOR_MUTED, wraplength=px(670),
         ).pack(anchor="w")
+        # 按钮行先按 side="bottom" 占位再挂列表：pack 按顺序分配空间，屏幕放
+        # 不下时最后挂的控件先被裁——按钮行排在列表后面就会被挤出窗口底部。
+        buttons = ttk.Frame(body)
+        self.buttons_frame = buttons
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
         self.notebook = ttk.Notebook(body)
-        self.notebook.pack(fill="both", expand=True, pady=(10, 0))
+        self.notebook.pack(fill="both", expand=True, pady=pad(10, 0))
         for tab_key in self.TAB_KEYS:
             tab = ttk.Frame(self.notebook)
             self.notebook.add(tab, text=self._tab_label(tab_key))
@@ -4652,42 +4868,39 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._reload_trees()
         # 移除撤销栈：(key, object_dict)；"移除所选模块"后可用按钮或 Ctrl+Z 恢复。
         self._undo_stack: list[tuple[str, dict]] = []
-        buttons = ttk.Frame(body)
-        self.buttons_frame = buttons
-        buttons.pack(fill="x", pady=(12, 0))
         self.add_button = ttk.Button(buttons, text="新增模块", command=self._open_add)
         self.add_button.pack(side="left")
         self.edit_button = ttk.Button(buttons, text="编辑选中", command=self._open_edit)
-        self.edit_button.pack(side="left", padx=(8, 0))
+        self.edit_button.pack(side="left", padx=pad(8, 0))
         self.enabled_button = ttk.Button(
             buttons, text="禁用选中", command=self._toggle_selected_enabled,
         )
-        self.enabled_button.pack(side="left", padx=(8, 0))
+        self.enabled_button.pack(side="left", padx=pad(8, 0))
         self.remove_button = ttk.Button(buttons, text="移除所选模块", command=self._remove_selected)
-        self.remove_button.pack(side="left", padx=(8, 0))
+        self.remove_button.pack(side="left", padx=pad(8, 0))
         self.undo_button = ttk.Button(
             buttons, text="撤销移除", command=self._undo_remove, state="disabled",
         )
-        self.undo_button.pack(side="left", padx=(8, 0))
+        self.undo_button.pack(side="left", padx=pad(8, 0))
         self.batch_button = ttk.Button(
             buttons, text="批量加入脚本…", command=self._batch_add_selected,
         )
-        self.batch_button.pack(side="left", padx=(8, 0))
+        self.batch_button.pack(side="left", padx=pad(8, 0))
         self.batch_remove_button = ttk.Button(
             buttons, text="批量从脚本删除…", command=self._batch_remove_from_scripts,
         )
-        self.batch_remove_button.pack(side="left", padx=(8, 0))
+        self.batch_remove_button.pack(side="left", padx=pad(8, 0))
         self.reference_button = ttk.Button(
             buttons, text="查看引用位置", command=self._show_references,
         )
-        self.reference_button.pack(side="left", padx=(8, 0))
+        self.reference_button.pack(side="left", padx=pad(8, 0))
         self.remove_all_references_button = ttk.Button(
             buttons, text="删除全部引用", command=self._remove_all_references,
         )
-        self.remove_all_references_button.pack(side="left", padx=(8, 0))
+        self.remove_all_references_button.pack(side="left", padx=pad(8, 0))
         ttk.Button(
             buttons, text="图像采用情况…", command=self._open_image_inventory,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
         self.bind("<Control-z>", self._undo_remove)
         self._update_action_buttons()
@@ -4699,12 +4912,8 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._fit_window_to_content(parent)
 
     def _fit_window_to_content(self, parent):
-        """按内容实际需求重设窗口尺寸并居中（防高 DPI 下按钮行被裁掉）。
-
-        最小尺寸按 96 DPI 的需求量兜底：打包版若请求尺寸未按真实 DPI 缩放
-        （部分 DPI 时序问题），窗口也不会缩到按钮行被挤出的大小。
-        """
-        fit_window_to_content(self, parent, minimum_width=1000, minimum_height=500)
+        """按内容实际需求重设窗口尺寸并居中（防高 DPI 下按钮行被裁掉）。"""
+        fit_window_to_content(self, parent)
 
     @staticmethod
     def _tab_label(tab_key: str) -> str:
@@ -4716,7 +4925,7 @@ class TemplateRegionManagerDialog(ModalDialog):
 
     def _build_tab(self, tab_key: str, tab: ttk.Frame):
         list_frame = ttk.Frame(tab)
-        list_frame.pack(fill="both", expand=True, padx=4, pady=(4, 0))
+        list_frame.pack(fill="both", expand=True, padx=px(4), pady=pad(4, 0))
         if tab_key == "special":
             tree = ttk.Treeview(
                 list_frame, columns=("kind",), show="tree headings", height=10,
@@ -4724,7 +4933,7 @@ class TemplateRegionManagerDialog(ModalDialog):
             )
             tree.heading("#0", text="名称")
             tree.heading("kind", text="类型")
-            tree.column("#0", width=380)
+            tree.column("#0", width=px(380))
             tree.column("kind", width=90, anchor="center")
             tree.tag_configure("disabled", foreground="#707B85")
         else:
@@ -4735,9 +4944,9 @@ class TemplateRegionManagerDialog(ModalDialog):
             tree.heading("#0", text="模块名称")
             tree.heading("region", text="框选区域 (x,y,w,h)")
             tree.heading("special_actions", text="代码段特殊模块")
-            tree.column("#0", width=310)
-            tree.column("region", width=190, anchor="center")
-            tree.column("special_actions", width=420)
+            tree.column("#0", width=px(310))
+            tree.column("region", width=px(190), anchor="center")
+            tree.column("special_actions", width=px(420))
             tree.tag_configure("blocking", foreground="#F2B84B")
             tree.tag_configure("special_action", foreground="#FF8DE1")
             tree.tag_configure("disabled", foreground="#707B85")
@@ -5212,7 +5421,7 @@ class ModuleReferenceDialog(ModalDialog):
         self.on_delete_all = on_delete_all
         self.on_delete_selected = on_delete_selected
         self.position = 0
-        body = ttk.Frame(self, padding=18)
+        body = ttk.Frame(self, padding=px(12))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body, text=f"模块“{module_name}”共有 {len(self.references)} 个引用位置。",
@@ -5220,36 +5429,43 @@ class ModuleReferenceDialog(ModalDialog):
         ).pack(anchor="w")
         self.location_var = tk.StringVar()
         ttk.Label(body, textvariable=self.location_var, foreground=COLOR_MUTED).pack(
-            anchor="w", pady=(6, 8),
+            anchor="w", pady=pad(6, 8),
         )
+        # 按钮行先按 side="bottom" 占位，屏幕放不下时按钮不会被挤出窗口。
+        buttons = ttk.Frame(body)
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
+        list_frame = ttk.Frame(body)
+        list_frame.pack(fill="both", expand=True, pady=pad(4, 0))
         self.tree = ttk.Treeview(
-            body, columns=("path", "row"), show="headings", height=12,
+            list_frame, columns=("path", "row"), show="headings", height=12,
             selectmode="extended",
         )
         self.tree.heading("path", text="脚本")
         self.tree.heading("row", text="引用行")
-        self.tree.column("path", width=590)
+        self.tree.column("path", width=px(590))
         self.tree.column("row", width=90, anchor="center")
-        self.tree.pack(fill="both", expand=True)
+        # 引用可能有几十处，必须能滚动，否则超出可视行数的引用点不到。
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         for index, reference in enumerate(self.references):
             self.tree.insert(
                 "", "end", iid=str(index),
                 values=(display_path(reference["path"]), reference["index"] + 1),
             )
         self.tree.bind("<Double-1>", lambda _event: self._jump_to(self.position))
-        buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
         ttk.Button(buttons, text="上一个", command=self._previous).pack(side="left")
-        ttk.Button(buttons, text="下一个", command=self._next).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="下一个", command=self._next).pack(side="left", padx=pad(8, 0))
         ttk.Button(
             buttons, text="删除选中引用", command=self._delete_selected,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         ttk.Button(
             buttons, text="删除全部引用", command=self._delete_all,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
         self._select_current()
-        fit_window_to_content(self, parent, minimum_width=760, minimum_height=430)
+        fit_window_to_content(self, parent)
 
     def _select_current(self):
         if not self.references:
@@ -5304,6 +5520,7 @@ class BatchModuleScriptDialog(ModalDialog):
         super().__init__(parent, "批量从脚本删除" if mode == "remove" else "批量加入脚本", 700, 560)
         self.script_paths = list(script_paths)
         settings = load_app_settings()
+        # 分类列与脚本编辑器“类别”下拉框共用同一套判定（见 script_category_for_path）。
         self.script_categories = [
             script_category_for_path(path, settings) for path in self.script_paths
         ]
@@ -5316,7 +5533,7 @@ class BatchModuleScriptDialog(ModalDialog):
             }
         else:
             self.usage_counts = {}
-        body = ttk.Frame(self, padding=18)
+        body = ttk.Frame(self, padding=px(12))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
@@ -5330,10 +5547,10 @@ class BatchModuleScriptDialog(ModalDialog):
                 body,
                 text="只移除脚本中引用该模块的动作行，脚本其余内容不变。",
                 foreground=COLOR_MUTED,
-            ).pack(anchor="w", pady=(4, 0))
+            ).pack(anchor="w", pady=pad(4, 0))
         self.filter_buttons: dict[str, tk.Button] = {}
         filter_row = ttk.Frame(body)
-        filter_row.pack(fill="x", pady=(10, 0))
+        filter_row.pack(fill="x", pady=pad(10, 0))
         ttk.Label(filter_row, text="分类：", foreground=COLOR_MUTED).pack(side="left")
         for category in SCRIPT_CATEGORY_LABELS:
             count = (
@@ -5347,13 +5564,16 @@ class BatchModuleScriptDialog(ModalDialog):
                 background=COLOR_BLUE_SELECTION if category == "all" else COLOR_SURFACE,
                 foreground="#FFFFFF" if category == "all" else COLOR_TEXT,
                 activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
-                relief="flat", borderwidth=0, padx=10, pady=4, cursor="hand2",
-                font=("Microsoft YaHei UI", 10),
+                relief="flat", borderwidth=0, padx=px(10), pady=px(4), cursor="hand2",
+                font=(FONT_FAMILY, FONT_BODY),
             )
-            button.pack(side="left", padx=(0, 6))
+            button.pack(side="left", padx=pad(0, 6))
             self.filter_buttons[category] = button
+        # 按钮行先按 side="bottom" 占位，屏幕放不下时按钮不会被挤出窗口。
+        buttons = ttk.Frame(body)
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
         frame = ttk.Frame(body)
-        frame.pack(fill="both", expand=True, pady=(10, 0))
+        frame.pack(fill="both", expand=True, pady=pad(10, 0))
         self.tree = ttk.Treeview(
             frame, columns=("checked", "category", "path"), show="headings", height=16,
             selectmode="extended",
@@ -5363,7 +5583,7 @@ class BatchModuleScriptDialog(ModalDialog):
         self.tree.heading("path", text="脚本")
         self.tree.column("checked", width=60, anchor="center", stretch=False)
         self.tree.column("category", width=85, anchor="center", stretch=False)
-        self.tree.column("path", width=470)
+        self.tree.column("path", width=px(470))
         self._reload_visible_scripts()
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -5373,13 +5593,11 @@ class BatchModuleScriptDialog(ModalDialog):
         self.tree.bind("<Double-1>", self._toggle_selected)
         self.tree.bind("<space>", self._toggle_selected)
         self.tree.bind("<Control-a>", self._select_all)
-        buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
         ttk.Button(buttons, text="全选", command=self._select_all).pack(side="left")
-        ttk.Button(buttons, text="全不选", command=self._clear_all).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="全不选", command=self._clear_all).pack(side="left", padx=pad(8, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self._save).pack(side="right", padx=(0, 8))
-        fit_window_to_content(self, parent, minimum_width=680, minimum_height=500)
+        ttk.Button(buttons, text="确定", command=self._save).pack(side="right", padx=pad(0, 8))
+        fit_window_to_content(self, parent)
 
     def _count_module_usage(self, module_key: str) -> dict[int, int]:
         """Per-script count of top-level actions referencing the module."""
@@ -5520,7 +5738,7 @@ class ModulePickerDialog(ModalDialog):
         self.listboxes: dict[str, tk.Listbox] = {}
         self.empty_labels: dict[str, ttk.Label] = {}
         self.tab_special: ttk.Frame | None = None
-        body = ttk.Frame(self, padding=18)
+        body = ttk.Frame(self, padding=px(12))
         body.pack(fill="both", expand=True)
         ttk.Label(
             body,
@@ -5529,10 +5747,13 @@ class ModulePickerDialog(ModalDialog):
                   else "双击选择模块对象；这里只显示模块仓库中的工作流全局模块。"
                   if self.allowed_categories == ("workflow_global",)
                   else "双击选择模块；特殊模块为固定动作，插入后无需配置。"),
-            foreground=COLOR_MUTED, wraplength=520,
+            foreground=COLOR_MUTED, wraplength=px(520),
         ).pack(anchor="w")
+        # 按钮行先按 side="bottom" 占位，屏幕放不下时按钮不会被挤出窗口。
+        buttons = ttk.Frame(body)
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
         notebook = ttk.Notebook(body)
-        notebook.pack(fill="both", expand=True, pady=(10, 0))
+        notebook.pack(fill="both", expand=True, pady=pad(10, 0))
         if "switch" in self.allowed_categories:
             tab_switch = ttk.Frame(notebook)
             notebook.add(tab_switch, text="切换模块")
@@ -5549,18 +5770,19 @@ class ModulePickerDialog(ModalDialog):
             self.tab_special = ttk.Frame(notebook)
             notebook.add(self.tab_special, text="特殊模块")
             self._build_category_tab("special", self.tab_special)
-        buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        fit_window_to_content(self, parent, minimum_width=560, minimum_height=420)
+        fit_window_to_content(self, parent)
 
     def _build_category_tab(self, category: str, tab: ttk.Frame):
+        # 按钮行先占位（见上），列表自身带滚动条，列表再长也点得到。
+        buttons = ttk.Frame(tab)
+        buttons.pack(side="bottom", fill="x", padx=px(10), pady=pad(10, 10))
         list_frame = ttk.Frame(tab)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+        list_frame.pack(fill="both", expand=True, padx=px(10), pady=pad(10, 0))
         listbox = tk.Listbox(
             list_frame, background=COLOR_SURFACE, foreground=COLOR_TEXT,
             selectbackground=COLOR_BLUE_SELECTION,
-            font=("Microsoft YaHei UI", 11), relief="flat", borderwidth=0,
+            font=(FONT_FAMILY, FONT_SUBTITLE), relief="flat", borderwidth=0,
             selectmode="extended" if self.multi_select else "browse",
             exportselection=False,
         )
@@ -5581,17 +5803,15 @@ class ModulePickerDialog(ModalDialog):
                   else "该分类还没有模块，点“新建模块…”创建"),
             foreground=COLOR_MUTED,
         )
-        empty_label.pack(anchor="w", padx=10, pady=(6, 0))
+        empty_label.pack(anchor="w", padx=px(10), pady=pad(6, 0))
         self.empty_labels[category] = empty_label
-        buttons = ttk.Frame(tab)
-        buttons.pack(fill="x", padx=10, pady=(10, 10))
         ttk.Button(
             buttons, text="选择", command=lambda: self._choose_category(category),
         ).pack(side="left")
         if category != "special":
             ttk.Button(
                 buttons, text="新建模块…", command=lambda: self._new_object(category),
-            ).pack(side="left", padx=(8, 0))
+            ).pack(side="left", padx=pad(8, 0))
         self._refresh_category(category)
 
     def _refresh_category(self, category: str):
@@ -5619,7 +5839,7 @@ class ModulePickerDialog(ModalDialog):
         if keys:
             empty_label.pack_forget()
         else:
-            empty_label.pack(anchor="w", padx=10, pady=(6, 0))
+            empty_label.pack(anchor="w", padx=px(10), pady=pad(6, 0))
 
     def _refresh_lists(self):
         self.objects = load_module_objects()
@@ -5683,7 +5903,7 @@ class ModulePickerDialog(ModalDialog):
         self._choose_key(key, category)
 
 
-class ModuleReferenceDelayDialog(ModalDialog):
+class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
     """Replace a module reference or edit its per-reference result branches."""
 
     def __init__(self, parent, action: dict, actions: list[dict] | None = None):
@@ -5727,38 +5947,39 @@ class ModuleReferenceDelayDialog(ModalDialog):
             value="" if action.get("expected_number") is None
             else str(action.get("expected_number")),
         )
+        # 脚本行级“失败后执行代码段”：与模块对象里的超时代码段同一套编辑器。
+        self._init_failure_segment(action)
         name = str(obj.get("name") or Path(key.replace("\\", "/")).stem) if obj else Path(key.replace("\\", "/")).stem
         self.module_name = tk.StringVar(value=name or "未设置")
 
-        body = ttk.Frame(self, padding=22)
-        body.pack(fill="both", expand=True)
+        body, self._form_canvas, form_scrollbar = scrollable_dialog_body(self, padding=14)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="引用模块").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="引用模块").grid(row=0, column=0, sticky="w", pady=px(8))
         module_row = ttk.Frame(body)
-        module_row.grid(row=0, column=1, sticky="ew", pady=8)
+        module_row.grid(row=0, column=1, sticky="ew", pady=px(8))
         module_row.columnconfigure(0, weight=1)
         ttk.Label(
             module_row, textvariable=self.module_name, foreground=COLOR_MUTED,
         ).grid(row=0, column=0, sticky="w")
         ttk.Button(
             module_row, text="替换模块…", command=self.replace_reference,
-        ).grid(row=0, column=1, padx=(8, 0))
+        ).grid(row=0, column=1, padx=pad(8, 0))
         for row, (label, variable) in enumerate((
             ("进入模块前延时", self.delay),
             ("模块完成后延时", self.after_delay),
         ), start=1):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(
                 body, from_=0, to=86400000, increment=100,
                 textvariable=variable, width=12,
-            ).grid(row=row, column=1, sticky="ew", pady=8)
+            ).grid(row=row, column=1, sticky="ew", pady=px(8))
         next_row = 3
         if self.blocking_module:
             ttk.Label(body, text="阻塞超时后跳过").grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             blocking_timeout_row = ttk.Frame(body)
-            blocking_timeout_row.grid(row=next_row, column=1, sticky="ew", pady=8)
+            blocking_timeout_row.grid(row=next_row, column=1, sticky="ew", pady=px(8))
             ttk.Checkbutton(
                 blocking_timeout_row, text="启用",
                 variable=self.blocking_timeout_enabled_var,
@@ -5766,74 +5987,79 @@ class ModuleReferenceDelayDialog(ModalDialog):
             ttk.Spinbox(
                 blocking_timeout_row, from_=0, to=86400000, increment=100,
                 textvariable=self.blocking_timeout_var, width=12,
-            ).pack(side="left", padx=(10, 0))
+            ).pack(side="left", padx=pad(10, 0))
             next_row += 1
         if number_routes:
             ttk.Label(body, text="比较数字").grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             ttk.Entry(body, textvariable=self.expected_number).grid(
-                row=next_row, column=1, sticky="ew", pady=8,
+                row=next_row, column=1, sticky="ew", pady=px(8),
             )
             next_row += 1
         if result_routes:
             option_labels = tuple(label for label, _value in MODULE_RESULT_OPTIONS)
             target_labels = tuple(label for label, _action_id in self.jump_options)
             ttk.Label(body, text="数字等于时" if number_routes else "模块成功后").grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             ttk.Combobox(
                 body, textvariable=self.on_success, values=option_labels,
                 state="readonly",
-            ).grid(row=next_row, column=1, sticky="ew", pady=8)
+            ).grid(row=next_row, column=1, sticky="ew", pady=px(8))
             next_row += 1
             ttk.Label(body, text="等于后跳转到" if number_routes else "成功跳转到").grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             self.success_target_combo = ttk.Combobox(
                 body, textvariable=self.success_target, values=target_labels,
                 state="disabled",
             )
-            self.success_target_combo.grid(row=next_row, column=1, sticky="ew", pady=8)
+            self.success_target_combo.grid(row=next_row, column=1, sticky="ew", pady=px(8))
             next_row += 1
             ttk.Label(
                 body, text="数字不等于或未读取到时" if number_routes else "模块失败后",
             ).grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             ttk.Combobox(
                 body, textvariable=self.on_failure, values=option_labels,
                 state="readonly",
-            ).grid(row=next_row, column=1, sticky="ew", pady=8)
+            ).grid(row=next_row, column=1, sticky="ew", pady=px(8))
             next_row += 1
             ttk.Label(body, text="不等于后跳转到" if number_routes else "失败跳转到").grid(
-                row=next_row, column=0, sticky="w", pady=8,
+                row=next_row, column=0, sticky="w", pady=px(8),
             )
             self.failure_target_combo = ttk.Combobox(
                 body, textvariable=self.failure_target, values=target_labels,
                 state="disabled",
             )
-            self.failure_target_combo.grid(row=next_row, column=1, sticky="ew", pady=8)
+            self.failure_target_combo.grid(row=next_row, column=1, sticky="ew", pady=px(8))
             next_row += 1
             self.on_success.trace_add("write", self._update_result_target_states)
             self.on_failure.trace_add("write", self._update_result_target_states)
             self._update_result_target_states()
+        if result_routes:
+            next_row = self._build_failure_segment_controls(body, row=next_row)
         ttk.Label(
             body,
             text=(
-                "读取到数字后立即比较；等于走成功分支，不等于走失败分支。未读取到数字会按模块的阻塞和未识别时限重试，超时后走失败分支。"
+                "读取到数字后立即比较；等于走成功分支，不等于走失败分支。未读取到数字会按模块的阻塞和未识别时限重试，超时后先执行失败代码段，再走失败分支。"
                 if number_routes else
-                "结果分支只属于当前脚本行；阻塞模块还可在此单独开启“阻塞超时后跳过”。识别方式、区域、相似度、阻塞、未识别时限、点击和代码段仍在“模块管理…”统一设置。"
+                "结果分支与失败代码段只属于当前脚本行；阻塞模块还可在此单独开启“阻塞超时后跳过”。识别方式、区域、相似度、阻塞、未识别时限、点击和模块级代码段仍在“模块管理…”统一设置。"
                 if result_routes else
                 "此处只设置当前引用的进入/完成延时；检测和触发行为统一到“模块管理…”修改。"
             ),
-            foreground=COLOR_MUTED, wraplength=610,
-        ).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            foreground=COLOR_MUTED, wraplength=px(610),
+        ).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
         next_row += 1
         buttons = ttk.Frame(body)
-        buttons.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=next_row, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=(0, 8))
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=pad(0, 8))
+        fit_scrollable_window_to_content(
+            self, parent, body, form_scrollbar, align_top=True,
+        )
 
     def _update_result_target_states(self, *_args):
         if not self.result_routes_enabled:
@@ -5928,6 +6154,11 @@ class ModuleReferenceDelayDialog(ModalDialog):
                     return
         result["blocking_timeout_enabled"] = blocking_timeout_enabled
         result["blocking_timeout_ms"] = blocking_timeout_ms
+        if getattr(self, "result_routes_enabled", False):
+            self._failure_segment_fields(result)
+        else:
+            result["failure_segment_enabled"] = False
+            result["failure_actions"] = []
         if bool(getattr(self, "number_routes_enabled", False)):
             try:
                 expected_number = int(self.expected_number.get())
@@ -5970,32 +6201,32 @@ class ScriptRefDialog(ModalDialog):
         self.delay = duration_var(action.get("delay_ms", 0))
         self.after_delay = duration_var(action.get("after_delay_ms", 0))
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
 
-        ttk.Label(body, text="脚本文件").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="脚本文件").grid(row=0, column=0, sticky="w", pady=px(8))
         script_row = ttk.Frame(body)
         script_row.grid(row=0, column=1, sticky="ew")
         ttk.Entry(script_row, textvariable=self.script, state="readonly").pack(
             side="left", fill="x", expand=True,
         )
         ttk.Button(script_row, text="替换脚本…", command=self.choose).pack(
-            side="left", padx=(6, 0),
+            side="left", padx=pad(6, 0),
         )
 
-        ttk.Label(body, text="执行次数").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行次数").grid(row=1, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=1, to=999999, increment=1,
             textvariable=self.repeats, width=10,
         ).grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
         ).grid(row=2, column=1, sticky="ew")
-        ttk.Label(body, text="执行后延时").grid(row=3, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行后延时").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.after_delay, width=10,
@@ -6004,13 +6235,13 @@ class ScriptRefDialog(ModalDialog):
         ttk.Label(
             body,
             text="运行时实时读取所选脚本的最新内容；修改原脚本后，这里的引用会自动跟着更新。执行次数为每次引用动作的完整运行次数。",
-            foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(480),
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def choose(self):
         path = filedialog.askopenfilename(
@@ -6055,21 +6286,21 @@ class OpenAppDialog(ModalDialog):
         self.delay = duration_var(action.get("delay_ms", 0))
         self.after_delay = duration_var(action.get("after_delay_ms", 0))
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
 
-        ttk.Label(body, text="软件路径").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="软件路径").grid(row=0, column=0, sticky="w", pady=px(8))
         path_row = ttk.Frame(body)
         path_row.grid(row=0, column=1, sticky="ew")
         ttk.Entry(path_row, textvariable=self.path, state="readonly").pack(
             side="left", fill="x", expand=True,
         )
         ttk.Button(path_row, text="选择…", command=self.choose).pack(
-            side="left", padx=(6, 0),
+            side="left", padx=pad(6, 0),
         )
 
-        ttk.Label(body, text="启动参数").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="启动参数").grid(row=1, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.args).grid(row=1, column=1, sticky="ew")
         ttk.Label(
             body,
@@ -6077,12 +6308,12 @@ class OpenAppDialog(ModalDialog):
             foreground=COLOR_MUTED,
         ).grid(row=2, column=1, sticky="w")
 
-        ttk.Label(body, text="执行前延时").grid(row=3, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行前延时").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
         ).grid(row=3, column=1, sticky="ew")
-        ttk.Label(body, text="执行后延时").grid(row=4, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行后延时").grid(row=4, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.after_delay, width=10,
@@ -6091,13 +6322,13 @@ class OpenAppDialog(ModalDialog):
         ttk.Label(
             body,
             text="执行到这一行时会启动所选软件，然后再继续后面的动作。",
-            foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(480),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def choose(self):
         path = filedialog.askopenfilename(
@@ -6142,27 +6373,27 @@ class CloseAppDialog(ModalDialog):
         self.delay = duration_var(action.get("delay_ms", 0))
         self.after_delay = duration_var(action.get("after_delay_ms", 0))
 
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
 
-        ttk.Label(body, text="进程名").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="进程名").grid(row=0, column=0, sticky="w", pady=px(8))
         name_row = ttk.Frame(body)
         name_row.grid(row=0, column=1, sticky="ew")
         ttk.Entry(name_row, textvariable=self.name).pack(side="left", fill="x", expand=True)
         ttk.Button(name_row, text="选择…", command=self.choose).pack(
-            side="left", padx=(6, 0),
+            side="left", padx=pad(6, 0),
         )
         ttk.Label(
             body,
             text="填任务管理器里的映像名称，如 clash-verge.exe；同名的所有进程都会被结束。",
-            foreground=COLOR_MUTED, wraplength=480,
+            foreground=COLOR_MUTED, wraplength=px(480),
         ).grid(row=1, column=1, sticky="w")
 
         dark_checkbutton(
             body, "先发送关闭请求（优雅退出），超时后强制结束", self.graceful,
-        ).grid(row=2, column=1, sticky="w", pady=(10, 0))
-        ttk.Label(body, text="优雅退出等待").grid(row=3, column=0, sticky="w", pady=8)
+        ).grid(row=2, column=1, sticky="w", pady=pad(10, 0))
+        ttk.Label(body, text="优雅退出等待").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=60000, increment=100,
             textvariable=self.graceful_wait_ms, width=10,
@@ -6170,17 +6401,17 @@ class CloseAppDialog(ModalDialog):
 
         dark_checkbutton(
             body, "连同其子进程一起结束（进程树，慎用）", self.tree,
-        ).grid(row=4, column=1, sticky="w", pady=(8, 0))
+        ).grid(row=4, column=1, sticky="w", pady=pad(8, 0))
         dark_checkbutton(
             body, "普通权限结束失败时以管理员权限重试（会弹出 UAC 授权窗口）", self.elevated_retry,
-        ).grid(row=5, column=1, sticky="w", pady=(4, 0))
+        ).grid(row=5, column=1, sticky="w", pady=pad(4, 0))
 
-        ttk.Label(body, text="执行前延时").grid(row=6, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行前延时").grid(row=6, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
         ).grid(row=6, column=1, sticky="ew")
-        ttk.Label(body, text="执行后延时").grid(row=7, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行后延时").grid(row=7, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.after_delay, width=10,
@@ -6190,18 +6421,18 @@ class CloseAppDialog(ModalDialog):
             body,
             text="执行到这一行时会结束指定软件，再继续后面的动作；进程不存在时自动跳过。"
             "普通权限反复强制结束仍失败（通常是目标软件以管理员身份运行）时，会尝试以管理员权限结束并弹出 UAC 授权窗口。",
-            foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(480),
+        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
         # 固定 400 高度在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
         # 行数多、两条长说明文字在高 DPI 下换行更多，底部按钮行被挤出窗口，
         # 确定/取消按钮完全看不见。按内容实际需求重设窗口尺寸并重新居中。
-        fit_window_to_content(self, parent, minimum_width=560, minimum_height=400)
+        fit_window_to_content(self, parent)
 
     def choose(self):
         names = running_process_names()
@@ -6211,12 +6442,12 @@ class CloseAppDialog(ModalDialog):
         picker = tk.Toplevel(self)
         picker.title("选择正在运行的进程")
         picker.configure(background=COLOR_BG)
-        picker.geometry("380x420")
+        picker.geometry(f"{px(380)}x{px(420)}")
         picker.transient(self)
-        frame = ttk.Frame(picker, padding=12)
+        frame = ttk.Frame(picker, padding=px(12))
         frame.pack(fill="both", expand=True)
         listbox = tk.Listbox(
-            frame, font=("Consolas", 10),
+            frame, font=(FONT_MONO, FONT_BODY),
             background=COLOR_SURFACE, foreground=COLOR_TEXT,
             selectbackground=COLOR_BLUE_SELECTION,
             highlightthickness=1, relief="solid",
@@ -6236,9 +6467,9 @@ class CloseAppDialog(ModalDialog):
 
         listbox.bind("<Double-Button-1>", confirm)
         buttons_row = ttk.Frame(frame)
-        buttons_row.pack(fill="x", pady=(10, 0))
+        buttons_row.pack(fill="x", pady=pad(10, 0))
         ttk.Button(buttons_row, text="取消", command=picker.destroy).pack(side="right")
-        ttk.Button(buttons_row, text="确定", command=confirm).pack(side="right", padx=8)
+        ttk.Button(buttons_row, text="确定", command=confirm).pack(side="right", padx=px(8))
 
     def save(self):
         name = self.name.get().strip()
@@ -6277,7 +6508,7 @@ class ScriptDirectoriesDialog(ModalDialog):
         self.level_pack_dir = tk.StringVar(value=level_pack_dir or "scripts/关卡封装")
         self.switch_dir = tk.StringVar(value=switch_dir or "scripts/切换")
         self.direction_dir = tk.StringVar(value=direction_dir or DIRECTION_SCRIPTS_DIR)
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
         for row, (label, variable) in enumerate((
@@ -6286,23 +6517,23 @@ class ScriptDirectoriesDialog(ModalDialog):
             ("切换脚本目录", self.switch_dir),
             ("方向脚本目录", self.direction_dir),
         )):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             row_frame = ttk.Frame(body)
             row_frame.grid(row=row, column=1, sticky="ew")
             ttk.Entry(row_frame, textvariable=variable).pack(side="left", fill="x", expand=True)
             ttk.Button(
                 row_frame, text="浏览…", width=7,
                 command=lambda var=variable: self._browse(var),
-            ).pack(side="left", padx=(6, 0))
+            ).pack(side="left", padx=pad(6, 0))
         ttk.Label(
             body,
             text="脚本类别包含关卡、关卡封装、切换和方向；方向目录的脚本供快捷键绑定执行。工作流全局与脚本全局属于模块类别。可填绝对路径或相对路径。",
-            foreground=COLOR_MUTED, wraplength=480,
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(480),
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def _browse(self, variable):
         path = filedialog.askdirectory(
@@ -6344,10 +6575,10 @@ class HotkeyBindingDialog(ModalDialog):
         )
         self._capturer = None
         self._script_labels: dict[str, Path] = {}
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="快捷键").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="快捷键").grid(row=0, column=0, sticky="w", pady=px(8))
         key_row = ttk.Frame(body)
         key_row.grid(row=0, column=1, sticky="ew")
         self.key_label = ttk.Label(
@@ -6358,8 +6589,8 @@ class HotkeyBindingDialog(ModalDialog):
         ttk.Button(
             key_row, text="按下新键…", width=10,
             command=self._capture_key,
-        ).pack(side="left", padx=(8, 0))
-        ttk.Label(body, text="执行脚本").grid(row=1, column=0, sticky="w", pady=8)
+        ).pack(side="left", padx=pad(8, 0))
+        ttk.Label(body, text="执行脚本").grid(row=1, column=0, sticky="w", pady=px(8))
         script_row = ttk.Frame(body)
         script_row.grid(row=1, column=1, sticky="ew")
         self.script_box = ttk.Combobox(
@@ -6371,17 +6602,17 @@ class HotkeyBindingDialog(ModalDialog):
         ttk.Label(
             body,
             text="执行脚本只能从「scripts/方向」目录选择（下拉只显示脚本名）；按快捷键立即执行该脚本（快捷键本身不会录进当前脚本，脚本回放的按键与鼠标会被录进）。",
-            foreground=COLOR_MUTED, wraplength=500,
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(500),
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
         # 固定 300 高度在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
         # 高 DPI 下各行与说明文字的实际需求高度超过窗口，按钮行被挤出窗口。
         # 按内容实际需求重设窗口尺寸并重新居中（与仓库其他对话框一致）。
-        fit_window_to_content(self, parent, minimum_width=580, minimum_height=300)
+        fit_window_to_content(self, parent)
 
     def _refresh_script_options(self):
         root = resolve_path(DIRECTION_SCRIPTS_DIR)
@@ -6497,7 +6728,7 @@ class HotkeyScriptsDialog(ModalDialog):
     def __init__(self, parent, bindings: list[dict] | None = None):
         super().__init__(parent, "快捷键脚本", 720, 470)
         self.bindings = [dict(item) for item in (bindings or [])]
-        top = ttk.Frame(self, padding=(18, 14, 18, 6))
+        top = ttk.Frame(self, padding=pad(14, 10, 14, 5))
         top.pack(fill="x")
         ttk.Label(
             top, text="在录制或执行脚本的过程中，按下快捷键立即执行绑定的脚本。",
@@ -6506,42 +6737,42 @@ class HotkeyScriptsDialog(ModalDialog):
         ttk.Label(
             top, text="例如把 J 绑定到“转向左 90°”脚本：录制时按 J，转向操作会被录进当前脚本。",
             foreground=COLOR_MUTED,
-        ).pack(anchor="w", pady=(4, 0))
-        frame = ttk.Frame(self, padding=(18, 6, 18, 8))
+        ).pack(anchor="w", pady=pad(4, 0))
+        frame = ttk.Frame(self, padding=pad(14, 5, 14, 6))
         frame.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
             frame, columns=("key", "script"), show="headings", selectmode="browse",
         )
         self.tree.heading("key", text="快捷键")
         self.tree.heading("script", text="脚本")
-        self.tree.column("key", width=110, anchor="center")
-        self.tree.column("script", width=460, stretch=True)
+        self.tree.column("key", width=px(110), anchor="center")
+        self.tree.column("script", width=px(460), stretch=True)
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", lambda _: self._edit_selected())
         side = ttk.Frame(frame)
-        side.pack(side="left", fill="y", padx=(10, 0))
+        side.pack(side="left", fill="y", padx=pad(10, 0))
         ttk.Button(side, text="添加", command=self._add).pack(fill="x")
-        ttk.Button(side, text="编辑", command=self._edit_selected).pack(fill="x", pady=(6, 0))
-        ttk.Button(side, text="删除", command=self._remove_selected).pack(fill="x", pady=(6, 0))
-        ttk.Button(side, text="清空", command=self._clear_all).pack(fill="x", pady=(6, 0))
-        bottom = ttk.Frame(self, padding=(18, 8, 18, 14))
+        ttk.Button(side, text="编辑", command=self._edit_selected).pack(fill="x", pady=pad(6, 0))
+        ttk.Button(side, text="删除", command=self._remove_selected).pack(fill="x", pady=pad(6, 0))
+        ttk.Button(side, text="清空", command=self._clear_all).pack(fill="x", pady=pad(6, 0))
+        bottom = ttk.Frame(self, padding=pad(18, 8, 18, 14))
         bottom.pack(fill="x")
         ttk.Label(
             bottom, text="F8/F9/F12 为系统功能键，不可绑定；快捷键脚本按纯动作执行。",
             foreground=COLOR_MUTED,
         ).pack(side="left")
         ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text="保存", command=self.save).pack(side="right", padx=8)
+        ttk.Button(bottom, text="保存", command=self.save).pack(side="right", padx=px(8))
         self._render()
 
         # 固定 720×470 在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
         # 高 DPI 下列表行高、按钮和说明文字的需求尺寸都变大，底部按钮行被
         # 挤出窗口；脚本列固定 530px 也常被右侧按钮区挤出。按内容实际需求
         # 重设窗口尺寸并重新居中，脚本列随窗口拉伸（与仓库其他对话框一致）。
-        fit_window_to_content(self, parent, minimum_width=760, minimum_height=470)
+        fit_window_to_content(self, parent)
 
     def _render(self):
         self.tree.delete(*self.tree.get_children())
@@ -6604,45 +6835,47 @@ class HotkeyScriptsDialog(ModalDialog):
 
 
 class WindowPicker(ModalDialog):
-    def __init__(self, parent):
-        super().__init__(parent, "选择要绑定的窗口", 820, 520)
+    def __init__(self, parent, title: str = "选择要绑定的窗口",
+                 confirm_text: str = "绑定所选窗口"):
+        super().__init__(parent, title, 820, 520)
+        self.confirm_text = confirm_text
         self.windows: list[WindowInfo] = []
         self.search_var = tk.StringVar()
         self.dragging = False
-        top = ttk.Frame(self, padding=14)
+        top = ttk.Frame(self, padding=px(14))
         top.pack(fill="x")
         ttk.Label(top, text="搜索窗口").pack(side="left")
         entry = ttk.Entry(top, textvariable=self.search_var, width=42)
-        entry.pack(side="left", padx=10)
+        entry.pack(side="left", padx=px(10))
         entry.bind("<KeyRelease>", lambda _: self._render())
         self.drag_handle = tk.Label(
             top, text="✚", width=3, cursor="crosshair",
             background=COLOR_BLUE_SELECTION, foreground=COLOR_TEXT,
             font=("Segoe UI Symbol", 13), relief="raised", bd=1,
         )
-        self.drag_handle.pack(side="right", padx=(8, 0))
+        self.drag_handle.pack(side="right", padx=pad(8, 0))
         self.drag_handle.bind("<ButtonPress-1>", self._drag_start)
         self.drag_handle.bind("<B1-Motion>", self._drag_motion)
         self.drag_handle.bind("<ButtonRelease-1>", self._drag_release)
-        ttk.Label(top, text="按住十字拖到目标窗口后松开", foreground=COLOR_MUTED).pack(side="right", padx=(8, 0))
+        ttk.Label(top, text="按住十字拖到目标窗口后松开", foreground=COLOR_MUTED).pack(side="right", padx=pad(8, 0))
         ttk.Button(top, text="刷新", command=self.refresh).pack(side="right")
-        frame = ttk.Frame(self, padding=(14, 0, 14, 8))
+        frame = ttk.Frame(self, padding=pad(14, 0, 14, 8))
         frame.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(frame, columns=("title", "class"), show="headings", selectmode="browse")
         self.tree.heading("title", text="窗口标题")
         self.tree.heading("class", text="窗口类")
-        self.tree.column("title", width=540)
-        self.tree.column("class", width=220)
+        self.tree.column("title", width=px(540))
+        self.tree.column("class", width=px(220))
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", lambda _: self.choose())
-        bottom = ttk.Frame(self, padding=14)
+        bottom = ttk.Frame(self, padding=px(14))
         bottom.pack(fill="x")
         ttk.Label(bottom, text="仅显示当前可见且有标题的顶层窗口。", foreground=COLOR_MUTED).pack(side="left")
         ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text="绑定所选窗口", command=self.choose).pack(side="right", padx=8)
+        ttk.Button(bottom, text=self.confirm_text, command=self.choose).pack(side="right", padx=px(8))
         self.refresh()
 
     def refresh(self):
@@ -6711,27 +6944,27 @@ class KeyActionDialog(ModalDialog):
         self.delay = duration_var(action.get("delay_ms", 0))
         self.capturer: KeyCapturer | None = None
         self.capture_hint = tk.StringVar(value=KEY_HINT_DEFAULT)
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
-        ttk.Label(body, text="按键", font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="按键", font=(FONT_FAMILY, FONT_BODY, "bold")).grid(row=0, column=0, sticky="w", pady=px(8))
         key_row = ttk.Frame(body)
-        key_row.grid(row=0, column=1, sticky="ew", pady=8)
+        key_row.grid(row=0, column=1, sticky="ew", pady=px(8))
         ttk.Entry(key_row, textvariable=self.key).pack(side="left", fill="x", expand=True)
         self.capture_button = ttk.Button(key_row, text="检测按键…", command=self.start_capture)
-        self.capture_button.pack(side="left", padx=(8, 0))
+        self.capture_button.pack(side="left", padx=pad(8, 0))
         ttk.Label(body, textvariable=self.capture_hint, foreground=COLOR_MUTED).grid(row=1, column=1, sticky="w")
-        ttk.Label(body, text="动作").grid(row=2, column=0, sticky="w", pady=14)
+        ttk.Label(body, text="动作").grid(row=2, column=0, sticky="w", pady=px(14))
         box = ttk.Combobox(body, textvariable=self.mode, values=("press", "down", "up"), state="readonly")
         box.grid(row=2, column=1, sticky="ew")
-        ttk.Label(body, text="按住时长").grid(row=3, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="按住时长").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.hold).grid(row=3, column=1, sticky="ew")
-        ttk.Label(body, text="执行前延时").grid(row=4, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行前延时").grid(row=4, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.delay).grid(row=4, column=1, sticky="ew")
         body.columnconfigure(1, weight=1)
         buttons = ttk.Frame(body)
-        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def start_capture(self):
         if self.capturer is not None:
@@ -6800,11 +7033,11 @@ class MouseMoveDialog(ModalDialog):
         self.y = tk.StringVar(value=str(action.get("y", action.get("dy", 0))))
         self.delay = duration_var(action.get("delay_ms", 0))
         self.picker = None
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         labels = (("坐标模式", self.mode), ("X / ΔX", self.x), ("Y / ΔY", self.y), ("执行前延时", self.delay))
         for row, (label, variable) in enumerate(labels):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=9)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(9))
             if row == 0:
                 combo = ttk.Combobox(body, textvariable=variable, values=("absolute", "relative"), state="readonly")
                 combo.grid(row=row, column=1, sticky="ew")
@@ -6814,16 +7047,16 @@ class MouseMoveDialog(ModalDialog):
                 frame.grid(row=row, column=1, sticky="ew")
                 ttk.Entry(frame, textvariable=variable).pack(side="left", fill="x", expand=True)
                 self.pick_button = ttk.Button(frame, text="点击屏幕选取…", command=self.start_pick_position)
-                self.pick_button.pack(side="left", padx=(8, 0))
+                self.pick_button.pack(side="left", padx=pad(8, 0))
             else:
                 entry = ttk.Entry(body, textvariable=variable)
                 entry.grid(row=row, column=1, sticky="ew")
         self._update_pick_label()
         body.columnconfigure(1, weight=1)
-        buttons = ttk.Frame(self, padding=(22, 0, 22, 18))
+        buttons = ttk.Frame(self, padding=pad(22, 0, 22, 18))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def _mode_changed(self, _event=None):
         self._update_pick_label()
@@ -6900,7 +7133,7 @@ class ClickDialog(ModalDialog):
         self._x_entry = None
         self._y_entry = None
         self._pick_button = None
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         if self.kind == "mouse_button":
             values: list[tuple[str, tk.StringVar | None]] = [
@@ -6919,10 +7152,10 @@ class ClickDialog(ModalDialog):
                 text="点击鼠标当前位置（执行时不移动鼠标）",
                 variable=self.pos_mode,
                 command=self._update_pos_mode,
-            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+            ).grid(row=0, column=0, columnspan=2, sticky="w", pady=pad(0, 10))
         for row, (label, variable) in enumerate(values):
             grid_row = row + row_offset
-            ttk.Label(body, text=label).grid(row=grid_row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=grid_row, column=0, sticky="w", pady=px(8))
             if row == 0:
                 ttk.Combobox(body, textvariable=variable, values=("left", "right", "middle"), state="readonly").grid(row=grid_row, column=1, sticky="ew")
             elif self.kind == "mouse_button" and variable is None:
@@ -6936,17 +7169,17 @@ class ClickDialog(ModalDialog):
                     self._pick_button = ttk.Button(
                         frame, text="点击屏幕选取…", command=self.start_pick_position,
                     )
-                    self._pick_button.pack(side="left", padx=(8, 0))
+                    self._pick_button.pack(side="left", padx=pad(8, 0))
             else:
                 entry = ttk.Entry(body, textvariable=variable)
                 entry.grid(row=grid_row, column=1, sticky="ew")
                 if variable is self.y:
                     self._y_entry = entry
         body.columnconfigure(1, weight=1)
-        buttons = ttk.Frame(self, padding=(22, 0, 22, 18))
+        buttons = ttk.Frame(self, padding=pad(22, 0, 22, 18))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
         self._update_pos_mode()
 
     def _update_pos_mode(self, _event=None):
@@ -7024,7 +7257,7 @@ class GameSetupNoteDialog(ModalDialog):
 
     def __init__(self, parent, initial_text: str | None = None):
         super().__init__(parent, "游戏设置说明", 660, 480)
-        body = ttk.Frame(self, padding=(16, 14))
+        body = ttk.Frame(self, padding=pad(16, 14))
         body.pack(fill="both", expand=True)
         editor = ttk.Frame(body)
         editor.pack(fill="both", expand=True)
@@ -7032,8 +7265,8 @@ class GameSetupNoteDialog(ModalDialog):
             editor, wrap="word", undo=True,
             background=COLOR_SURFACE, foreground=COLOR_TEXT,
             insertbackground=COLOR_TEXT, selectbackground=COLOR_BLUE_SELECTION,
-            relief="flat", borderwidth=0, padx=10, pady=8,
-            font=("Microsoft YaHei UI", 11),
+            relief="flat", borderwidth=0, padx=px(10), pady=px(8),
+            font=(FONT_FAMILY, FONT_SUBTITLE),
         )
         scroll = ttk.Scrollbar(editor, orient="vertical", command=text.yview)
         text.configure(yscrollcommand=scroll.set)
@@ -7042,10 +7275,10 @@ class GameSetupNoteDialog(ModalDialog):
         text.insert("1.0", initial_text if initial_text is not None else DEFAULT_GAME_SETUP_NOTE)
         self.text = text
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
+        buttons.pack(fill="x", pady=pad(12, 0))
         ttk.Button(buttons, text="恢复默认", command=self._restore_default).pack(side="left")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def _restore_default(self):
         if self.text.get("1.0", "end-1c").strip() != DEFAULT_GAME_SETUP_NOTE.strip() \
@@ -7070,41 +7303,42 @@ class TurnActionDialog(ModalDialog):
         self.dx = tk.StringVar(value=str(self._source.get("dx", 0)))
         self.dy = tk.StringVar(value=str(self._source.get("dy", 0)))
         self.delay = duration_var(self._source.get("delay_ms", 0))
-        body = ttk.Frame(self, padding=(16, 14))
+        body = ttk.Frame(self, padding=pad(16, 14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="ΔX").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(body, text="ΔX").grid(row=0, column=0, sticky="w", pady=px(5))
         ttk.Entry(body, textvariable=self.dx, width=8).grid(row=0, column=1, sticky="ew")
-        ttk.Label(body, text="ΔY").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(body, text="ΔY").grid(row=1, column=0, sticky="w", pady=px(5))
         ttk.Entry(body, textvariable=self.dy, width=8).grid(row=1, column=1, sticky="ew")
-        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=px(5))
         ttk.Entry(body, textvariable=self.delay, width=8).grid(row=2, column=1, sticky="ew")
         ttk.Label(
             body,
             text="鼠标相对移动量，不按键（游戏内转向）；ΔX 正值向右，ΔY 正值向下。",
             foreground=COLOR_MUTED,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(12, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
         # 窗口尺寸按内容实际需求收敛（防高 DPI 下内容被裁掉），下限只保证
         # 不会缩得过分，不再把窗口撑出大片空白。
-        fit_window_to_content(self, parent, minimum_width=300, minimum_height=210)
+        fit_window_to_content(self, parent)
 
     def save(self):
         try:
             dx = int(self.dx.get())
             dy = int(self.dy.get())
+            delay = max(0, int(self.delay.get()))
         except ValueError:
-            show_floating_notice(self, "参数错误", "ΔX 和 ΔY 必须是整数。")
+            show_floating_notice(self, "参数错误", "ΔX、ΔY 和延时都必须是整数。")
             return
         # 基于原动作更新，保留未在对话框中展示的字段（执行后延时、步数等）。
         updated = dict(getattr(self, "_source", None) or {})
         updated["type"] = "turn"
         updated["dx"] = dx
         updated["dy"] = dy
-        updated["delay_ms"] = max(0, int(self.delay.get()))
+        updated["delay_ms"] = delay
         self.result = updated
         self.destroy()
 
@@ -7123,7 +7357,7 @@ class RepeatClickDialog(ModalDialog):
         self.hold = duration_var(action.get("hold_ms", 30))
         self.delay = duration_var(action.get("delay_ms", 1000))
         self.picker = None
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
         values = (
@@ -7136,7 +7370,7 @@ class RepeatClickDialog(ModalDialog):
             ("执行前延时", self.delay),
         )
         for row, (label, variable) in enumerate(values):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             if variable is self.button:
                 ttk.Combobox(body, textvariable=variable, values=("left", "right", "middle"),
                              state="readonly").grid(row=row, column=1, sticky="ew")
@@ -7144,16 +7378,16 @@ class RepeatClickDialog(ModalDialog):
                 frame = ttk.Frame(body)
                 frame.grid(row=row, column=1, sticky="ew")
                 ttk.Entry(frame, textvariable=variable).pack(side="left", fill="x", expand=True)
-                ttk.Button(frame, text="点击屏幕选取…", command=self.start_pick_position).pack(side="left", padx=(8, 0))
+                ttk.Button(frame, text="点击屏幕选取…", command=self.start_pick_position).pack(side="left", padx=pad(8, 0))
             elif variable is self.y:
                 entry = ttk.Entry(body, textvariable=variable)
                 entry.grid(row=row, column=1, sticky="ew")
             else:
                 ttk.Entry(body, textvariable=variable).grid(row=row, column=1, sticky="ew")
         buttons = ttk.Frame(body)
-        buttons.grid(row=len(values), column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=len(values), column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def start_pick_position(self):
         self.picker = ScreenPointPicker(
@@ -7196,25 +7430,25 @@ class TextActionDialog(ModalDialog):
         self.text_var = tk.StringVar(value=str(action.get("text", "")))
         self.char_delay = duration_var(action.get("char_delay_ms", 15))
         self.delay = duration_var(action.get("delay_ms", 0))
-        body = ttk.Frame(self, padding=22)
+        body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="文本内容").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="文本内容").grid(row=0, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.text_var).grid(row=0, column=1, sticky="ew")
-        ttk.Label(body, text="字符间隔").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="字符间隔").grid(row=1, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=10000, increment=1,
             textvariable=self.char_delay, width=10,
         ).grid(row=1, column=1, sticky="ew")
-        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
         ).grid(row=2, column=1, sticky="ew")
         buttons = ttk.Frame(body)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(18, 0))
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     def save(self):
         try:
@@ -7234,10 +7468,11 @@ class TextActionDialog(ModalDialog):
         self.destroy()
 
 
-class ImageActionDialog(ModalDialog):
+class ImageActionDialog(FailureSegmentMixin, ModalDialog):
     def __init__(self, parent, action: dict | None = None, actions: list[dict] | None = None):
         super().__init__(parent, "添加识图动作", 650, 950)
         action = action_with_live_module_binding(action)
+        self._init_failure_segment(action)
         default_on_found, default_result_notice = image_action_option_defaults(action)
         default_click_target, default_click_point = image_click_target_defaults(action)
         (default_on_timeout, default_timeout, default_delay, default_jump_row,
@@ -7311,10 +7546,9 @@ class ImageActionDialog(ModalDialog):
         self.point_overlay = None
         self.point_screenshot = None
         self.main_previous_state = "normal"
-        body = ttk.Frame(self, padding=18)
-        body.pack(fill="both", expand=True)
+        body, _form_canvas, form_scrollbar = scrollable_dialog_body(self)
         body.columnconfigure(1, weight=1)
-        ttk.Label(body, text="模板").grid(row=0, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="模板").grid(row=0, column=0, sticky="w", pady=px(8))
         template_row = ttk.Frame(body)
         template_row.grid(row=0, column=1, sticky="ew")
         self.template_combo = ttk.Combobox(
@@ -7328,12 +7562,12 @@ class ImageActionDialog(ModalDialog):
         )
         ttk.Button(
             template_row, text="选择模块…", command=self.select_image_module,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         ttk.Button(
             template_row, text="框选新建…", command=self.capture_custom_template,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         ttk.Button(template_row, text="模板区域…", command=self.open_template_region_manager).pack(
-            side="left", padx=(8, 0),
+            side="left", padx=pad(8, 0),
         )
         rows = [
             ("相似度 (0.1–1.0)", self.threshold, None),
@@ -7353,7 +7587,7 @@ class ImageActionDialog(ModalDialog):
             ("执行后延时", self.after_delay, None),
         ]
         for offset, (label, variable, options) in enumerate(rows, start=1):
-            ttk.Label(body, text=label).grid(row=offset, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=offset, column=0, sticky="w", pady=px(8))
             if variable is self.click_point:
                 point_row = ttk.Frame(body)
                 point_row.grid(row=offset, column=1, sticky="ew")
@@ -7362,7 +7596,7 @@ class ImageActionDialog(ModalDialog):
                 self.click_point_button = ttk.Button(
                     point_row, text="幕布选取…", command=self.start_click_point_selection,
                 )
-                self.click_point_button.pack(side="left", padx=(8, 0))
+                self.click_point_button.pack(side="left", padx=pad(8, 0))
             elif options or variable in (self.timeout_jump_target, self.found_jump_target):
                 combo = ttk.Combobox(body, textvariable=variable, values=options, state="readonly")
                 combo.grid(row=offset, column=1, sticky="ew")
@@ -7392,8 +7626,8 @@ class ImageActionDialog(ModalDialog):
             text="一直等待直到出现（不超时）",
             variable=self.wait_forever,
             command=self._update_wait_forever_controls,
-        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Label(body, text="备用模板").grid(row=16, column=0, sticky="w", pady=6)
+        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
+        ttk.Label(body, text="备用模板").grid(row=16, column=0, sticky="w", pady=px(6))
         fallback_row = ttk.Frame(body)
         fallback_row.grid(row=16, column=1, sticky="ew")
         self.fallback_combo = ttk.Combobox(
@@ -7402,7 +7636,7 @@ class ImageActionDialog(ModalDialog):
             state="readonly",
         )
         self.fallback_combo.pack(side="left", fill="x", expand=True)
-        ttk.Label(body, text="备用切换超时").grid(row=17, column=0, sticky="w", pady=6)
+        ttk.Label(body, text="备用切换超时").grid(row=17, column=0, sticky="w", pady=px(6))
         self.fallback_switch_entry = ttk.Entry(body, textvariable=self.fallback_switch_ms)
         self.fallback_switch_entry.grid(row=17, column=1, sticky="ew")
         self.fallback_click_button = dark_checkbutton(
@@ -7410,8 +7644,8 @@ class ImageActionDialog(ModalDialog):
             text="备用模板出现后点击它（不勾选则只检测不点击）",
             variable=self.fallback_click,
         )
-        self.fallback_click_button.grid(row=18, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(body, text="备用出现后").grid(row=19, column=0, sticky="w", pady=6)
+        self.fallback_click_button.grid(row=18, column=0, columnspan=2, sticky="w", pady=pad(6, 0))
+        ttk.Label(body, text="备用出现后").grid(row=19, column=0, sticky="w", pady=px(6))
         self.fallback_action_combo = ttk.Combobox(
             body, textvariable=self.fallback_on_match,
             values=("回到主模板的检测", "直接退出识别"), state="readonly", width=18,
@@ -7422,12 +7656,16 @@ class ImageActionDialog(ModalDialog):
             body,
             text="显示识别结果浮动提醒",
             variable=self.show_result_notice,
-        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Label(body, text="一直等待时：主模板超过切换超时未出现则改用备用模板，在模板的检测区域里识别；备用模板出现时可选是否点击，出现后回到主模板检测或直接退出识别。幕布选取只记录坐标；最小检测间隔为 50 ms。", foreground=COLOR_MUTED, wraplength=560).grid(row=21, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ).grid(row=20, column=0, columnspan=2, sticky="w", pady=pad(6, 0))
+        ttk.Label(body, text="一直等待时：主模板超过切换超时未出现则改用备用模板，在模板的检测区域里识别；备用模板出现时可选是否点击，出现后回到主模板检测或直接退出识别。幕布选取只记录坐标；最小检测间隔为 50 ms。", foreground=COLOR_MUTED, wraplength=px(560)).grid(row=21, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
+        self._build_failure_segment_controls(body, row=22)
         buttons = ttk.Frame(body)
-        buttons.grid(row=22, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=24, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_scrollable_window_to_content(
+            self, parent, body, form_scrollbar, align_top=True,
+        )
 
     def open_template_region_manager(self):
         TemplateRegionManagerDialog(self).show()
@@ -7605,7 +7843,7 @@ class ImageActionDialog(ModalDialog):
             canvas.create_text(
                 width // 2, 34,
                 text="点击要执行操作的位置；只记录坐标，不会点击下方窗口；Esc 取消",
-                fill="#FFFFFF", font=("Microsoft YaHei UI", 13, "bold"),
+                fill="#FFFFFF", font=(FONT_FAMILY, FONT_TITLE, "bold"),
             )
             canvas.bind("<Button-1>", self._select_click_point)
             overlay.bind("<Escape>", lambda _event: self._close_click_point_selection())
@@ -7737,6 +7975,7 @@ class ImageActionDialog(ModalDialog):
                 "module_key": module_key,
                 "module_category": str(module_binding.get("module_category") or "switch"),
             })
+        self._failure_segment_fields(self.result)
         main = self.master
         try:
             main.after_idle(lambda root=main: activate_main_after_modal(root))
@@ -7745,7 +7984,7 @@ class ImageActionDialog(ModalDialog):
         self.destroy()
 
 
-class OcrActionDialog(ModalDialog):
+class OcrActionDialog(FailureSegmentMixin, ModalDialog):
     """识别文字动作表单：识别区域 + 期望文字 + 找到/超时行为。
 
     OCR 每次识别约几百毫秒，适合一次性判断或慢速轮询；期望文字留空时
@@ -7760,6 +7999,7 @@ class OcrActionDialog(ModalDialog):
     def __init__(self, parent, action: dict | None = None, actions: list[dict] | None = None):
         super().__init__(parent, "识别文字动作", 650, 950)
         action = action or {}
+        self._init_failure_segment(action)
         jump_options = image_jump_target_options(actions or [])
         found_jump_options = image_found_jump_target_options(actions or [])
         self.jump_target_ids = {
@@ -7817,12 +8057,11 @@ class OcrActionDialog(ModalDialog):
             value=bool(action.get("show_result_notice", True))
         )
         self.picker = None
-        body = ttk.Frame(self, padding=18)
-        body.pack(fill="both", expand=True)
+        body, _form_canvas, form_scrollbar = scrollable_dialog_body(self)
         body.columnconfigure(1, weight=1)
 
         def combo_row(row, label, variable, options, bind=None):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             combo = ttk.Combobox(body, textvariable=variable, values=options,
                                  state="readonly")
             combo.grid(row=row, column=1, sticky="ew")
@@ -7831,21 +8070,21 @@ class OcrActionDialog(ModalDialog):
             return combo
 
         def entry_row(row, label, variable):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             entry = ttk.Entry(body, textvariable=variable)
             entry.grid(row=row, column=1, sticky="ew")
             return entry
 
         combo_row(0, "识别区域模式", self.region_mode,
                   tuple(label for label, _ in self.REGION_MODE_OPTIONS))
-        ttk.Label(body, text="识别区域 x,y,w,h").grid(row=1, column=0, sticky="w", pady=8)
+        ttk.Label(body, text="识别区域 x,y,w,h").grid(row=1, column=0, sticky="w", pady=px(8))
         region_row = ttk.Frame(body)
         region_row.grid(row=1, column=1, sticky="ew")
         self.region_entry = ttk.Entry(region_row, textvariable=self.region)
         self.region_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(
             region_row, text="框选区域…", command=self.start_region_selection,
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         entry_row(2, "期望文字（留空 = 识别到任意文字）", self.expected_text)
         combo_row(3, "匹配方式", self.match_mode,
                   tuple(label for label, _ in self.MATCH_MODE_OPTIONS))
@@ -7869,19 +8108,23 @@ class OcrActionDialog(ModalDialog):
         )
         dark_checkbutton(
             body, text="显示识别结果浮动提醒", variable=self.show_result_notice,
-        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=12, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
         ttk.Label(
             body,
             text="识别区域留空表示全屏；“绑定窗口”在播放时对绑定目标窗口的区域做识别，"
             "没有绑定窗口时回退全屏。每次识别约需几百毫秒，检测间隔不建议小于 200 ms。"
             "期望文字支持“包含 / 等于”，等于时忽略大小写与首尾空白。",
-            foreground=COLOR_MUTED, wraplength=560,
-        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            foreground=COLOR_MUTED, wraplength=px(560),
+        ).grid(row=13, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
         self._update_jump_controls()
+        self._build_failure_segment_controls(body, row=14)
         buttons = ttk.Frame(body)
-        buttons.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=16, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_scrollable_window_to_content(
+            self, parent, body, form_scrollbar, align_top=True,
+        )
 
     def _ancestors_to_hide(self):
         windows = []
@@ -7933,9 +8176,11 @@ class OcrActionDialog(ModalDialog):
             return next((v for l, v in options if l == label), fallback)
 
         try:
+            # 留空 = 全屏（与行内提示、README 一致）：空区域是合法配置，
+            # 只有填了内容才要求四个非负整数。
             region = [int(part.strip()) for part in self.region.get().split(",")
                       if part.strip()]
-            if len(region) != 4 or any(part < 0 for part in region):
+            if region and (len(region) != 4 or any(part < 0 for part in region)):
                 raise ValueError("识别区域需要四个非负整数：x,y,w,h（留空表示全屏）")
             expected_text = self.expected_text.get().strip()
             timeout = max(0, int(self.timeout.get()))
@@ -7971,6 +8216,7 @@ class OcrActionDialog(ModalDialog):
             "timeout_delay_ms": timeout_delay,
             "show_result_notice": bool(self.show_result_notice.get()),
         }
+        self._failure_segment_fields(self.result)
         main = self.master
         try:
             main.after_idle(lambda root=main: activate_main_after_modal(root))
@@ -7979,7 +8225,7 @@ class OcrActionDialog(ModalDialog):
         self.destroy()
 
 
-class OcrCompareActionDialog(ModalDialog):
+class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
     """Compare two OCR integers around a configurable separator."""
 
     BRANCH_OPTIONS = (("继续执行", "continue"), ("连续点击", "click"), ("跳转到目标动作", "jump"))
@@ -7988,6 +8234,7 @@ class OcrCompareActionDialog(ModalDialog):
     def __init__(self, parent, action: dict | None = None, actions: list[dict] | None = None):
         super().__init__(parent, "识别数字比较动作", 700, 820)
         action = action or {}
+        self._init_failure_segment(action)
         jump_options = image_jump_target_options(actions or [])
         self.jump_target_ids = dict(jump_options)
 
@@ -8029,23 +8276,22 @@ class OcrCompareActionDialog(ModalDialog):
         self.show_result_notice = tk.BooleanVar(value=bool(action.get("show_result_notice", True)))
         self.picker = None
 
-        body = ttk.Frame(self, padding=18)
-        body.pack(fill="both", expand=True)
+        body, _form_canvas, form_scrollbar = scrollable_dialog_body(self)
         body.columnconfigure(1, weight=1)
 
         def entry_row(row, label, variable, button_text=None, command=None):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             holder = ttk.Frame(body)
-            holder.grid(row=row, column=1, sticky="ew", pady=8)
+            holder.grid(row=row, column=1, sticky="ew", pady=px(8))
             holder.columnconfigure(0, weight=1)
             ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
             if button_text:
-                ttk.Button(holder, text=button_text, command=command).grid(row=0, column=1, padx=(8, 0))
+                ttk.Button(holder, text=button_text, command=command).grid(row=0, column=1, padx=pad(8, 0))
 
         def combo_row(row, label, variable, options, bind=None):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=8)
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             combo = ttk.Combobox(body, textvariable=variable, values=options, state="readonly")
-            combo.grid(row=row, column=1, sticky="ew", pady=8)
+            combo.grid(row=row, column=1, sticky="ew", pady=px(8))
             if bind:
                 combo.bind("<<ComboboxSelected>>", bind)
             return combo
@@ -8089,19 +8335,23 @@ class OcrCompareActionDialog(ModalDialog):
         )
         dark_checkbutton(
             body, text="显示识别结果浮动提醒", variable=self.show_result_notice,
-        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=14, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
         ttk.Label(
             body,
             text="识别区域和点击区域分别框选；例如识别到 12/34 时比较两侧数字。"
             "相等与不相等分支可分别连续点击或跳转到行对象。",
-            foreground=COLOR_MUTED, wraplength=620,
-        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=(12, 0))
+            foreground=COLOR_MUTED, wraplength=px(620),
+        ).grid(row=15, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         self._update_branch_controls()
         self._update_timeout_controls()
+        self._build_failure_segment_controls(body, row=16)
         buttons = ttk.Frame(body)
-        buttons.grid(row=16, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        buttons.grid(row=18, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_scrollable_window_to_content(
+            self, parent, body, form_scrollbar, align_top=True,
+        )
 
     def _ancestors_to_hide(self):
         windows = []
@@ -8220,6 +8470,7 @@ class OcrCompareActionDialog(ModalDialog):
             "timeout_jump_action_id": timeout_target,
             "show_result_notice": bool(self.show_result_notice.get()),
         }
+        self._failure_segment_fields(self.result)
         main = self.master
         try:
             main.after_idle(lambda root=main: activate_main_after_modal(root))
@@ -8254,7 +8505,7 @@ def row_list_condition_field_states(kind: str) -> dict[str, bool]:
     }
 
 
-class MultiConditionClickDialog(ModalDialog):
+class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
     """Fixed three-slot image/OCR condition click action."""
 
     CONDITION_TYPES = (("图片识别", "image"), ("OCR识别", "ocr"))
@@ -8266,6 +8517,7 @@ class MultiConditionClickDialog(ModalDialog):
     def __init__(self, parent, action: dict | None = None):
         super().__init__(parent, "多条件识图点击", 820, 760)
         action = action or {}
+        self._init_failure_segment(action)
         saved = action.get("conditions", [])
         saved = saved if isinstance(saved, list) else []
         self.picker = None
@@ -8287,7 +8539,7 @@ class MultiConditionClickDialog(ModalDialog):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        body = ttk.Frame(canvas, padding=18)
+        body = ttk.Frame(canvas, padding=px(12))
         body_window = canvas.create_window((0, 0), window=body, anchor="nw")
         self._form_canvas = canvas
 
@@ -8312,12 +8564,12 @@ class MultiConditionClickDialog(ModalDialog):
         ttk.Label(
             body,
             text="固定三个条件槽位：勾选后才参与判断；启用的条件必须全部满足，才会执行下方连续点击。",
-            foreground=COLOR_MUTED, wraplength=760,
-        ).pack(anchor="w", pady=(0, 10))
+            foreground=COLOR_MUTED, wraplength=px(760),
+        ).pack(anchor="w", pady=pad(0, 10))
         for index in range(3):
             condition = saved[index] if index < len(saved) and isinstance(saved[index], dict) else {}
-            frame = ttk.LabelFrame(body, text=f"条件 {index + 1}", padding=10)
-            frame.pack(fill="x", pady=5)
+            frame = ttk.LabelFrame(body, text=f"条件 {index + 1}", padding=px(10))
+            frame.pack(fill="x", pady=px(5))
             frame.columnconfigure(1, weight=1)
             enabled = tk.BooleanVar(value=bool(condition.get("enabled", index == 0)))
             kind = str(condition.get("type", "image"))
@@ -8347,33 +8599,33 @@ class MultiConditionClickDialog(ModalDialog):
             self.condition_relation.append(tk.StringVar(
                 value=_option_label(str(condition.get("relation", "equal")), self.RELATIONS, "相等"),
             ))
-            dark_checkbutton(frame, text="启用", variable=enabled).grid(row=0, column=0, sticky="w", padx=(0, 10))
+            dark_checkbutton(frame, text="启用", variable=enabled).grid(row=0, column=0, sticky="w", padx=pad(0, 10))
             ttk.Label(frame, text="类型").grid(row=0, column=1, sticky="w")
             type_combo = ttk.Combobox(
                 frame, textvariable=self.condition_type[-1], values=type_labels,
                 state="readonly", width=12,
             )
-            type_combo.grid(row=0, column=2, sticky="w", padx=(8, 0))
+            type_combo.grid(row=0, column=2, sticky="w", padx=pad(8, 0))
             type_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, slot=index: self._refresh_condition_fields(slot),
             )
-            ttk.Label(frame, text="识别区域 (x,y,w,h)").grid(row=1, column=0, sticky="w", pady=(8, 0))
+            ttk.Label(frame, text="识别区域 (x,y,w,h)").grid(row=1, column=0, sticky="w", pady=pad(8, 0))
             region_row = ttk.Frame(frame)
-            region_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+            region_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=pad(8, 0))
             region_row.columnconfigure(0, weight=1)
             ttk.Entry(region_row, textvariable=self.condition_region[-1]).grid(row=0, column=0, sticky="ew")
             ttk.Button(
                 region_row, text="框选区域…",
                 command=lambda slot=index: self.start_condition_region_selection(slot),
-            ).grid(row=0, column=1, padx=(8, 0))
-            ttk.Label(frame, text="图片模板").grid(row=2, column=0, sticky="w", pady=(8, 0))
+            ).grid(row=0, column=1, padx=pad(8, 0))
+            ttk.Label(frame, text="图片模板").grid(row=2, column=0, sticky="w", pady=pad(8, 0))
             template_combo = ttk.Combobox(
                 frame, textvariable=self.condition_template[-1],
                 values=registered_template_options(str(condition.get("template", ""))),
                 state="readonly", width=48,
             )
-            template_combo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+            template_combo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=pad(8, 0))
             template_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, slot=index: self.condition_module_key[slot].set(""),
@@ -8382,38 +8634,38 @@ class MultiConditionClickDialog(ModalDialog):
                 frame, text="选择模块…",
                 command=lambda slot=index: self.select_condition_module(slot),
             )
-            module_button.grid(row=2, column=3, sticky="e", padx=(8, 0), pady=(8, 0))
-            ttk.Label(frame, text="相似度").grid(row=3, column=0, sticky="w", pady=(8, 0))
+            module_button.grid(row=2, column=3, sticky="e", padx=pad(8, 0), pady=pad(8, 0))
+            ttk.Label(frame, text="相似度").grid(row=3, column=0, sticky="w", pady=pad(8, 0))
             threshold_entry = ttk.Entry(frame, textvariable=self.condition_threshold[-1], width=12)
-            threshold_entry.grid(row=3, column=1, sticky="w", pady=(8, 0))
-            ttk.Label(frame, text="OCR模式").grid(row=4, column=0, sticky="w", pady=(8, 0))
+            threshold_entry.grid(row=3, column=1, sticky="w", pady=pad(8, 0))
+            ttk.Label(frame, text="OCR模式").grid(row=4, column=0, sticky="w", pady=pad(8, 0))
             ocr_mode_combo = ttk.Combobox(
                 frame, textvariable=self.condition_ocr_mode[-1], values=ocr_mode_labels,
                 state="readonly", width=12,
             )
-            ocr_mode_combo.grid(row=4, column=1, sticky="w", pady=(8, 0))
+            ocr_mode_combo.grid(row=4, column=1, sticky="w", pady=pad(8, 0))
             ocr_mode_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, slot=index: self._refresh_condition_fields(slot),
             )
-            ttk.Label(frame, text="OCR文字").grid(row=5, column=0, sticky="w", pady=(8, 0))
+            ttk.Label(frame, text="OCR文字").grid(row=5, column=0, sticky="w", pady=pad(8, 0))
             expected_entry = ttk.Entry(frame, textvariable=self.condition_expected[-1])
-            expected_entry.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(8, 0))
-            ttk.Label(frame, text="OCR匹配").grid(row=6, column=0, sticky="w", pady=(8, 0))
+            expected_entry.grid(row=5, column=1, columnspan=2, sticky="ew", pady=pad(8, 0))
+            ttk.Label(frame, text="OCR匹配").grid(row=6, column=0, sticky="w", pady=pad(8, 0))
             match_combo = ttk.Combobox(
                 frame, textvariable=self.condition_match_mode[-1], values=match_labels,
                 state="readonly", width=12,
             )
-            match_combo.grid(row=6, column=1, sticky="w", pady=(8, 0))
-            ttk.Label(frame, text="数字分隔符").grid(row=7, column=0, sticky="w", pady=(8, 0))
+            match_combo.grid(row=6, column=1, sticky="w", pady=pad(8, 0))
+            ttk.Label(frame, text="数字分隔符").grid(row=7, column=0, sticky="w", pady=pad(8, 0))
             separator_entry = ttk.Entry(frame, textvariable=self.condition_separator[-1], width=12)
-            separator_entry.grid(row=7, column=1, sticky="w", pady=(8, 0))
-            ttk.Label(frame, text="数字关系").grid(row=7, column=2, sticky="w", padx=(20, 0), pady=(8, 0))
+            separator_entry.grid(row=7, column=1, sticky="w", pady=pad(8, 0))
+            ttk.Label(frame, text="数字关系").grid(row=7, column=2, sticky="w", padx=pad(20, 0), pady=pad(8, 0))
             relation_combo = ttk.Combobox(
                 frame, textvariable=self.condition_relation[-1], values=relation_labels,
                 state="readonly", width=12,
             )
-            relation_combo.grid(row=7, column=3, sticky="e", pady=(8, 0))
+            relation_combo.grid(row=7, column=3, sticky="e", pady=pad(8, 0))
             self.condition_field_widgets.append({
                 "image": ((template_combo, "readonly"), (module_button, "normal"),
                           (threshold_entry, "normal")),
@@ -8425,8 +8677,8 @@ class MultiConditionClickDialog(ModalDialog):
             })
             self._refresh_condition_fields(index)
 
-        click_frame = ttk.LabelFrame(body, text="满足条件后的操作", padding=10)
-        click_frame.pack(fill="x", pady=(10, 5))
+        click_frame = ttk.LabelFrame(body, text="满足条件后的操作", padding=px(10))
+        click_frame.pack(fill="x", pady=pad(10, 5))
         click_frame.columnconfigure(1, weight=1)
         self.click_region = tk.StringVar(
             value=",".join(map(str, action.get("click_region", [])))
@@ -8451,11 +8703,12 @@ class MultiConditionClickDialog(ModalDialog):
         )
         dark_checkbutton(
             click_frame, text="显示识别结果浮动提醒", variable=self.show_result_notice,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
+        self._build_failure_segment_controls(body, pack=True)
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(12, 0))
+        buttons.pack(fill="x", pady=pad(12, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
     @staticmethod
     def _parse_region(value: str, label: str) -> list[int]:
@@ -8468,19 +8721,19 @@ class MultiConditionClickDialog(ModalDialog):
         return region
 
     def _entry_row(self, parent, row, label, variable, picker=None):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=6)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=px(6))
         holder = ttk.Frame(parent)
-        holder.grid(row=row, column=1, sticky="ew", pady=6)
+        holder.grid(row=row, column=1, sticky="ew", pady=px(6))
         holder.columnconfigure(0, weight=1)
         ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
         if picker:
-            ttk.Button(holder, text="框选区域…", command=picker).grid(row=0, column=1, padx=(8, 0))
+            ttk.Button(holder, text="框选区域…", command=picker).grid(row=0, column=1, padx=pad(8, 0))
 
     @staticmethod
     def _combo_row(parent, row, label, variable, values):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=6)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=px(6))
         ttk.Combobox(parent, textvariable=variable, values=values, state="readonly").grid(
-            row=row, column=1, sticky="w", pady=6,
+            row=row, column=1, sticky="w", pady=px(6),
         )
 
     def _scroll_form(self, event):
@@ -8581,9 +8834,16 @@ class MultiConditionClickDialog(ModalDialog):
                     )
                     if enabled and not template:
                         raise ValueError(f"请设置条件 {index + 1} 的图片模板")
-                    threshold = float(self.condition_threshold[index].get())
-                    if not 0.1 <= threshold <= 1:
-                        raise ValueError("图片相似度必须在 0.1 到 1.0 之间")
+                    try:
+                        threshold = float(self.condition_threshold[index].get() or 0.85)
+                    except (TypeError, ValueError):
+                        if enabled:
+                            raise ValueError(f"条件 {index + 1} 的图片相似度必须是数字")
+                        threshold = 0.85
+                    if enabled and not 0.1 <= threshold <= 1:
+                        raise ValueError(
+                            f"条件 {index + 1} 的图片相似度必须在 0.1 到 1.0 之间"
+                        )
                     condition.update(template=template, threshold=threshold)
                     if module_binding is not None:
                         condition.update({
@@ -8635,6 +8895,7 @@ class MultiConditionClickDialog(ModalDialog):
             "on_timeout": on_timeout,
             "show_result_notice": bool(self.show_result_notice.get()),
         }
+        self._failure_segment_fields(self.result)
         try:
             self.master.after_idle(lambda root=self.master: activate_main_after_modal(root))
         except tk.TclError:
@@ -8642,7 +8903,7 @@ class MultiConditionClickDialog(ModalDialog):
         self.destroy()
 
 
-class RowListConditionClickDialog(ModalDialog):
+class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
     """Configure a click on the first list row satisfying two conditions."""
 
     CONDITION_TYPES = (("图片识别", "image"), ("文字识别", "text"), ("数字比较", "number"))
@@ -8661,6 +8922,7 @@ class RowListConditionClickDialog(ModalDialog):
         self.picker = None
         self.condition_field_widgets = {}
         self.jump_target_ids = dict(image_jump_target_options(actions or []))
+        self._init_failure_segment(action)
         list_region = action.get("list_region", [])
         self.list_region = tk.StringVar(
             value=",".join(map(str, list_region)) if len(list_region) == 4 else "",
@@ -8669,6 +8931,7 @@ class RowListConditionClickDialog(ModalDialog):
         self.right_region = tk.StringVar(value=self._absolute_region_text(action, "right_region"))
         self.click_region = tk.StringVar(value=self._absolute_region_text(action, "click_region"))
         self.row_height = tk.StringVar(value=str(action.get("row_height", "") or ""))
+        self.source_image = tk.StringVar(value=str(action.get("screenshot_path", "")))
         self.button = tk.StringVar(value=str(action.get("button", "left")))
         self.click_count = tk.StringVar(value=str(action.get("click_count", 1) or 1))
         self.no_match_action = tk.StringVar(value=_option_label(
@@ -8718,7 +8981,7 @@ class RowListConditionClickDialog(ModalDialog):
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        body = ttk.Frame(canvas, padding=12)
+        body = ttk.Frame(canvas, padding=px(12))
         body_window = canvas.create_window((0, 0), window=body, anchor="nw")
         self._form_canvas = canvas
 
@@ -8739,13 +9002,19 @@ class RowListConditionClickDialog(ModalDialog):
         self._build_condition_panel(body, "left", "左侧条件")
         self._build_condition_panel(body, "right", "右侧条件")
         self._build_action_panel(body)
+        self._build_failure_segment_controls(body, pack=True)
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=(8, 0))
+        buttons.pack(fill="x", pady=pad(8, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
         ttk.Button(
-            buttons, text="测试识别（不点击）", command=self.test_recognition,
+            buttons, text="测试当前屏幕（不点击）",
+            command=lambda: self.test_recognition("screen"),
         ).pack(side="left")
+        ttk.Button(
+            buttons, text="测试选择的图片（不点击）",
+            command=lambda: self.test_recognition("image"),
+        ).pack(side="left", padx=pad(8, 0))
 
     def _absolute_region_text(self, action: dict, key: str) -> str:
         list_region = action.get("list_region", [])
@@ -8760,8 +9029,8 @@ class RowListConditionClickDialog(ModalDialog):
         return f"{x + relative_x},{y + relative_y},{width},{height}"
 
     def _build_region_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="列表与首行区域", padding=8)
-        frame.pack(fill="x", pady=(0, 4))
+        frame = ttk.LabelFrame(parent, text="列表与首行区域", padding=px(8))
+        frame.pack(fill="x", pady=pad(0, 4))
         frame.columnconfigure(1, weight=1)
         self._entry_row(frame, 0, "列表区域 (x,y,w,h)", self.list_region, "list", "框选列表区域")
         self._entry_row(frame, 1, "左侧识别区域 (x,y,w,h)", self.left_region, "left", "框选首行左侧识别区域")
@@ -8770,9 +9039,9 @@ class RowListConditionClickDialog(ModalDialog):
             frame, 3, "点击区域 (x,y,w,h)", self.click_region, "click",
             "框选首行点击区域",
         )
-        ttk.Label(frame, text="行高（像素）").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="行高（像素）").grid(row=4, column=0, sticky="w", pady=px(3))
         row_height_holder = ttk.Frame(frame)
-        row_height_holder.grid(row=4, column=1, sticky="ew", pady=3)
+        row_height_holder.grid(row=4, column=1, sticky="ew", pady=px(3))
         row_height_holder.columnconfigure(0, weight=1)
         ttk.Entry(row_height_holder, textvariable=self.row_height).grid(
             row=0, column=0, sticky="ew",
@@ -8780,11 +9049,30 @@ class RowListConditionClickDialog(ModalDialog):
         ttk.Button(
             row_height_holder, text="框选第二行基准…",
             command=self.start_second_row_selection,
-        ).grid(row=0, column=1, padx=(8, 0))
+        ).grid(row=0, column=1, padx=pad(8, 0))
+        ttk.Label(frame, text="测试图片").grid(row=5, column=0, sticky="w", pady=px(3))
+        image_holder = ttk.Frame(frame)
+        image_holder.grid(row=5, column=1, sticky="ew", pady=px(3))
+        image_holder.columnconfigure(0, weight=1)
+        ttk.Entry(
+            image_holder, textvariable=self.source_image, state="readonly",
+        ).grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            image_holder, text="选择图片…", command=self.choose_test_image,
+        ).grid(row=0, column=1, padx=pad(8, 0))
+
+    def choose_test_image(self):
+        """Pick a full-screen image for the image-based recognition test."""
+        path = filedialog.askopenfilename(
+            parent=self, title="选择列表识别测试图片",
+            filetypes=(("图片文件", "*.png;*.jpg;*.jpeg;*.bmp"), ("所有文件", "*.*")),
+        )
+        if path:
+            self.source_image.set(path)
 
     def _build_condition_panel(self, parent, side: str, title: str):
-        frame = ttk.LabelFrame(parent, text=title, padding=8)
-        frame.pack(fill="x", pady=4)
+        frame = ttk.LabelFrame(parent, text=title, padding=px(8))
+        frame.pack(fill="x", pady=px(4))
         frame.columnconfigure(1, weight=1)
         type_var = getattr(self, f"{side}_condition_type")
         module_var = getattr(self, f"{side}_module_key")
@@ -8792,45 +9080,45 @@ class RowListConditionClickDialog(ModalDialog):
         match_var = getattr(self, f"{side}_match_mode")
         separator_var = getattr(self, f"{side}_separator")
         relation_var = getattr(self, f"{side}_relation")
-        ttk.Label(frame, text="类型").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="类型").grid(row=0, column=0, sticky="w", pady=px(3))
         type_combo = ttk.Combobox(
             frame, textvariable=type_var,
             values=tuple(label for label, _value in self.CONDITION_TYPES), state="readonly", width=12,
         )
-        type_combo.grid(row=0, column=1, sticky="w", pady=3)
+        type_combo.grid(row=0, column=1, sticky="w", pady=px(3))
         type_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_condition_fields(side))
         module_label = ttk.Label(frame, text="图片模块")
-        module_label.grid(row=1, column=0, sticky="w", pady=3)
+        module_label.grid(row=1, column=0, sticky="w", pady=px(3))
         module_row = ttk.Frame(frame)
-        module_row.grid(row=1, column=1, sticky="ew", pady=3)
+        module_row.grid(row=1, column=1, sticky="ew", pady=px(3))
         module_row.columnconfigure(0, weight=1)
         module_name_var = getattr(self, f"{side}_module_name")
         module_entry = ttk.Entry(module_row, textvariable=module_name_var, state="readonly")
         module_entry.grid(row=0, column=0, sticky="ew")
         module_button = ttk.Button(module_row, text="选择模块…", command=lambda: self.select_condition_module(side))
-        module_button.grid(row=0, column=1, padx=(8, 0))
+        module_button.grid(row=0, column=1, padx=pad(8, 0))
         expected_label = ttk.Label(frame, text="期望文字")
-        expected_label.grid(row=2, column=0, sticky="w", pady=3)
+        expected_label.grid(row=2, column=0, sticky="w", pady=px(3))
         expected_entry = ttk.Entry(frame, textvariable=expected_var)
-        expected_entry.grid(row=2, column=1, sticky="ew", pady=3)
+        expected_entry.grid(row=2, column=1, sticky="ew", pady=px(3))
         match_label = ttk.Label(frame, text="文字匹配")
-        match_label.grid(row=3, column=0, sticky="w", pady=3)
+        match_label.grid(row=3, column=0, sticky="w", pady=px(3))
         match_combo = ttk.Combobox(
             frame, textvariable=match_var,
             values=tuple(label for label, _value in self.MATCH_MODES), state="readonly", width=12,
         )
-        match_combo.grid(row=3, column=1, sticky="w", pady=3)
+        match_combo.grid(row=3, column=1, sticky="w", pady=px(3))
         separator_label = ttk.Label(frame, text="数字分隔符")
-        separator_label.grid(row=4, column=0, sticky="w", pady=3)
+        separator_label.grid(row=4, column=0, sticky="w", pady=px(3))
         separator_entry = ttk.Entry(frame, textvariable=separator_var, width=12)
-        separator_entry.grid(row=4, column=1, sticky="w", pady=3)
+        separator_entry.grid(row=4, column=1, sticky="w", pady=px(3))
         relation_label = ttk.Label(frame, text="数字关系")
-        relation_label.grid(row=5, column=0, sticky="w", pady=3)
+        relation_label.grid(row=5, column=0, sticky="w", pady=px(3))
         relation_combo = ttk.Combobox(
             frame, textvariable=relation_var,
             values=tuple(label for label, _value in self.RELATIONS), state="readonly", width=12,
         )
-        relation_combo.grid(row=5, column=1, sticky="w", pady=3)
+        relation_combo.grid(row=5, column=1, sticky="w", pady=px(3))
         self.condition_field_widgets[side] = {
             "module": ((module_label, None), (module_row, None)),
             "text": ((expected_label, None), (expected_entry, None)),
@@ -8841,55 +9129,55 @@ class RowListConditionClickDialog(ModalDialog):
         self._refresh_condition_fields(side)
 
     def _build_action_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="点击与结果分支", padding=8)
-        frame.pack(fill="x", pady=4)
+        frame = ttk.LabelFrame(parent, text="点击与结果分支", padding=px(8))
+        frame.pack(fill="x", pady=px(4))
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(3, weight=1)
-        ttk.Label(frame, text="点击按钮").grid(row=0, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="点击按钮").grid(row=0, column=0, sticky="w", pady=px(3))
         ttk.Combobox(
             frame, textvariable=self.button,
             values=("left", "right", "middle"), state="readonly", width=10,
-        ).grid(row=0, column=1, sticky="w", pady=3)
-        ttk.Label(frame, text="连续点击次数").grid(row=0, column=2, sticky="w", padx=(18, 0), pady=3)
+        ).grid(row=0, column=1, sticky="w", pady=px(3))
+        ttk.Label(frame, text="连续点击次数").grid(row=0, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
         ttk.Spinbox(
             frame, from_=1, to=9999, increment=1,
             textvariable=self.click_count, width=8,
-        ).grid(row=0, column=3, sticky="w", pady=3)
+        ).grid(row=0, column=3, sticky="w", pady=px(3))
 
         result_labels = tuple(label for label, _value in MODULE_RESULT_OPTIONS)
         target_labels = tuple(self.jump_target_ids)
-        ttk.Label(frame, text="成功后").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="成功后").grid(row=1, column=0, sticky="w", pady=px(3))
         ttk.Combobox(
             frame, textvariable=self.on_success,
             values=result_labels, state="readonly", width=18,
-        ).grid(row=1, column=1, sticky="ew", pady=3)
-        ttk.Label(frame, text="成功跳转到").grid(row=1, column=2, sticky="w", padx=(18, 0), pady=3)
+        ).grid(row=1, column=1, sticky="ew", pady=px(3))
+        ttk.Label(frame, text="成功跳转到").grid(row=1, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
         self.success_target_combo = ttk.Combobox(
             frame, textvariable=self.success_target, values=target_labels,
             state="disabled", width=28,
         )
-        self.success_target_combo.grid(row=1, column=3, sticky="ew", pady=3)
+        self.success_target_combo.grid(row=1, column=3, sticky="ew", pady=px(3))
 
-        ttk.Label(frame, text="失败后").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="失败后").grid(row=2, column=0, sticky="w", pady=px(3))
         ttk.Combobox(
             frame, textvariable=self.on_failure,
             values=result_labels, state="readonly", width=18,
-        ).grid(row=2, column=1, sticky="ew", pady=3)
-        ttk.Label(frame, text="失败跳转到").grid(row=2, column=2, sticky="w", padx=(18, 0), pady=3)
+        ).grid(row=2, column=1, sticky="ew", pady=px(3))
+        ttk.Label(frame, text="失败跳转到").grid(row=2, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
         self.failure_target_combo = ttk.Combobox(
             frame, textvariable=self.failure_target, values=target_labels,
             state="disabled", width=28,
         )
-        self.failure_target_combo.grid(row=2, column=3, sticky="ew", pady=3)
+        self.failure_target_combo.grid(row=2, column=3, sticky="ew", pady=px(3))
 
-        ttk.Label(frame, text="无匹配时").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Label(frame, text="无匹配时").grid(row=3, column=0, sticky="w", pady=px(3))
         ttk.Combobox(
             frame, textvariable=self.no_match_action,
             values=tuple(label for label, _value in self.NO_MATCH_ACTIONS), state="readonly", width=12,
-        ).grid(row=3, column=1, sticky="w", pady=3)
-        ttk.Label(frame, text="重试间隔").grid(row=3, column=2, sticky="w", padx=(18, 0), pady=3)
+        ).grid(row=3, column=1, sticky="w", pady=px(3))
+        ttk.Label(frame, text="重试间隔").grid(row=3, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
         ttk.Entry(frame, textvariable=self.retry_interval, width=12).grid(
-            row=3, column=3, sticky="w", pady=3,
+            row=3, column=3, sticky="w", pady=px(3),
         )
         self.on_success.trace_add("write", self._update_result_target_states)
         self.on_failure.trace_add("write", self._update_result_target_states)
@@ -8907,16 +9195,16 @@ class RowListConditionClickDialog(ModalDialog):
 
     def _entry_row(self, parent, row: int, label: str, variable, picker_key: str | None = None,
                    picker_tip: str = ""):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=px(3))
         holder = ttk.Frame(parent)
-        holder.grid(row=row, column=1, sticky="ew", pady=3)
+        holder.grid(row=row, column=1, sticky="ew", pady=px(3))
         holder.columnconfigure(0, weight=1)
         ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
         if picker_key:
             ttk.Button(
                 holder, text="框选区域…",
                 command=lambda: self.start_region_selection(picker_key, picker_tip),
-            ).grid(row=0, column=1, padx=(8, 0))
+            ).grid(row=0, column=1, padx=pad(8, 0))
 
     def _scroll_form(self, event):
         if not event.delta:
@@ -9086,13 +9374,14 @@ class RowListConditionClickDialog(ModalDialog):
         except (TypeError, ValueError) as exc:
             show_floating_notice(self, "参数错误", str(exc))
             return None
-        return {
+        result = {
             "type": "row_list_condition_click",
             "list_region": list_region,
             "left_region": left_region,
             "right_region": right_region,
             "click_region": click_region,
             "row_height": row_height,
+            "screenshot_path": self.source_image.get().strip(),
             "left_condition": left_condition,
             "right_condition": right_condition,
             "button": self.button.get(),
@@ -9106,11 +9395,20 @@ class RowListConditionClickDialog(ModalDialog):
             "on_timeout": on_timeout,
             "timeout_jump_action_id": timeout_jump_action_id,
         }
+        self._failure_segment_fields(result)
+        return result
 
-    def test_recognition(self):
+    def test_recognition(self, source: str = "screen"):
         action = self._build_action()
-        if action is not None and self.on_test is not None:
-            self.on_test(action)
+        if action is None:
+            return
+        if source == "image" and not self.source_image.get().strip():
+            show_floating_notice(
+                self, "缺少测试图片", "请先点「选择图片…」选一张整屏截图，再测试图片识别。",
+            )
+            return
+        if self.on_test is not None:
+            self.on_test(action, source=source)
 
     def save(self):
         action = self._build_action()
@@ -9124,642 +9422,268 @@ class RowListConditionClickDialog(ModalDialog):
         self.destroy()
 
 
-class GridLayoutEditor:
-    """Edit grid separators and lock columns by hover-preview then click."""
+class ResolutionStyleEditorDialog(ModalDialog):
+    """Edit one named display-resolution preset."""
 
-    def __init__(self, owner, region, state, on_result, image_path=""):
-        self.owner = owner
-        self.region = tuple(region) if region else None
-        self.state = state
-        self.on_result = on_result
-        self.image_path = str(image_path or "")
-        self.window = None
-        self.canvas = None
-        self.photo = None
-        self.scale = 1.0
-        self.scale_x = 1.0
-        self.scale_y = 1.0
-        self.image_size = (0, 0)
-        self.hover_column = None
-        self.image_origin = (0, 0)
-        self.selection = None
-        self.drag_start = None
-        self.selecting_region = not bool(self.region)
-        self.toolbar = None
-        self.toolbar_drag = None
-        self.history = []
-        self.redo_history = []
+    def __init__(self, parent, style: dict | None = None):
+        super().__init__(parent, "编辑分辨率样式", 500, 390)
+        style = style or {}
+        self.name = tk.StringVar(value=str(style.get("name", "")))
+        self.width = tk.StringVar(value=str(style.get("width", "1920")))
+        self.height = tk.StringVar(value=str(style.get("height", "1080")))
+        self.refresh_rate = tk.StringVar(value=str(style.get("refresh_rate", 0)))
+        self.scale_percent = tk.StringVar(value=str(style.get("scale_percent", 100)))
 
-    def show(self):
-        try:
-            if self.image_path:
-                image = Image.open(self.image_path).convert("RGB")
-                self.state["screenshot_path"] = self.image_path
-            else:
-                screen, _origin = capture_bgr(self.region or None)
-                self.image_origin = tuple(map(int, _origin))
-                image = Image.fromarray(screen[:, :, ::-1])
-                screenshot_path = IMAGES_DIR / f"grid_{uuid.uuid4().hex}.png"
-                screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-                image.save(screenshot_path)
-                self.state["screenshot_path"] = str(screenshot_path)
-            width, height = image.size
-            screen_width = max(1, int(self.owner.winfo_screenwidth()))
-            screen_height = max(1, int(self.owner.winfo_screenheight()))
-            # The selected image is the editor background. Fill the complete
-            # fullscreen canvas instead of placing it inside a smaller panel.
-            self.scale_x = screen_width / max(1, width)
-            self.scale_y = screen_height / max(1, height)
-            self.scale = self.scale_x
-            image = image.resize((screen_width, screen_height), Image.LANCZOS)
-            self.image_size = (width, height)
-            if self.image_path and self.region:
-                left, top, region_width, region_height = map(int, self.region)
-                self.selection = (left, top, left + region_width, top + region_height)
-            elif self.region and not self.image_path:
-                self.selection = (0, 0, width, height)
-            self.window = tk.Toplevel(self.owner)
-            self.window.title("编辑网格分隔线与列")
-            self.window.transient(self.owner)
-            self.window.attributes("-fullscreen", True)
-            self.window.grab_set()
-            self.photo = ImageTk.PhotoImage(image, master=self.window)
-            self.canvas = tk.Canvas(self.window, width=screen_width, height=screen_height,
-                                    highlightthickness=0, cursor="crosshair")
-            self.canvas.pack(fill="both", expand=True)
-            self.canvas.create_image(0, 0, image=self.photo, anchor="nw", tags="base")
-            self.mode = tk.StringVar(value="select_region" if self.selection is None else "select_left")
-            self._create_floating_toolbar()
-            self.canvas.bind("<Motion>", self._on_motion)
-            self.canvas.bind("<Leave>", self._on_leave)
-            self.canvas.bind("<Button-1>", self._on_click)
-            self.canvas.bind("<B1-Motion>", self._on_drag)
-            self.canvas.bind("<ButtonRelease-1>", self._on_release)
-            self.window.bind("<F11>", self._toggle_fullscreen)
-            self.window.bind("<Control-z>", self._undo)
-            self.window.bind("<Control-y>", self._redo)
-            self.window.bind("<Control-Shift-Z>", self._redo)
-            self.window.bind("<Escape>", lambda _event: self.window.attributes("-fullscreen", False))
-            self._redraw()
-        except Exception as exc:
-            show_floating_notice(self.owner, "无法编辑网格", str(exc))
-
-    def _toggle_fullscreen(self, _event=None):
-        if self.window is not None:
-            current = bool(self.window.attributes("-fullscreen"))
-            self.window.attributes("-fullscreen", not current)
-
-    def _create_floating_toolbar(self):
-        self.toolbar = tk.Toplevel(self.window)
-        self.toolbar.overrideredirect(True)
-        self.toolbar.attributes("-topmost", True)
-        self.toolbar.attributes("-alpha", 0.86)
-        self.toolbar.configure(background="#111820")
-        body = tk.Frame(self.toolbar, background="#111820", padx=6, pady=5)
-        body.pack()
-        title = tk.Label(body, text="网格编辑", foreground="#DDE8F2", background="#111820")
-        title.pack(side="left", padx=(0, 6))
-        title.bind("<ButtonPress-1>", self._toolbar_press)
-        title.bind("<B1-Motion>", self._toolbar_move)
-        for label, value in (("框选区域", "select_region"), ("左条件列", "select_left"),
-                             ("右条件列", "select_right"), ("点击列", "select_click"),
-                             ("加横线", "horizontal"), ("加竖线", "vertical")):
-            tk.Radiobutton(
-                body, text=label, variable=self.mode, value=value,
-                indicatoron=True, selectcolor="#245A88", foreground="#E8EDF2",
-                background="#111820", activebackground="#1D3140",
-                activeforeground="#FFFFFF", relief="flat", borderwidth=0,
-                command=self._redraw,
-            ).pack(side="left", padx=2)
-        tk.Button(
-            body, text="↶", command=self._undo, foreground="#FFFFFF",
-            background="#5D4A2D", activebackground="#80643D", relief="flat",
-            borderwidth=0, padx=7, width=2,
-        ).pack(side="left", padx=(8, 0))
-        tk.Button(
-            body, text="↷", command=self._redo, foreground="#FFFFFF",
-            background="#39526A", activebackground="#4D6C89", relief="flat",
-            borderwidth=0, padx=7, width=2,
-        ).pack(side="left", padx=(4, 0))
-        tk.Button(
-            body, text="确定", command=self._accept, foreground="#FFFFFF",
-            background="#2167A3", activebackground="#3187CB", relief="flat",
-            borderwidth=0, padx=10,
-        ).pack(side="left", padx=(4, 0))
-        self.toolbar.bind("<ButtonPress-1>", self._toolbar_press)
-        self.toolbar.bind("<B1-Motion>", self._toolbar_move)
-        self.toolbar.update_idletasks()
-        x = max(8, (self.window.winfo_screenwidth() - self.toolbar.winfo_width()) // 2)
-        self.toolbar.geometry(f"+{x}+12")
-
-    def _toolbar_press(self, event):
-        self.toolbar_drag = (event.x_root, event.y_root,
-                             self.toolbar.winfo_x(), self.toolbar.winfo_y())
-
-    def _toolbar_move(self, event):
-        if self.toolbar_drag is None:
-            return
-        start_x, start_y, origin_x, origin_y = self.toolbar_drag
-        self.toolbar.geometry(
-            f"+{origin_x + event.x_root - start_x}+{origin_y + event.y_root - start_y}"
-        )
-
-    def _push_history(self):
-        self.history.append({
-            "state": copy.deepcopy(self.state),
-            "region": self.region,
-            "selection": self.selection,
-        })
-        self.redo_history.clear()
-        if len(self.history) > 50:
-            self.history.pop(0)
-
-    def _snapshot(self):
-        return {
-            "state": copy.deepcopy(self.state),
-            "region": self.region,
-            "selection": self.selection,
-        }
-
-    def _restore_snapshot(self, snapshot):
-        self.state.clear()
-        self.state.update(copy.deepcopy(snapshot["state"]))
-        self.region = snapshot["region"]
-        self.selection = snapshot["selection"]
-        self.hover_column = None
-        self._redraw()
-
-    def _undo(self, _event=None):
-        if not self.history:
-            return "break"
-        self.redo_history.append(self._snapshot())
-        previous = self.history.pop()
-        self._restore_snapshot(previous)
-        return "break"
-
-    def _redo(self, _event=None):
-        if not self.redo_history:
-            return "break"
-        self.history.append(self._snapshot())
-        next_state = self.redo_history.pop()
-        self._restore_snapshot(next_state)
-        return "break"
-
-    def _scaled(self, value):
-        return round(int(value) * self.scale_x)
-
-    def _scaled_y(self, value):
-        return round(int(value) * self.scale_y)
-
-    def _column_at(self, x):
-        if self.selection is None:
-            return None
-        start_x, _start_y, end_x, _end_y = self.selection
-        x -= start_x
-        width = end_x - start_x
-        boundaries = [0, *sorted(self.state["vertical_lines"]), width]
-        for index in range(len(boundaries) - 1):
-            if boundaries[index] <= x < boundaries[index + 1]:
-                return index
-        return None
-
-    def _on_motion(self, event):
-        if self.mode.get() == "select_region":
-            return
-        self.hover_column = self._column_at(event.x / self.scale_x)
-        self._redraw()
-
-    def _on_leave(self, _event):
-        self.hover_column = None
-        self._redraw()
-
-    def _on_click(self, event):
-        x = event.x / self.scale_x
-        y = event.y / self.scale_y
-        mode = self.mode.get()
-        if mode == "select_region":
-            self.drag_start = (x, y)
-            return
-        if self.selection is None:
-            return
-        start_x, start_y, end_x, end_y = self.selection
-        local_x, local_y = x - start_x, y - start_y
-        if mode == "horizontal":
-            _width, height = end_x - start_x, end_y - start_y
-            if 0 < local_y < height:
-                line = round(local_y)
-                if line not in self.state["horizontal_lines"]:
-                    self._push_history()
-                    self.state["horizontal_lines"] = sorted({*self.state["horizontal_lines"], line})
-        elif mode == "vertical":
-            width, _height = end_x - start_x, end_y - start_y
-            if 0 < local_x < width:
-                line = round(local_x)
-                if line not in self.state["vertical_lines"]:
-                    self._push_history()
-                    self.state["vertical_lines"] = sorted({*self.state["vertical_lines"], line})
-        else:
-            column = self._column_at(x)
-            if column is not None:
-                key = {"select_left": "left_column", "select_right": "right_column",
-                       "select_click": "click_column"}[mode]
-                if self.state.get(key) != column:
-                    self._push_history()
-                    self.state[key] = column
-        self._redraw()
-
-    def _on_drag(self, event):
-        if self.mode.get() != "select_region" or self.drag_start is None:
-            return
-        x = max(0, min(self.image_size[0], event.x / self.scale_x))
-        y = max(0, min(self.image_size[1], event.y / self.scale_y))
-        self.selection = (*self.drag_start, x, y)
-        self._redraw()
-
-    def _on_release(self, event):
-        if self.mode.get() != "select_region" or self.drag_start is None:
-            return
-        x = max(0, min(self.image_size[0], event.x / self.scale_x))
-        y = max(0, min(self.image_size[1], event.y / self.scale_y))
-        x1, y1 = self.drag_start
-        left, right = sorted((round(x1), round(x)))
-        top, bottom = sorted((round(y1), round(y)))
-        self.drag_start = None
-        if right - left > 2 and bottom - top > 2:
-            self._push_history()
-            self.selection = (left, top, right, bottom)
-            self.state["horizontal_lines"] = []
-            self.state["vertical_lines"] = []
-            self.state["left_column"] = None
-            self.state["right_column"] = None
-            self.state["click_column"] = None
-            ox, oy = self.image_origin
-            self.region = (ox + left, oy + top, right - left, bottom - top)
-        self.mode.set("select_left")
-        self._redraw()
-
-    def _redraw(self):
-        if self.canvas is None:
-            return
-        self.canvas.delete("grid")
-        width, height = self.image_size
-        if self.selection is None:
-            return
-        start_x, start_y, end_x, end_y = self.selection
-        width, height = end_x - start_x, end_y - start_y
-        columns = len(self.state["vertical_lines"]) + 1
-        locked = {
-            self.state.get("left_column"): "#3A8DDE",
-            self.state.get("right_column"): "#D98A32",
-            self.state.get("click_column"): "#50B878",
-        }
-        for column, color in locked.items():
-            if column is None:
-                continue
-            boundaries = [0, *sorted(self.state["vertical_lines"]), width]
-            self.canvas.create_rectangle(
-                self._scaled(start_x + boundaries[column]), self._scaled_y(start_y),
-                self._scaled(start_x + boundaries[column + 1]), self._scaled_y(start_y + height),
-                fill=color, stipple="gray25", outline="", tags="grid",
+        body = ttk.Frame(self, padding=px(14))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        for row, label, variable in (
+            (0, "样式名称", self.name),
+            (1, "宽度", self.width),
+            (2, "高度", self.height),
+            (3, "刷新率", self.refresh_rate),
+        ):
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
+            ttk.Entry(body, textvariable=variable, width=18).grid(
+                row=row, column=1, sticky="ew", pady=px(8),
             )
-        if self.hover_column is not None:
-            boundaries = [0, *sorted(self.state["vertical_lines"]), width]
-            self.canvas.create_rectangle(
-                self._scaled(start_x + boundaries[self.hover_column]), self._scaled_y(start_y),
-                self._scaled(start_x + boundaries[self.hover_column + 1]), self._scaled_y(start_y + height),
-                outline="#FFFFFF", width=3, tags="grid",
-            )
-        for line in self.state["horizontal_lines"]:
-            self.canvas.create_line(self._scaled(start_x), self._scaled_y(start_y + line),
-                                    self._scaled(start_x + width), self._scaled_y(start_y + line),
-                                    fill="#FF4F5E", width=2, tags="grid")
-        for line in self.state["vertical_lines"]:
-            self.canvas.create_line(self._scaled(start_x + line), self._scaled_y(start_y),
-                                    self._scaled(start_x + line), self._scaled_y(start_y + height),
-                                    fill="#FF4F5E", width=2, tags="grid")
-        self.canvas.create_rectangle(
-            self._scaled(start_x), self._scaled_y(start_y),
-            self._scaled(end_x), self._scaled_y(end_y),
-            outline="#59B7FF", width=2, tags="grid",
+        ttk.Label(body, text="缩放").grid(row=4, column=0, sticky="w", pady=px(8))
+        scale_row = ttk.Frame(body)
+        scale_row.grid(row=4, column=1, sticky="w", pady=px(8))
+        ttk.Combobox(
+            scale_row,
+            textvariable=self.scale_percent,
+            values=[str(value) for value in SUPPORTED_SCALE_PERCENTS],
+            state="readonly", width=16,
+        ).pack(side="left")
+        ttk.Label(scale_row, text="%", foreground=COLOR_MUTED).pack(
+            side="left", padx=pad(6, 0),
         )
+        ttk.Label(
+            body, text="刷新率填 0 表示沿用当前显示器的刷新率；缩放默认 100%。",
+            foreground=COLOR_MUTED,
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_window_to_content(self, parent)
 
-    def _accept(self):
-        if self.window is not None:
-            if self.toolbar is not None:
-                self.toolbar.destroy()
-                self.toolbar = None
-            self.window.grab_release()
-            self.window.destroy()
-            self.window = None
-        if self.selection is not None and self.region is None:
-            ox, oy = self.image_origin
-            left, top, right, bottom = self.selection
-            self.region = (ox + round(left), oy + round(top), round(right - left), round(bottom - top))
-        self.state["selected_region"] = list(self.region) if self.region else []
-        self.on_result(self.state)
-
-
-class GridRowConditionClickDialog(ModalDialog):
-    """Configure a grid-split row scanner with hover-and-click column locking."""
-
-    CONDITION_TYPES = (("图片匹配", "image"), ("文字识别", "text"), ("数字比较", "number"))
-    MATCH_MODES = (("包含", "contains"), ("完全相等", "equals"))
-    RELATIONS = (("相等", "equal"), ("不相等", "not_equal"))
-    BUTTON_LABELS = (("左键", "left"), ("右键", "right"), ("中键", "middle"))
-
-    def __init__(self, parent, action=None, on_test=None):
-        super().__init__(parent, "网格逐行条件点击", 760, 680)
-        action = action or {}
-        self.on_test = on_test
-        region = action.get("grid_region", [])
-        self.grid_region = tk.StringVar(value=",".join(map(str, region)) if len(region) == 4 else "")
-        region = list(region) if len(region) == 4 else ["", "", "", ""]
-        self.region_vars = {name: tk.StringVar(value=str(value)) for name, value in zip(("x", "y", "w", "h"), region)}
-        self.source_image = tk.StringVar(value=str(action.get("screenshot_path", "")))
-        self.condition_widgets = {}
-        for side in ("left", "right"):
-            condition = action.get(f"{side}_condition") or {}
-            setattr(self, f"{side}_type", tk.StringVar(value=_option_label(
-                str(condition.get("type", "number" if side == "left" else "image")),
-                self.CONDITION_TYPES, "数字比较",
-            )))
-            setattr(self, f"{side}_module_key", tk.StringVar(value=str(condition.get("module_key", ""))))
-            setattr(self, f"{side}_module_name", tk.StringVar(value=module_display_name(str(condition.get("module_key", "")))))
-            setattr(self, f"{side}_expected", tk.StringVar(value=str(condition.get("expected_text", ""))))
-            setattr(self, f"{side}_match", tk.StringVar(value=_option_label(str(condition.get("match_mode", "contains")), self.MATCH_MODES, "包含")))
-            setattr(self, f"{side}_separator", tk.StringVar(value=str(condition.get("separator", "/"))))
-            setattr(self, f"{side}_relation", tk.StringVar(value=_option_label(str(condition.get("relation", "not_equal")), self.RELATIONS, "不相等")))
-        self.button = tk.StringVar(value=str(action.get("button", "left")))
-        self.click_count = tk.StringVar(value=str(action.get("click_count", 1)))
-        self.state = {
-            "screenshot_path": str(action.get("screenshot_path", "")),
-            "horizontal_lines": _parse_grid_int_list(action.get("horizontal_lines", [])),
-            "vertical_lines": _parse_grid_int_list(action.get("vertical_lines", [])),
-            "left_column": action.get("left_column"),
-            "right_column": action.get("right_column"),
-            "click_column": action.get("click_column"),
-        }
-        frame = ttk.Frame(self, padding=14)
-        frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
-        frame.columnconfigure(3, weight=1)
-        ttk.Label(frame, text="总区域").grid(row=0, column=0, sticky="w", pady=4)
-        for index, name in enumerate(("x", "y", "w", "h")):
-            column = 1 + (index % 2) * 2
-            ttk.Label(frame, text=name).grid(row=0, column=column, sticky="e", padx=(8, 4), pady=4)
-            ttk.Entry(frame, textvariable=self.region_vars[name], width=8).grid(row=0, column=column + 1, sticky="ew", pady=4)
-        ttk.Button(frame, text="框选总区域", command=self._pick_region, width=12).grid(row=1, column=0, padx=(0, 8), pady=4)
-        ttk.Button(frame, text="选择图片", command=self._choose_image, width=12).grid(row=1, column=1, sticky="w", pady=4)
-        self.grid_status = tk.StringVar(value=self._state_text())
-        ttk.Label(frame, textvariable=self.grid_status, foreground=COLOR_MUTED).grid(
-            row=2, column=0, columnspan=4, sticky="w", pady=4,
-        )
-        ttk.Label(frame, textvariable=self.source_image, foreground=COLOR_MUTED).grid(
-            row=3, column=0, columnspan=4, sticky="w", pady=(2, 4),
-        )
-        ttk.Button(frame, text="编辑截图网格…", command=self._edit_grid).grid(
-            row=4, column=0, columnspan=4, sticky="w", pady=8,
-        )
-        self._build_condition_panel(frame, "left", 5, "左条件")
-        self._build_condition_panel(frame, "right", 5, "右条件")
-        ttk.Label(frame, text="点击按钮").grid(row=6, column=0, sticky="w", pady=5)
-        self.button.set(_option_label(self.button.get(), self.BUTTON_LABELS, "左键"))
-        ttk.Combobox(frame, textvariable=self.button,
-                     values=tuple(label for label, _value in self.BUTTON_LABELS), state="readonly", width=12).grid(row=6, column=1, sticky="w", pady=5)
-        ttk.Label(frame, text="连续点击次数").grid(row=6, column=2, sticky="e", padx=(8, 4), pady=5)
-        ttk.Entry(frame, textvariable=self.click_count, width=12).grid(row=6, column=3, sticky="w", pady=5)
-        self.test_state = tk.StringVar(value="未测试")
-        ttk.Label(frame, textvariable=self.test_state, foreground=COLOR_MUTED).grid(row=7, column=0, columnspan=4, sticky="w", pady=(0, 4))
-        buttons = ttk.Frame(frame)
-        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(12, 0))
-        self.test_button = ttk.Button(buttons, text="测试识别（不点击）", command=self._test)
-        self.test_button.pack(side="left")
-        self.cancel_button = ttk.Button(buttons, text="取消", command=self._cancel_test_or_close)
-        self.cancel_button.pack(side="right")
-        self.save_button = ttk.Button(buttons, text="保存动作", command=self.save)
-        self.save_button.pack(side="right", padx=8)
-
-    def _state_text(self):
-        return (f"横线 {len(self.state['horizontal_lines'])} 条，竖线 {len(self.state['vertical_lines'])} 条；"
-                f"左列={format_grid_column_label(self.state.get('left_column'))}，"
-                f"右列={format_grid_column_label(self.state.get('right_column'))}，"
-                f"点击列={format_grid_column_label(self.state.get('click_column'))}")
-
-    def _grid_region(self):
-        if hasattr(self, "region_vars"):
-            return parse_named_region({name: var.get() for name, var in self.region_vars.items()})
-        return parse_named_region(self.grid_region.get())
-
-    def _set_grid_region(self, region):
-        values = parse_named_region(region)
-        if hasattr(self, "region_vars"):
-            for name, value in zip(("x", "y", "w", "h"), values):
-                self.region_vars[name].set(str(value))
-        self.grid_region.set(",".join(map(str, values)))
-
-    def _pick_region(self):
-        ScreenRegionPicker(self, self.master,
-                           self._set_grid_region,
-                           hidden_windows=[], tip_text="框选网格总区域").start()
-
-    def _choose_image(self):
-        path = filedialog.askopenfilename(
-            parent=self, title="选择网格底图",
-            filetypes=(("图片文件", "*.png;*.jpg;*.jpeg;*.bmp"), ("所有文件", "*.*")),
-        )
-        if path:
-            self.source_image.set(path)
-            self.state["screenshot_path"] = path
-
-    def _edit_grid(self):
+    def save(self):
         try:
-            if hasattr(self, "region_vars"):
-                self.grid_region.set(",".join(self.region_vars[name].get().strip() for name in ("x", "y", "w", "h")))
-            raw = [int(value.strip()) for value in self.grid_region.get().split(",")] if self.grid_region.get().strip() else []
-            region = raw if len(raw) == 4 and raw[2] > 0 and raw[3] > 0 else None
-            if region is None and not self.source_image.get().strip():
-                # No prior region is needed: the editor will capture the full screen
-                # and let the user drag-select the total area inside the screenshot.
-                region = None
-            GridLayoutEditor(
-                self, region, self.state, self._apply_grid,
-                image_path=self.source_image.get().strip(),
-            ).show()
-        except (TypeError, ValueError):
-            show_floating_notice(self, "参数错误", "请先填写有效的网格总区域")
-
-    def _apply_grid(self, state):
-        self.state = state
-        selected_region = state.get("selected_region")
-        if isinstance(selected_region, list) and len(selected_region) == 4 and selected_region[2] > 0:
-            self._set_grid_region(selected_region)
-        self.grid_status.set(self._state_text())
-
-    def _build_condition_panel(self, parent, side, row, title):
-        box = ttk.LabelFrame(parent, text=title, padding=8)
-        column = 0 if side == "left" else 2
-        box.grid(row=row, column=column, columnspan=2, sticky="nsew",
-                 padx=(0, 8) if side == "left" else (8, 0), pady=6)
-        box.columnconfigure(1, weight=1)
-        type_var = getattr(self, f"{side}_type")
-        ttk.Label(box, text="类型").grid(row=0, column=0, sticky="w", pady=3)
-        combo = ttk.Combobox(box, textvariable=type_var,
-                             values=tuple(label for label, _value in self.CONDITION_TYPES),
-                             state="readonly", width=12)
-        combo.grid(row=0, column=1, sticky="w", pady=3)
-        fields = {}
-        module_row = ttk.Frame(box)
-        ttk.Label(box, text="图片模块").grid(row=1, column=0, sticky="w", pady=3)
-        module_row.grid(row=1, column=1, columnspan=2, sticky="ew", pady=3)
-        module_row.columnconfigure(0, weight=1)
-        ttk.Entry(module_row, textvariable=getattr(self, f"{side}_module_name"), state="readonly").grid(row=0, column=0, sticky="ew")
-        ttk.Button(module_row, text="选择模块…", command=lambda: self._select_module(side)).grid(row=0, column=1, padx=6)
-        fields["module"] = (box.grid_slaves(row=1),)
-        ttk.Label(box, text="期望文字").grid(row=2, column=0, sticky="w", pady=3)
-        expected = ttk.Entry(box, textvariable=getattr(self, f"{side}_expected"))
-        expected.grid(row=2, column=1, columnspan=2, sticky="ew", pady=3)
-        fields["text"] = (box.grid_slaves(row=2),)
-        ttk.Label(box, text="匹配方式").grid(row=3, column=0, sticky="w", pady=3)
-        match = ttk.Combobox(box, textvariable=getattr(self, f"{side}_match"), values=tuple(label for label, _value in self.MATCH_MODES), state="readonly", width=12)
-        match.grid(row=3, column=1, sticky="w", pady=3)
-        fields["match"] = (box.grid_slaves(row=3),)
-        ttk.Label(box, text="数字分隔符").grid(row=4, column=0, sticky="w", pady=3)
-        separator = ttk.Entry(box, textvariable=getattr(self, f"{side}_separator"), width=10)
-        separator.grid(row=4, column=1, sticky="w", pady=3)
-        fields["separator"] = (box.grid_slaves(row=4),)
-        ttk.Label(box, text="数字关系").grid(row=5, column=0, sticky="w", pady=3)
-        relation = ttk.Combobox(box, textvariable=getattr(self, f"{side}_relation"), values=tuple(label for label, _value in self.RELATIONS), state="readonly", width=12)
-        relation.grid(row=5, column=1, sticky="w", pady=3)
-        fields["relation"] = (box.grid_slaves(row=5),)
-        self.condition_widgets[side] = fields
-        combo.bind("<<ComboboxSelected>>", lambda _event, current=side: self._refresh_condition(current))
-        self._refresh_condition(side)
-
-    def _refresh_condition(self, side):
-        kind = _option_value(getattr(self, f"{side}_type").get(), self.CONDITION_TYPES, "number")
-        visible = condition_field_visibility(kind)
-        next_row = 1
-        for key, groups in self.condition_widgets[side].items():
-            for group in groups:
-                for widget in group:
-                    if key in visible:
-                        widget.grid_configure(row=next_row)
-                    else:
-                        widget.grid_remove()
-            if key in visible:
-                next_row += 1
-
-    def _select_module(self, side):
-        binding = choose_module_binding(self, categories=("switch",))
-        if binding:
-            key = str(binding["module_key"])
-            getattr(self, f"{side}_module_key").set(key)
-            getattr(self, f"{side}_module_name").set(module_display_name(key, registered_module_object(key)))
-
-    def _condition_value(self, side):
-        kind = _option_value(getattr(self, f"{side}_type").get(), self.CONDITION_TYPES, "number")
-        if kind == "image":
-            key = getattr(self, f"{side}_module_key").get().strip()
-            if not key:
-                raise ValueError(f"请选择{side}侧图片模块")
-            return {"type": "image", "module_key": key}
-        if kind == "text":
-            return {"type": "text", "expected_text": getattr(self, f"{side}_expected").get(),
-                    "match_mode": _option_value(getattr(self, f"{side}_match").get(), self.MATCH_MODES, "contains")}
-        return {"type": "number", "separator": getattr(self, f"{side}_separator").get().strip() or "/",
-                "relation": _option_value(getattr(self, f"{side}_relation").get(), self.RELATIONS, "not_equal")}
-
-    def _build_action(self):
-        try:
-            region = self._grid_region()
-            if any(value is None for value in (self.state.get("left_column"), self.state.get("right_column"), self.state.get("click_column"))):
-                raise ValueError("请在截图网格中锁定左条件列、右条件列和点击列")
-            count = int(self.click_count.get())
-            if not 1 <= count <= 9999:
-                raise ValueError("连续点击次数必须是 1 到 9999")
-            left_condition = self._condition_value("left")
-            right_condition = self._condition_value("right")
-        except (TypeError, ValueError) as exc:
+            self.result = normalize_resolution_style({
+                "name": self.name.get(),
+                "width": self.width.get(),
+                "height": self.height.get(),
+                "refresh_rate": self.refresh_rate.get(),
+                "scale_percent": self.scale_percent.get(),
+            })
+        except ValueError as exc:
             show_floating_notice(self, "参数错误", str(exc))
-            return None
-        return {
-            "type": "grid_row_condition_click", "grid_region": region,
-            "screenshot_path": (
-                self.state.get("screenshot_path", "").strip()
-                or self.source_image.get().strip()
-            ),
-            "horizontal_lines": list(self.state["horizontal_lines"]),
-            "vertical_lines": list(self.state["vertical_lines"]),
-            "left_column": int(self.state["left_column"]),
-            "right_column": int(self.state["right_column"]),
-            "click_column": int(self.state["click_column"]),
-            "left_condition": left_condition,
-            "right_condition": right_condition,
-            "button": _option_value(self.button.get(), self.BUTTON_LABELS, "left"), "click_count": count,
-        }
-
-    def _test(self):
-        if self.test_state.get() == "正在测试…":
-            return
-        action = self._build_action()
-        if not action or not self.on_test:
-            return
-        self._test_generation = getattr(self, "_test_generation", 0) + 1
-        token = self._test_generation
-        self.test_cancel_event = threading.Event()
-        self.test_state.set("正在测试…")
-        self.test_button.configure(state="disabled")
-        self.save_button.configure(state="disabled")
-        self.cancel_button.configure(text="取消测试", state="normal")
-        try:
-            self.on_test(
-                action,
-                lambda result=None, error=None, elapsed_ms=0, cancelled=False: self._test_complete(
-                    token, result, error, elapsed_ms, cancelled,
-                ),
-                self.test_cancel_event,
-            )
-        except Exception as exc:
-            self._test_complete(token, None, exc, 0)
-
-    def _test_complete(self, token, result=None, error=None, elapsed_ms=0, cancelled=False):
-        if not test_callback_is_current(
-                getattr(self, "_test_generation", 0), token,
-                getattr(self, "_destroyed", False)):
-            return
-        if cancelled or self.test_cancel_event.is_set():
-            self.test_state.set("已取消")
-        else:
-            self.test_state.set(format_test_result(result, error, elapsed_ms))
-        self.test_button.configure(state="normal")
-        self.save_button.configure(state="normal")
-        self.cancel_button.configure(text="取消", state="normal")
-
-    def _cancel_test_or_close(self):
-        if self.test_state.get() == "正在测试…":
-            self._test_generation += 1
-            self.test_cancel_event.set()
-            self.test_state.set("已取消")
-            self.test_button.configure(state="normal")
-            self.save_button.configure(state="normal")
-            self.cancel_button.configure(text="取消", state="normal")
             return
         self.destroy()
 
-    def destroy(self):
-        if not getattr(self, "_destroyed", False):
-            self._destroyed = True
-            self._test_generation = getattr(self, "_test_generation", 0) + 1
-            event = getattr(self, "test_cancel_event", None)
-            if event is not None:
-                event.set()
-        super().destroy()
+
+class ResolutionStylesDialog(ModalDialog):
+    """Manage the named display-resolution presets stored in app settings."""
+
+    def __init__(self, parent, settings: dict | None = None):
+        super().__init__(parent, "分辨率样式设置", 680, 480)
+        self.styles = resolution_styles_from_settings(settings)
+
+        body = ttk.Frame(self, padding=px(16))
+        body.pack(fill="both", expand=True)
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+        ttk.Label(
+            body,
+            text="动作会从这里读取样式；样式保存为动作快照，之后修改本列表不会改变已有动作。",
+            foreground=COLOR_MUTED, wraplength=px(620),
+        ).grid(row=0, column=0, sticky="w", pady=pad(0, 10))
+        self.tree = ttk.Treeview(
+            body, columns=("name", "size", "refresh", "scale"), show="headings", height=10,
+        )
+        for column, title, width in (
+            ("name", "名称", 260), ("size", "分辨率", 140),
+            ("refresh", "刷新率", 110), ("scale", "缩放", 90),
+        ):
+            self.tree.heading(column, text=title)
+            self.tree.column(column, width=width, anchor="w")
+        self.tree.grid(row=1, column=0, sticky="nsew")
+        self.tree.bind("<Double-1>", lambda _event: self.edit())
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=2, column=0, sticky="ew", pady=pad(10, 0))
+        ttk.Button(buttons, text="新增", command=self.add).pack(side="left")
+        ttk.Button(buttons, text="编辑", command=self.edit).pack(side="left", padx=pad(6, 0))
+        ttk.Button(buttons, text="删除", command=self.remove).pack(side="left", padx=pad(6, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=pad(0, 8))
+        self._refresh_tree()
+
+    def _refresh_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for index, style in enumerate(self.styles):
+            refresh = f"{style['refresh_rate']} Hz" if style["refresh_rate"] else "沿用当前"
+            scale = f"{style['scale_percent']}%"
+            self.tree.insert(
+                "", "end", iid=str(index),
+                values=(style["name"], f"{style['width']}×{style['height']}", refresh, scale),
+            )
+
+    def _selected_index(self) -> int | None:
+        selected = self.tree.selection()
+        if not selected:
+            return None
+        try:
+            index = int(selected[0])
+        except ValueError:
+            return None
+        return index if 0 <= index < len(self.styles) else None
+
+    def add(self):
+        result = ResolutionStyleEditorDialog(self).show()
+        if result is None:
+            return
+        if any(str(item["name"]).casefold() == str(result["name"]).casefold() for item in self.styles):
+            show_floating_notice(self, "名称重复", "请使用不同的样式名称。")
+            return
+        self.styles.append(result)
+        self._refresh_tree()
+
+    def edit(self):
+        index = self._selected_index()
+        if index is None:
+            show_floating_notice(self, "编辑样式", "请先选择一个样式。")
+            return
+        result = ResolutionStyleEditorDialog(self, self.styles[index]).show()
+        if result is None:
+            return
+        if any(
+            other != index and str(item["name"]).casefold() == str(result["name"]).casefold()
+            for other, item in enumerate(self.styles)
+        ):
+            show_floating_notice(self, "名称重复", "请使用不同的样式名称。")
+            return
+        self.styles[index] = result
+        self._refresh_tree()
+
+    def remove(self):
+        index = self._selected_index()
+        if index is None:
+            show_floating_notice(self, "删除样式", "请先选择一个样式。")
+            return
+        self.styles.pop(index)
+        self._refresh_tree()
 
     def save(self):
-        if self.test_state.get() == "正在测试…":
+        if not self.styles:
+            show_floating_notice(self, "无法保存", "至少保留一个分辨率样式。")
             return
-        action = self._build_action()
-        if action is None:
+        self.result = [dict(style) for style in self.styles]
+        self.destroy()
+
+
+class SetResolutionActionDialog(ModalDialog):
+    """Choose a preset and an independent window whose monitor will change."""
+
+    def __init__(self, parent, action: dict | None = None, settings: dict | None = None):
+        super().__init__(parent, "设置屏幕分辨率", 560, 470)
+        action = action or {}
+        self.settings = settings if isinstance(settings, dict) else {}
+        self.styles = resolution_styles_from_settings(self.settings)
+        names = [str(style["name"]) for style in self.styles]
+        saved_name = str(action.get("name", "")).strip()
+        if saved_name not in names:
+            saved_name = names[0] if names else ""
+        self.name = tk.StringVar(value=saved_name)
+        self.window_signature = dict(action.get("window") or {})
+        self.window_label = tk.StringVar(value=self._window_text(self.window_signature))
+        self.delay = duration_var(action.get("delay_ms", 0))
+        self.after_delay = duration_var(action.get("after_delay_ms", 0))
+
+        body = ttk.Frame(self, padding=px(14))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1, minsize=px(380))
+        ttk.Label(body, text="分辨率样式").grid(row=0, column=0, sticky="w", pady=px(8))
+        self.style_box = ttk.Combobox(
+            body, textvariable=self.name, values=names, state="readonly", width=28,
+        )
+        self.style_box.grid(row=0, column=1, sticky="ew", pady=px(8))
+        ttk.Label(
+            body,
+            text="留空即直接修改当前软件所在显示器；也可以选一个窗口，只修改该窗口"
+                 "所在的显示器（不需要游戏目标窗口）。",
+            foreground=COLOR_MUTED, wraplength=px(520), justify="left",
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=pad(0, 4))
+        ttk.Label(body, text="参照窗口（可留空）").grid(
+            row=2, column=0, sticky="w", pady=px(8),
+        )
+        window_row = ttk.Frame(body)
+        window_row.grid(row=2, column=1, sticky="ew", pady=px(8))
+        ttk.Label(
+            window_row, textvariable=self.window_label, foreground=COLOR_TEXT,
+            wraplength=px(360),
+        ).pack(side="left", fill="x", expand=True, anchor="w")
+        ttk.Button(
+            window_row, text="选择窗口…", command=self.choose_window,
+        ).pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            window_row, text="清除", command=self.clear_window,
+        ).pack(side="left", padx=pad(6, 0))
+        ttk.Label(body, text="执行前延时").grid(row=3, column=0, sticky="w", pady=px(8))
+        ttk.Spinbox(body, from_=0, to=86400000, increment=100,
+                    textvariable=self.delay, width=10).grid(row=3, column=1, sticky="w")
+        ttk.Label(body, text="执行后延时").grid(row=4, column=0, sticky="w", pady=px(8))
+        ttk.Spinbox(body, from_=0, to=86400000, increment=100,
+                    textvariable=self.after_delay, width=10).grid(row=4, column=1, sticky="w")
+        ttk.Label(
+            body,
+            text="留空 = 始终改软件自己所在的显示器；选了参照窗口则优先改该窗口所在的"
+                 "显示器，窗口没打开时自动退回软件所在显示器并记录一条提示。",
+            foreground=COLOR_MUTED, wraplength=px(480), justify="left",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        fit_window_to_content(self, parent)
+
+    @staticmethod
+    def _window_text(signature: dict) -> str:
+        if not signature:
+            return "当前软件所在显示器（未选择参照窗口）"
+        title = str(signature.get("title", "")).strip()
+        class_name = str(signature.get("class_name", "")).strip()
+        return "  ·  ".join(value for value in (title, class_name) if value) or "已保存窗口"
+
+    def choose_window(self):
+        selected = WindowPicker(
+            self, title="选择分辨率参照窗口", confirm_text="选择此窗口",
+        ).show()
+        if selected is None:
+            return
+        self.window_signature = {
+            "title": selected.title,
+            "class_name": selected.class_name,
+            "process_path": selected.process_path,
+        }
+        self.window_label.set(self._window_text(self.window_signature))
+
+    def clear_window(self):
+        self.window_signature = {}
+        self.window_label.set(self._window_text(self.window_signature))
+
+    def save(self):
+        try:
+            action = build_resolution_action(self.settings, self.name.get())
+            action["delay_ms"] = max(0, int(self.delay.get()))
+            action["after_delay_ms"] = max(0, int(self.after_delay.get()))
+            # 留空表示"改当前软件所在显示器"，不写 window 键。
+            if self.window_signature:
+                action["window"] = dict(self.window_signature)
+        except (KeyError, TypeError, ValueError) as exc:
+            show_floating_notice(self, "参数错误", str(exc))
             return
         self.result = action
         self.destroy()
@@ -9768,19 +9692,19 @@ class GridRowConditionClickDialog(ModalDialog):
 class JsonActionDialog(ModalDialog):
     def __init__(self, parent, action: dict):
         super().__init__(parent, "高级动作编辑", 640, 500)
-        ttk.Label(self, text="编辑当前动作参数（JSON）", padding=(18, 14, 18, 6)).pack(anchor="w")
+        ttk.Label(self, text="编辑当前动作参数（JSON）", padding=pad(14, 10, 14, 5)).pack(anchor="w")
         self.text = tk.Text(
-            self, font=("Consolas", 11), wrap="none", undo=True,
+            self, font=(FONT_MONO, FONT_SUBTITLE), wrap="none", undo=True,
             background=COLOR_SURFACE, foreground=COLOR_TEXT,
             insertbackground=COLOR_TEXT, selectbackground=COLOR_BLUE_SELECTION,
-            relief="flat", borderwidth=0, padx=12, pady=10,
+            relief="flat", borderwidth=0, padx=px(12), pady=px(10),
         )
-        self.text.pack(fill="both", expand=True, padx=18)
+        self.text.pack(fill="both", expand=True, padx=px(18))
         self.text.insert("1.0", json.dumps(action, ensure_ascii=False, indent=2))
-        buttons = ttk.Frame(self, padding=18)
+        buttons = ttk.Frame(self, padding=px(12))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=8)
+        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=px(8))
 
     def save(self):
         try:
@@ -9795,7 +9719,8 @@ class JsonActionDialog(ModalDialog):
 
 
 def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
-                segment_depth: int = 0, on_row_list_test=None) -> dict | None:
+                segment_depth: int = 0, on_row_list_test=None,
+                settings: dict | None = None) -> dict | None:
     def preserve_identity(updated: dict | None) -> dict | None:
         if updated is not None and action.get("action_id"):
             updated["action_id"] = action["action_id"]
@@ -9872,10 +9797,6 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
                 parent, action, actions=all_actions, **dialog_kwargs,
             ).show(),
         )
-    if kind == "grid_row_condition_click":
-        return preserve_identity(
-            GridRowConditionClickDialog(parent, action, on_test=on_row_list_test).show(),
-        )
     if kind == "global_detect":
         return preserve_identity(
             GlobalDetectDialog(
@@ -9911,4 +9832,8 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         return preserve_identity(OpenAppDialog(parent, action).show())
     if kind == "close_app":
         return preserve_identity(CloseAppDialog(parent, action).show())
+    if kind == "set_resolution":
+        return preserve_identity(
+            SetResolutionActionDialog(parent, action, settings=settings).show(),
+        )
     return preserve_identity(JsonActionDialog(parent, action).show())

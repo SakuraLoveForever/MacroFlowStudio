@@ -10,6 +10,12 @@
 - Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
 - Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
 
+## 执行授权规则
+
+- 用户提交任务后，默认授予 Codex 在当前任务范围内连续执行的授权，包括自行选择实现路径、修改文件、运行命令和完成必要验证；不应为每个步骤、命令或中间结果单独请求审批。
+- Codex 应自行判断普通技术取舍并持续推进，直到任务完成或确实受阻。仅当操作会明显超出任务范围、产生无法逆转的重大外部影响、缺少用户必须做出的关键决策，或无法安全推断用户意图时，才暂停并询问。
+- 构建、测试、打包和安全检查规则是执行约束，不代表需要等待用户逐项确认；Codex 应自行完成这些步骤并报告结果。
+
 ## 构建与打包规则
 
 - 每次修改代码后必须立即重新构建 exe（`.\build.ps1`），确保 `dist\MacroFlowStudio.exe` 与最新代码一致；不得只改源码不构建。

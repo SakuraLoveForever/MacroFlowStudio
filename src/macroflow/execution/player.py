@@ -13,7 +13,7 @@ import cv2
 
 from macroflow.ui.detect_overlay import show_overlay
 from macroflow.core.image_match import (
-    build_grid_cells, capture_bgr, find_template, find_template_in_image, load_image,
+    capture_bgr, find_template, find_template_in_image, load_image,
     stabilize_row_offsets,
 )
 from macroflow.core.ocr import (
@@ -32,10 +32,13 @@ from macroflow.core.storage import (
 )
 from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.wininput import (
-    activate_window, get_cursor_pos, get_foreground_window_info, get_virtual_screen_rect,
+    activate_window, get_cursor_pos, get_foreground_window_info,
+    get_display_resolution_for_window, get_display_scaling_for_window,
+    get_monitor_rect_for_window, get_primary_screen_rect, get_virtual_screen_rect,
     get_window_rect, is_window,
     is_window_process_foreground, resolve_window_signature, send_button, send_key,
     send_move_absolute, send_move_relative, send_scroll,
+    set_display_resolution_for_window, set_display_scaling_for_window,
     send_text, set_cursor_pos,
 )
 
@@ -143,6 +146,11 @@ def screen_template_scale(source: dict | None, target: dict | None) -> float:
     return target_width / source_width
 
 
+def get_playback_screen_rect(hwnd: int | None) -> dict[str, int]:
+    """Use the target window's monitor instead of the combined virtual desktop."""
+    return get_monitor_rect_for_window(hwnd) or get_primary_screen_rect()
+
+
 TH32CS_SNAPPROCESS = 0x00000002
 
 
@@ -235,6 +243,7 @@ class MacroPlayer:
                  on_target_window_request: Callable[[], int | None] | None = None,
                  on_guard_poll: Callable[[], dict | None] | None = None,
                  on_ocr_engine_wait: Callable[[], bool] | None = None,
+                 on_resolution_monitor_request: Callable[[], int | None] | None = None,
                  on_timing: Callable[[dict], None] | None = None):
         self.on_status = on_status
         self.on_notice = on_notice
@@ -254,8 +263,14 @@ class MacroPlayer:
         # 返回 False 表示用户已请求停止，播放器应立即中断（F12 不再被
         # 首次 OCR 导入卡住）。
         self.on_ocr_engine_wait = on_ocr_engine_wait
+        # 分辨率动作未指定参照窗口时，用它拿到"软件自己所在显示器"的窗口句柄：
+        # 用户只想改当前系统分辨率，不该被要求先把游戏窗口打开。
+        self.on_resolution_monitor_request = on_resolution_monitor_request
         self.on_timing = on_timing
         self.playback_speed = 1.0
+        # 本次播放定格的倍速：录制时间轴是绝对时间，运行中改倍速会让已排好的
+        # 时刻突然变短、动作成串爆发，因此只在 play() 开始时取一次快照。
+        self._timeline_speed = 1.0
         self.stop_event = threading.Event()
         self.running = False
         self._held_keys: set[int] = set()
@@ -301,11 +316,22 @@ class MacroPlayer:
         except (TypeError, ValueError):
             value = 1.0
         self.playback_speed = max(0.5, min(2.0, round(value, 1)))
+        self._timeline_speed = self.playback_speed
 
     def _scaled_delay(self, milliseconds: int) -> int:
         if milliseconds <= 0:
             return 0
-        return max(1, round(milliseconds / self.playback_speed))
+        speed = self._timeline_speed if self._timeline_speed > 0 else 1.0
+        return max(1, round(milliseconds / speed))
+
+    def _timeline_offset_ms(self, action: dict) -> float:
+        """录制时间轴上的动作时刻 → 本次播放的目标时刻（按倍速缩放）。"""
+        try:
+            offset = float(action.get("recorded_at_ms", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        speed = self._timeline_speed if self._timeline_speed > 0 else 1.0
+        return offset / speed
 
     def _wait_on_timeline(self, seconds: float) -> None:
         self._timeline_waiting = True
@@ -354,9 +380,9 @@ class MacroPlayer:
                     raise PlaybackStopped()
                 remaining -= slice_ms
                 self._poll_guards()
-                # 等待期间的前台守护：每 5 片（约 500ms）检查一次目标窗口
-                # 是否仍在台前，其他程序弹窗抢焦点时几百毫秒内被抢回
-                # （无目标窗口时零开销跳过）。
+                # 长等待只轮询守卫：前台恢复由播放开始时的激活与每次截图后的
+                # 校验负责（见 app._restore_workflow_scan_foreground），等待
+                # 期间不再反复检测/激活目标窗口。
             self._mark_explicit_wait(milliseconds)
             return
         if self.stop_event.wait(milliseconds / 1000):
@@ -541,7 +567,7 @@ class MacroPlayer:
                 scope = self.on_script_scope_enter(actions)
             if source_screen:
                 self._source_screen = dict(source_screen)
-                self._target_screen = get_virtual_screen_rect()
+                self._target_screen = get_playback_screen_rect(hwnd)
             self._run_action_sequence(actions, hwnd, depth=1)
         finally:
             self._source_screen = saved_source
@@ -570,6 +596,7 @@ class MacroPlayer:
         self.running = True
         self._timeline_waiting = False
         self._stop_requested_at = None
+        self._timeline_speed = max(0.5, min(2.0, float(self.playback_speed)))
         self._timeline = PlaybackTimeline(
             now=time.perf_counter,
             wait=self._wait_on_timeline,
@@ -581,7 +608,7 @@ class MacroPlayer:
         self._relative_target_hwnd = None
         self._legacy_relative_started = False
         self._source_screen = dict(source_screen) if source_screen else None
-        self._target_screen = get_virtual_screen_rect() if self._source_screen else None
+        self._target_screen = get_playback_screen_rect(hwnd) if self._source_screen else None
         self._active_script_name = str(script_name).strip()
         self._activate_target = bool(activate_target)
         self._activation_hwnd = int(activation_hwnd) if activation_hwnd else None
@@ -592,6 +619,13 @@ class MacroPlayer:
         advanced_to_next_workflow_step = False
         jump_current_script_last = False
         script_scope = None
+
+        def exit_script_scope() -> None:
+            nonlocal script_scope
+            if self.on_script_scope_exit and script_scope is not None:
+                self.on_script_scope_exit(script_scope)
+                script_scope = None
+
         try:
             if hwnd and not is_window(hwnd):
                 self._log_event(
@@ -659,12 +693,9 @@ class MacroPlayer:
                 self._workflow_repeat_number = repeat_index + 1
                 if on_repeat:
                     on_repeat(repeat_index + 1, repeat_total)
-                # 每次重复重新进入脚本全局作用域：先退出上一重复注册的全局
-                # 模块，再注册本次的。这样"执行 x 次"的每次重复都有独立的
-                # 全局检测监控，超时等计时从本次重复开始重新计算。
-                if self.on_script_scope_exit and script_scope is not None:
-                    self.on_script_scope_exit(script_scope)
-                    script_scope = None
+                # 每次重复重新进入脚本全局作用域。上一重复已在完成回调和
+                # 重复间隔之前退出，因此每次"执行 x 次"都有独立的全局检测
+                # 监控，超时等计时从本次重复开始重新计算。
                 if self.on_script_scope_enter:
                     script_scope = self.on_script_scope_enter(actions)
                     self._script_scope_managed = True
@@ -712,6 +743,7 @@ class MacroPlayer:
                         )
                         self._status(f"已{END_CURRENT_SCRIPT_LABEL}")
                     else:
+                        exit_script_scope()
                         if on_repeat_complete:
                             on_repeat_complete(repeat_index + 1, repeat_total)
                         advanced_to_next_workflow_step = True
@@ -724,6 +756,7 @@ class MacroPlayer:
                 except AdvanceToNextWorkflowStep:
                     # The current repeat counts as completed, but remaining
                     # repeats of this workflow step are skipped immediately.
+                    exit_script_scope()
                     if on_repeat_complete:
                         on_repeat_complete(repeat_index + 1, repeat_total)
                     advanced_to_next_workflow_step = True
@@ -732,6 +765,10 @@ class MacroPlayer:
                         or "已结束当前脚本，执行工作流下一项"
                     )
                     break
+                # A script-global guard belongs only to this repeat. Clear it
+                # before completion callbacks and the repeat interval so that
+                # no stale recognition state can run between two repeats.
+                exit_script_scope()
                 if on_repeat_complete:
                     on_repeat_complete(repeat_index + 1, repeat_total)
                 if repeat_index + 1 < repeat_total and repeat_interval:
@@ -743,7 +780,10 @@ class MacroPlayer:
                         # 守卫在间隔等待中命中并携带跳转：解析后应用到下一次
                         # 重复的起始行，而不是让异常逃出 play() 造成“执行失败”。
                         if request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
-                            # 结束当前重复（已完成），继续下一次重复
+                            # 守卫要求“工作流下一项”：与脚本内的同语义分支一致，
+                            # 结束本步骤剩余重复并让工作流推进。
+                            advanced_to_next_workflow_step = True
+                            self._status("全局检测要求执行工作流下一项")
                             break
                         target_index = None
                         if request.jump_action_id:
@@ -780,8 +820,7 @@ class MacroPlayer:
             self._last_stop_referenced_actions = stopped.referenced_actions
             self._last_stop_referenced_source_screen = stopped.referenced_source_screen
         finally:
-            if self.on_script_scope_exit and script_scope is not None:
-                self.on_script_scope_exit(script_scope)
+            exit_script_scope()
             self._release_all(hwnd)
             cleanup_finished = time.perf_counter()
             if self._stop_requested_at is not None:
@@ -820,11 +859,11 @@ class MacroPlayer:
                 self._timeline._last_scheduled_offset_ms,
             )
             index = max(0, min(int(start_index), max(0, len(actions) - 1)))
-            first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
+            first_offset_ms = self._timeline_offset_ms(actions[index]) if actions else 0.0
             self._timeline.start(first_offset_ms)
         else:
             index = max(0, min(int(start_index), max(0, len(actions) - 1)))
-            first_offset_ms = float(actions[index].get("recorded_at_ms", 0.0)) if actions else 0.0
+            first_offset_ms = self._timeline_offset_ms(actions[index]) if actions else 0.0
             self._timeline.start(first_offset_ms)
         try:
             self._run_action_sequence_body(
@@ -858,7 +897,7 @@ class MacroPlayer:
                 self._poll_guards()
                 default_delay = 1000 if action.get("type") == "image_match" else 0
                 if "recorded_at_ms" in action:
-                    self._timeline.wait_until(float(action["recorded_at_ms"]))
+                    self._timeline.wait_until(self._timeline_offset_ms(action))
                 else:
                     self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
                 jump_target = self._execute_action(action, hwnd, script_stack, depth)
@@ -930,6 +969,56 @@ class MacroPlayer:
             self._status(f"{self._jump_reason or '识图'}，跳到第 {target_index + 1} 行目标动作")
             index = target_index
             self._timeline.mark_boundary()
+
+    def _ensure_display_resolution(self, hwnd: int, width: int, height: int,
+                                   refresh_rate: int, label: str) -> bool:
+        """确保显示器处于目标分辨率；已经是目标值就跳过（不再重复切换）。"""
+        current = get_display_resolution_for_window(hwnd)
+        if current is not None and current[0] == width and current[1] == height \
+                and (not refresh_rate or current[2] == refresh_rate):
+            self._log_event(f"{label}已经是 {width}×{height}，无需切换分辨率。")
+            return True
+        if set_display_resolution_for_window(hwnd, width, height, refresh_rate):
+            self._log_event(f"{label}已切换到 {width}×{height}。")
+            return True
+        # 个别驱动对"设置成当前值"返回失败：只要最终状态正确就算成功。
+        current = get_display_resolution_for_window(hwnd)
+        if current is not None and current[0] == width and current[1] == height:
+            self._log_event(f"{label}已经是 {width}×{height}，无需切换分辨率。")
+            return True
+        return False
+
+    def _ensure_display_scaling(self, hwnd: int, scale_percent: int, label: str) -> None:
+        """确保缩放为目标值。
+
+        缩放已经正确就跳过；部分显示器不支持程序化修改缩放（CCD 的
+        SET_DPI_SCALE 返回失败），此时只记录提示、不中断工作流——坐标按物理
+        像素计算，缩放不影响回放坐标。
+        """
+        current = get_display_scaling_for_window(hwnd)
+        if current == scale_percent:
+            self._log_event(f"{label}缩放已经是 {scale_percent}%，无需切换。")
+            return
+        if set_display_scaling_for_window(hwnd, scale_percent):
+            self._log_event(f"{label}缩放已切换到 {scale_percent}%。")
+            return
+        current = get_display_scaling_for_window(hwnd)
+        if current == scale_percent:
+            return
+        self._log_event(
+            f"{label}缩放当前为 {current if current is not None else '未知'}%，"
+            f"无法自动切换到 {scale_percent}%（该显示器不支持程序化修改缩放），已跳过。"
+        )
+
+    def _request_resolution_monitor(self) -> int | None:
+        """分辨率动作要改哪块屏：应用层返回的"软件所在显示器"窗口句柄。"""
+        if self.on_resolution_monitor_request is None:
+            return None
+        try:
+            hwnd = self.on_resolution_monitor_request()
+        except Exception:
+            return None
+        return int(hwnd) if hwnd and is_window(hwnd) else None
 
     def _scale_point(self, x: int, y: int) -> tuple[int, int]:
         return scale_screen_point(x, y, self._source_screen, self._target_screen)
@@ -1058,7 +1147,9 @@ class MacroPlayer:
         # 每个输入动作前确保目标窗口在前台：焦点被抢后下一个动作自动抢回。
         kind = action.get("type")
         if kind == "delay":
-            self._wait(int(action.get("ms", 100)))
+            # 手工延时同样跟随倍速，否则同一份脚本里“录制间隔加速、手工延时
+            # 不加速”两种口径混在一起。
+            self._wait(self._scaled_delay(int(action.get("ms", 100))))
         elif kind == "key":
             vk = int(action.get("vk", 0))
             down = bool(action.get("down", True))
@@ -1209,15 +1300,13 @@ class MacroPlayer:
         elif kind == "image_match":
             return self._execute_image(action, hwnd, script_stack, depth)
         elif kind == "text_ocr":
-            return self._execute_text_ocr(action, hwnd)
+            return self._execute_text_ocr(action, hwnd, script_stack, depth)
         elif kind == "ocr_compare":
-            return self._execute_ocr_compare(action, hwnd)
+            return self._execute_ocr_compare(action, hwnd, script_stack, depth)
         elif kind == "multi_condition_click":
-            return self._execute_multi_condition_click(action, hwnd)
+            return self._execute_multi_condition_click(action, hwnd, script_stack, depth)
         elif kind == "row_list_condition_click":
-            return self._execute_row_list_condition_click(action, hwnd)
-        elif kind == "grid_row_condition_click":
-            return self._execute_grid_row_condition_click(action, hwnd)
+            return self._execute_row_list_condition_click(action, hwnd, script_stack, depth)
         elif kind == "global_detect":
             if self.on_global_detect_request and not self._script_scope_managed:
                 self.on_global_detect_request(action)
@@ -1340,9 +1429,63 @@ class MacroPlayer:
                 os.startfile(str(app_path), arguments=app_args)
             except OSError as exc:
                 raise RuntimeError(f"无法打开软件：{app_value}（{exc}）") from exc
-            self._status(f"已启动软件 {app_path.name}" + (f"（{app_args}）" if app_args else ""))
+            # 走日志通道：打开/关闭软件是排障关键信息，只写状态栏会看不见。
+            self._log_event(f"已启动软件 {app_path.name}" + (f"（{app_args}）" if app_args else ""))
         elif kind == "close_app":
             self._execute_close_app(action)
+        elif kind == "set_resolution":
+            signature = action.get("window") or {}
+            has_signature = isinstance(signature, dict) and any(
+                str(signature.get(key, "")).strip()
+                for key in ("title", "class_name", "process_path")
+            )
+            resolution_hwnd = None
+            monitor_label = "当前软件所在显示器"
+            if has_signature:
+                resolution_window = resolve_window_signature(signature)
+                if resolution_window is not None:
+                    resolution_hwnd = int(resolution_window.hwnd)
+                    monitor_label = "参照窗口所在显示器"
+                else:
+                    label = str(
+                        signature.get("title")
+                        or signature.get("class_name")
+                        or signature.get("process_path")
+                        or "未命名窗口"
+                    ).strip()
+                    # 参照窗口没打开时不再让整条工作流失败：退回"当前软件所在
+                    # 显示器"并记一条提示（用户多数只是想改本机分辨率）。
+                    self._log_event(
+                        f"分辨率参照窗口未找到：{label}，改为修改{monitor_label}。"
+                    )
+            if resolution_hwnd is None:
+                resolution_hwnd = self._request_resolution_monitor()
+            if resolution_hwnd is None:
+                raise RuntimeError(
+                    "无法确定要修改的显示器：参照窗口未找到，"
+                    "且读不到当前软件所在的显示器"
+                )
+            try:
+                width = int(action.get("width", 0))
+                height = int(action.get("height", 0))
+                refresh_rate = int(action.get("refresh_rate", 0) or 0)
+                scale_percent = int(action.get("scale_percent", 100) or 100)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("分辨率动作参数无效") from exc
+            if width <= 0 or height <= 0:
+                raise RuntimeError("分辨率动作缺少有效的宽高")
+            if not self._ensure_display_resolution(
+                    resolution_hwnd, width, height, refresh_rate, monitor_label):
+                raise RuntimeError(f"无法将{monitor_label}切换到 {width}×{height}")
+            self._ensure_display_scaling(resolution_hwnd, scale_percent, monitor_label)
+            self._status(
+                f"{monitor_label}已确认 {width}×{height}，缩放目标 {scale_percent}%"
+            )
+            self._wait(500)
+            # 分辨率/缩放变了，执行参考屏必须重新取：优先本次执行的目标窗口
+            # 所在显示器（分辨率动作可能改的是另一块屏），没有目标窗口时退回
+            # 被修改的那块屏。
+            self._target_screen = get_playback_screen_rect(hwnd or resolution_hwnd)
         elif kind == "notice":
             text = str(action.get("text", "提醒"))
             duration = max(500, min(60000, int(action.get("duration_ms", 3000))))
@@ -1374,11 +1517,11 @@ class MacroPlayer:
                         break
                     self._wait(50)
                 if not is_process_running(image_name):
-                    self._status(f"已结束 {image_name}")
+                    self._log_event(f"已结束 {image_name}")
                     return
-                self._status(f"{image_name} 未响应关闭请求，强制结束")
+                self._log_event(f"{image_name} 未响应关闭请求，强制结束")
         else:
-            self._status(f"强制结束 {image_name}")
+            self._log_event(f"强制结束 {image_name}")
         for _ in range(3):
             code, _err = taskkill_process(image_name, force=True, tree=tree)
             if code != 0:
@@ -1388,7 +1531,7 @@ class MacroPlayer:
             deadline = time.perf_counter() + 1000 / 1000
             while True:
                 if not is_process_running(image_name):
-                    self._status(f"已强制结束 {image_name}")
+                    self._log_event(f"已强制结束 {image_name}")
                     return
                 if self.stop_event.is_set():
                     raise PlaybackStopped()
@@ -1417,7 +1560,7 @@ class MacroPlayer:
         if not image_name:
             raise RuntimeError("关闭软件动作缺少进程名")
         if not is_process_running(image_name):
-            self._status(f"{image_name} 未在运行，跳过")
+            self._log_event(f"{image_name} 未在运行，跳过")
             return
         self._close_process(
             image_name,
@@ -1452,6 +1595,19 @@ class MacroPlayer:
                 raise RuntimeError(f"引用的模块不存在：{module_key or '未设置'}")
             elif str(module_obj.get("template", "")).strip():
                 template = resolve_path(str(module_obj["template"]))
+        if module_obj is not None:
+            # 模块对象自带的「进入模块前延时」：引用该模块的每一行都先等这段
+            # 再开始识别；与模块对象的「延时」（识别成功后、执行动作前）不同。
+            start_delay_ms = max(0, int(module_obj.get("start_delay_ms", 0) or 0))
+            if start_delay_ms:
+                start_label = (
+                    str(module_obj.get("name") or "").strip()
+                    or Path(template).name or "模块"
+                )
+                self._log_event(
+                    f"模块 {start_label} 进入前延时 {start_delay_ms} ms",
+                )
+                self._wait(self._scaled_delay(start_delay_ms))
         if module_obj is not None and module_obj.get("recognize") == "none":
             module_label = str(module_obj.get("name") or "无需识图模块")
             self._status(f"无需识图，直接执行模块：{module_label}")
@@ -1485,6 +1641,11 @@ class MacroPlayer:
                     timeout_ms = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
             else:
                 timeout_ms = max(0, int(module_obj.get("not_found_timeout_ms", timeout_ms)))
+        text_module = bool(module_obj is not None and module_obj.get("recognize") == "text")
+        number_module = bool(module_obj is not None and module_obj.get("recognize") == "number")
+        wait_target_absent = bool(
+            module_obj is not None and module_obj.get("wait_text_absent", False)
+        )
         if wait_forever:
             module_label = (
                 str((module_obj or {}).get("name", "")).strip()
@@ -1492,15 +1653,20 @@ class MacroPlayer:
                 or "识图模块"
             )
             script_context = f"脚本[{self._active_script_name}]：" if self._active_script_name else ""
-            self._log_event(
-                f"{script_context}模块 {module_label} 开始阻塞等待 {Path(template).name} 出现。"
-            )
+            target_label = Path(template).name if str(template).strip() else "目标"
+            if wait_target_absent:
+                # “等待目标消失”与“阻塞等待出现”语义相反：看到目标才执行动作，
+                # 检测不到就算完成。日志若仍写“等待 …… 出现”，用户会以为模块
+                # 在等图片出现，实际它第一帧就判定“已消失”并直接成功了。
+                self._log_event(
+                    f"{script_context}模块 {module_label} 是“等待目标消失”：看到 "
+                    f"{target_label} 就执行动作并重新识别，检测不到即完成当前模块。"
+                )
+            else:
+                self._log_event(
+                    f"{script_context}模块 {module_label} 开始阻塞等待 {target_label} 出现。"
+                )
         # OCR 单次约几百毫秒，文字和数字模式的轮询间隔不能太短。
-        text_module = bool(module_obj is not None and module_obj.get("recognize") == "text")
-        number_module = bool(module_obj is not None and module_obj.get("recognize") == "number")
-        wait_target_absent = bool(
-            module_obj is not None and module_obj.get("wait_text_absent", False)
-        )
         if text_module or number_module:
             interval_ms = max(interval_ms, 200)
         expected_number = None
@@ -1582,6 +1748,13 @@ class MacroPlayer:
             region = get_window_rect(hwnd)
         if number_module and region is None:
             raise RuntimeError("数字读取模块未设置有效的指定识别区域")
+        # “全屏”识别应指目标显示器，而不是把多屏拼接后的虚拟桌面作为一张
+        # 图。否则两个 1920 宽显示器会让模板按 2 倍缩放，导致同分辨率换屏
+        # 后也无法命中。
+        recognition_region = region if region is not None else self._target_screen
+        fallback_capture_region = (
+            fallback_region if fallback_region is not None else self._target_screen
+        )
         start = time.perf_counter()
         match = None
         fallback_active = False
@@ -1596,7 +1769,7 @@ class MacroPlayer:
                 # OCR 引擎未就绪时等待（可中断）：F12 能中止，不会卡死在首次导入。
                 if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
                     raise PlaybackStopped()
-                recognized, ocr_matches = recognize_region_with_boxes(region)
+                recognized, ocr_matches = recognize_region_with_boxes(recognition_region)
                 number_value, raw_digits = extract_ocr_integer(recognized, ocr_matches)
                 module_label = str(module_obj.get("name") or "读取数字")
                 if number_value is not None:
@@ -1610,6 +1783,7 @@ class MacroPlayer:
                     return self._module_result_route(
                         action, module_obj, succeeded=equal,
                         result_label=f"比较结果：{'相等' if equal else '不相等'}",
+                        hwnd=hwnd, script_stack=script_stack, depth=depth,
                     )
                 observation = f"模块 {module_label}：指定区域内未读取到数字"
                 if observation != last_ocr_observation:
@@ -1620,7 +1794,7 @@ class MacroPlayer:
                 # OCR 引擎未就绪时等待（可中断）：F12 能中止，不会卡死在首次导入。
                 if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
                     raise PlaybackStopped()
-                recognized, ocr_matches = recognize_region_with_boxes(region)
+                recognized, ocr_matches = recognize_region_with_boxes(recognition_region)
                 expected_text = str(module_obj.get("expected_text", ""))
                 match_mode = str(module_obj.get("match_mode", "contains"))
                 match = find_expected_match(ocr_matches, expected_text, match_mode)
@@ -1628,7 +1802,7 @@ class MacroPlayer:
                 if not text_present and matches_expected(recognized, expected_text, match_mode):
                     # 极少数期望内容可能横跨多个 OCR 行；仍保留旧的整体匹配能力。
                     text_present = True
-                    match = ocr_match_center(region)
+                    match = ocr_match_center(recognition_region)
                 observation = format_ocr_observation(
                     recognized, expected_text, text_present,
                     str(module_obj.get("name") or "识别文字模块"),
@@ -1661,7 +1835,7 @@ class MacroPlayer:
                     match = None
             else:
                 # 主模板始终在自己的区域检测；备用激活后两者同时检测（各自区域）。
-                match = find_template(template, threshold, region,
+                match = find_template(template, threshold, recognition_region,
                                       ignore_background=ignore_background,
                                       scale=self._template_scale())
                 if wait_target_absent and match:
@@ -1728,7 +1902,7 @@ class MacroPlayer:
                         f"等待 {Path(template).name} 超过 {fallback_switch_ms} ms，"
                         f"备用模板 {Path(fallback_template).name} 加入同时检测",
                     )
-                fallback_match = find_template(fallback_template, threshold, fallback_region,
+                fallback_match = find_template(fallback_template, threshold, fallback_capture_region,
                                                ignore_background=ignore_background,
                                                scale=self._template_scale())
             if module_obj is None and fallback_match:
@@ -1745,13 +1919,12 @@ class MacroPlayer:
                             fallback_x, fallback_y = self._scale_point(
                                 int(raw_point[0]), int(raw_point[1]),
                             )
-                    fallback_x, fallback_y = self._clamp_click_point(
-                        fallback_x, fallback_y, hwnd,
+                    # 用 _click_module_point：按下即登记 held 并在 finally 抬起，
+                    # 停止信号落在按住窗口内也不会让物理键卡住。
+                    self._click_module_point(
+                        fallback_x, fallback_y,
+                        str(action.get("button", "left")), 1, hwnd,
                     )
-                    send_move_absolute(fallback_x, fallback_y)
-                    send_button(str(action.get("button", "left")), True)
-                    self._wait(30)
-                    send_button(str(action.get("button", "left")), False)
                 if action.get("show_result_notice") and self.on_notice:
                     self.on_notice(
                         f"备用模板已出现：{Path(fallback_template).name} · "
@@ -1779,17 +1952,18 @@ class MacroPlayer:
                 )
                 self._log_event(
                     f"模块 {timeout_subject} 阻塞等待达到 {timeout_ms} ms，"
-                    "已跳过当前脚本行",
-                )
-                self._status(
-                    f"模块 {timeout_subject} 阻塞超时，已跳过当前脚本行",
+                    "按失败分支处理（默认跳过当前脚本行）",
                 )
                 if action.get("show_result_notice") and self.on_notice:
                     self.on_notice(
-                        f"阻塞模块超时：{timeout_subject} · {timeout_ms} ms · 已跳过",
+                        f"阻塞模块超时：{timeout_subject} · {timeout_ms} ms",
                         3500,
                     )
-                return
+                return self._module_result_route(
+                    action, module_obj, succeeded=False,
+                    result_label=f"阻塞超时 {timeout_ms} ms",
+                    hwnd=hwnd, script_stack=script_stack, depth=depth,
+                )
             if module_timeout_enabled and (time.perf_counter() - start) * 1000 >= module_timeout_ms:
                 segment = list(module_obj.get("on_timeout_actions") or [])
                 timeout_subject = (
@@ -1811,6 +1985,7 @@ class MacroPlayer:
                 return self._module_result_route(
                     action, module_obj, succeeded=False,
                     result_label="读取结果：未读取到数字" if number_module else None,
+                    hwnd=hwnd, script_stack=script_stack, depth=depth,
                 )
             if not wait_forever and (time.perf_counter() - start) * 1000 >= timeout_ms:
                 subject = (
@@ -1835,7 +2010,9 @@ class MacroPlayer:
                     return self._module_result_route(
                         action, module_obj, succeeded=False,
                         result_label="读取结果：未读取到数字" if number_module else None,
+                        hwnd=hwnd, script_stack=script_stack, depth=depth,
                     )
+                self._run_failure_segment(action, hwnd, script_stack, depth)
                 timeout_action = action.get("on_timeout", "continue")
                 if timeout_action == "continue":
                     self._status("识别文字超时，按设置继续" if text_module
@@ -1885,11 +2062,8 @@ class MacroPlayer:
                 raw_point = action.get("click_point", [x, y])
                 if isinstance(raw_point, (list, tuple)) and len(raw_point) >= 2:
                     x, y = self._scale_point(int(raw_point[0]), int(raw_point[1]))
-            x, y = self._clamp_click_point(x, y, hwnd)
-            send_move_absolute(x, y)
-            send_button(str(action.get("button", "left")), True)
-            self._wait(30)
-            send_button(str(action.get("button", "left")), False)
+            # 同上：识图命中点击也必须登记 held，异常/停止路径才有人补抬起。
+            self._click_module_point(x, y, str(action.get("button", "left")), 1, hwnd)
         elif action.get("on_found") == "jump":
             target_id = str(action.get("found_jump_action_id", "")).strip()
             if target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
@@ -1928,12 +2102,38 @@ class MacroPlayer:
             scale=self._template_scale(),
         )
 
+    def _run_failure_segment(self, action: dict, hwnd: int | None,
+                             script_stack: set[str] | None,
+                             depth: int) -> None:
+        """脚本行级“失败后执行代码段”：识别不到 / 超时 / 阻塞超时后先跑这段。
+
+        与模块对象里的“超时代码段”同类型，但属于当前脚本行，便于同一模块在
+        不同脚本里走不同的补救动作。
+        """
+        if not action.get("failure_segment_enabled"):
+            return
+        segment = [item for item in (action.get("failure_actions") or [])
+                   if isinstance(item, dict)]
+        if not segment:
+            return
+        if depth >= MAX_SCRIPT_REF_DEPTH:
+            raise RuntimeError("模块失败代码段嵌套过深，已停止执行")
+        self._log_event(f"模块失败，执行脚本行失败代码段（{len(segment)} 个动作）")
+        self._run_action_sequence(
+            segment, hwnd, script_stack=script_stack, depth=depth + 1,
+        )
+
     def _module_result_route(self, action: dict, module_obj: dict, succeeded: bool,
-                             result_label: str | None = None) -> tuple[str, str | int] | None:
+                             result_label: str | None = None,
+                             hwnd: int | None = None,
+                             script_stack: set[str] | None = None,
+                             depth: int = 0) -> tuple[str, str | int] | None:
         """Publish one module result and apply this reference row's branch."""
         result_text = "成功" if succeeded else "失败"
         module_label = str(module_obj.get("name") or "").strip() \
             or Path(str(module_obj.get("template", ""))).name or "模块"
+        if not succeeded:
+            self._run_failure_segment(action, hwnd, script_stack, depth)
         self._log_event(f"模块 {module_label} {result_label or f'执行结果：{result_text}'}")
         status_result = result_label or f"执行{result_text}"
         behavior_key = "on_found" if succeeded else "on_timeout"
@@ -1957,7 +2157,8 @@ class MacroPlayer:
         raise RuntimeError(f"模块执行{result_text}，按设置停止全部执行")
 
     def _execute_text_ocr(self, action: dict, hwnd: int | None,
-                          ) -> tuple[str, str | int] | None:
+                          script_stack: set[str] | None = None,
+                          depth: int = 0) -> tuple[str, str | int] | None:
         """识别文字动作：截取区域 OCR，命中则继续/跳转，未命中轮询到超时。
 
         期望文字为空时识别到任意文字即命中；timeout_ms=0 只识别一次。
@@ -2022,6 +2223,7 @@ class MacroPlayer:
                 3500,
             )
         self._wait(max(0, int(action.get("timeout_delay_ms", 0))))
+        self._run_failure_segment(action, hwnd, script_stack, depth)
         timeout_action = action.get("on_timeout", "continue")
         if timeout_action == "continue":
             self._status("识别文字超时，按设置继续")
@@ -2035,7 +2237,8 @@ class MacroPlayer:
         raise RuntimeError("识别文字超时未命中，按设置停止")
 
     def _execute_ocr_compare(self, action: dict, hwnd: int | None,
-                             ) -> tuple[str, str | int] | None:
+                             script_stack: set[str] | None = None,
+                             depth: int = 0) -> tuple[str, str | int] | None:
         """OCR a number pair such as ``12/34`` and run its comparison branch."""
         region = None
         region_mode = action.get("region_mode", "screen")
@@ -2096,6 +2299,7 @@ class MacroPlayer:
                 self._log_event(
                     f"识别数字比较连续 {timeout_ms} ms 未识别到“数字{separator}数字”",
                 )
+                self._run_failure_segment(action, hwnd, None, 0)
                 if timeout_action == "jump":
                     self._jump_reason = "识别数字比较超时"
                     target_id = str(action.get("timeout_jump_action_id", "")).strip()
@@ -2108,7 +2312,8 @@ class MacroPlayer:
             self._wait(interval_ms)
 
     def _execute_multi_condition_click(self, action: dict, hwnd: int | None,
-                                       ) -> tuple[str, str | int] | None:
+                                       script_stack: set[str] | None = None,
+                                       depth: int = 0) -> tuple[str, str | int] | None:
         """Wait for the enabled image/OCR/number conditions, then click once."""
         conditions = action.get("conditions")
         if not isinstance(conditions, list) or len(conditions) != 3:
@@ -2149,43 +2354,53 @@ class MacroPlayer:
                 return None
             if timeout_ms <= 0 or (time.perf_counter() - start) * 1000 >= timeout_ms:
                 self._log_event(f"多条件识图点击在 {timeout_ms} ms 内未同时满足条件")
+                self._run_failure_segment(action, hwnd, None, 0)
                 if str(action.get("on_timeout", "continue")) == "stop":
                     raise RuntimeError("多条件识图点击超时")
                 return None
             self._wait(interval_ms)
 
-    def _row_list_result_route(self, action: dict, succeeded: bool) -> tuple[str, str | int] | None:
+    def _row_list_result_route(self, action: dict, succeeded: bool,
+                               subject: str = "列表逐行点击",
+                               hwnd: int | None = None,
+                               script_stack: set[str] | None = None,
+                               depth: int = 0,
+                               ) -> tuple[str, str | int] | None:
         """Resolve a row-list click's success/failure branch."""
         result_text = "成功" if succeeded else "失败"
+        if not succeeded:
+            self._run_failure_segment(action, hwnd, script_stack, depth)
         behavior_key = "on_found" if succeeded else "on_timeout"
         target_key = "found_jump_action_id" if succeeded else "timeout_jump_action_id"
         legacy_row_key = "found_jump_row" if succeeded else "timeout_jump_row"
         behavior = str(action.get(behavior_key, "continue")).strip() or "continue"
         if behavior == "continue":
-            self._status(f"列表逐行点击{result_text}，按设置继续下一行")
+            self._status(f"{subject}{result_text}，按设置继续下一行")
             return None
         if behavior == "end_current_script":
-            self._status(f"列表逐行点击{result_text}，按设置结束当前最里层脚本")
+            self._status(f"{subject}{result_text}，按设置结束当前最里层脚本")
             return "end_current_script", 0
         if behavior == "jump":
-            self._jump_reason = f"列表逐行点击{result_text}"
+            self._jump_reason = f"{subject}{result_text}"
             target_id = str(action.get(target_key, "")).strip()
             if target_id == NEXT_WORKFLOW_STEP_TARGET_ID:
                 return "next_workflow_step", 0
             if target_id:
                 return "action_id", target_id
             return "row", max(1, int(action.get(legacy_row_key, 1)))
-        raise RuntimeError(f"列表逐行点击{result_text}后按设置停止全部执行")
+        raise RuntimeError(f"{subject}{result_text}后按设置停止全部执行")
 
     def _diagnose_row_list_condition_click(
             self, action: dict, hwnd: int | None,
-            result_sink: Callable[[str], None] | None = None) -> None:
+            result_sink: Callable[[str], None] | None = None,
+            image_path: str | None = None) -> dict:
         """Scan every configured row once and log both condition observations.
 
         This is deliberately separate from playback: it never clicks, retries,
         or follows result routes.  A single snapshot keeps every row's output
         tied to the same screen frame while still evaluating the right side
-        when the left side does not match.
+        when the left side does not match.  ``image_path`` reads a chosen
+        full-screen image instead of capturing the current screen.
         """
         regions: dict[str, tuple[int, int, int, int]] = {}
         for key in ("list_region", "left_region", "right_region", "click_region"):
@@ -2218,13 +2433,38 @@ class MacroPlayer:
         if not row_offsets:
             raise RuntimeError("列表逐行条件点击的首行区域超出列表有效扫描范围")
 
-        target_list_region = self._scale_region(regions["list_region"])
-        snapshot = capture_bgr(target_list_region)
+        if image_path:
+            # 用选择的整屏截图做识别：图片像素即录制坐标，不再按当前屏幕缩放。
+            source_path = resolve_path(str(image_path))
+            source_label = f"图片 {source_path}"
+            if not source_path.is_file():
+                raise RuntimeError(f"选择的图片不存在：{source_path}")
+            image = load_image(source_path)
+            if image is None or getattr(image, "ndim", 0) < 2:
+                raise RuntimeError(f"选择的图片无法读取：{source_path}")
+            image_height, image_width = image.shape[:2]
+            if image_width < list_x + list_width or image_height < list_y + list_height:
+                raise RuntimeError(
+                    f"选择的图片尺寸 {image_width}×{image_height} 覆盖不到列表区域 "
+                    f"({list_x},{list_y},{list_width},{list_height})，请选择整屏截图",
+                )
+            snapshot = (image, (0, 0))
+            target_list_region = tuple(regions["list_region"])
+            scale_region = lambda region: tuple(region)  # noqa: E731
+            stabilize_image, _ = self._row_list_snapshot_crop(snapshot, target_list_region)
+        else:
+            # 诊断截整屏：结果窗口要显示列表所在的实际画面，而不是一条窄条。
+            source_label = "当前屏幕截图"
+            snapshot = capture_bgr()
+            target_list_region = self._scale_region(regions["list_region"])
+            scale_region = self._scale_region
+            stabilize_image, _ = self._row_list_snapshot_crop(snapshot, target_list_region)
         self._row_list_active_snapshot = snapshot
+        self._row_list_diagnostic_ocr_cache = {}
         scale_y = target_list_region[3] / list_height
         predicted = [round(offset * scale_y) for offset in row_offsets]
         corrected = stabilize_row_offsets(
-            snapshot[0], predicted,
+            stabilize_image, predicted,
             first_row_bottom=round(max_child_bottom * scale_y),
             tolerance=max(1, round(3 * scale_y)),
         )
@@ -2232,16 +2472,17 @@ class MacroPlayer:
         right_condition = action.get("right_condition", {})
         if not isinstance(left_condition, dict) or not isinstance(right_condition, dict):
             raise RuntimeError("列表逐行条件点击的条件无效")
+        cells: list[dict] = []
         self._diagnostic_log_event(
             f"列表逐行识别诊断开始：共 {len(row_offsets)} 行，"
-            f"行高 {row_height} 像素；不执行点击",
+            f"行高 {row_height} 像素；来源 {source_label}；不执行点击",
             result_sink,
         )
         try:
             for row_index, row_offset in enumerate(row_offsets):
                 def translated(key: str) -> tuple[int, int, int, int]:
                     x, y, width, height = regions[key]
-                    target = self._scale_region(
+                    target = scale_region(
                         (list_x + x, list_y + row_offset + y, width, height),
                     )
                     correction = corrected[row_index] - predicted[row_index]
@@ -2284,175 +2525,47 @@ class MacroPlayer:
                     f"右侧{'命中' if right_matched else '未命中'}",
                     result_sink,
                 )
-        finally:
-            self._row_list_active_snapshot = None
-        self._diagnostic_log_event(
-            "列表逐行识别诊断结束：已输出全部行结果，未执行点击",
-            result_sink,
-        )
-
-    @staticmethod
-    def _grid_action_cells(action: dict) -> list[list[tuple[int, int, int, int]]]:
-        raw_region = action.get("grid_region", [])
-        if not isinstance(raw_region, (list, tuple)) or len(raw_region) != 4:
-            raise RuntimeError("网格逐行条件点击的区域无效")
-        try:
-            region = tuple(map(int, raw_region))
-            horizontal = tuple(
-                int(str(value).strip()) for value in action.get("horizontal_lines", [])
-                if str(value).strip()
-            )
-            vertical = tuple(
-                int(str(value).strip()) for value in action.get("vertical_lines", [])
-                if str(value).strip()
-            )
-            cells = build_grid_cells(region, horizontal, vertical)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(f"网格逐行条件点击的网格配置无效：{exc}") from exc
-        if not cells or not cells[0]:
-            raise RuntimeError("网格逐行条件点击至少需要一个单元格")
-        column_count = len(cells[0])
-        for key in ("left_column", "right_column", "click_column"):
-            try:
-                column = int(action.get(key, -1))
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError(f"网格逐行条件点击的{key}无效") from exc
-            if not 0 <= column < column_count:
-                raise RuntimeError(f"网格逐行条件点击的{key}超出列范围")
-        return cells
-
-    @staticmethod
-    def _grid_diagnostic_snapshot(action: dict):
-        """Load the grid's saved canvas for a non-destructive recognition test."""
-        screenshot_text = str(action.get("screenshot_path", "")).strip()
-        if not screenshot_text:
-            raise RuntimeError("网格逐行识别测试需要先选择网格底图")
-        screenshot_path = resolve_path(screenshot_text)
-        if not screenshot_path.is_file():
-            raise RuntimeError(f"网格底图不存在：{screenshot_path}")
-        image = load_image(screenshot_path)
-        if image is None or getattr(image, "ndim", 0) < 2:
-            raise RuntimeError(f"网格底图无法读取：{screenshot_path}")
-
-        region = tuple(map(int, action["grid_region"]))
-        image_height, image_width = image.shape[:2]
-        # GridLayoutEditor stores a screen capture cropped to grid_region when
-        # no external image was selected.  Treat that legacy crop as an image
-        # with the saved screen origin; a user-selected full canvas is local.
-        origin = (region[0], region[1]) \
-            if (image_width, image_height) == (region[2], region[3]) else (0, 0)
-        return image, origin, screenshot_path
-
-    def _execute_grid_row_condition_click(self, action: dict, hwnd: int | None):
-        """Scan a saved grid from top to bottom and click the selected column."""
-        cells = self._grid_action_cells(action)
-        left_column = int(action["left_column"])
-        right_column = int(action["right_column"])
-        click_column = int(action["click_column"])
-        left_condition = action.get("left_condition", {})
-        right_condition = action.get("right_condition", {})
-        if not isinstance(left_condition, dict) or not isinstance(right_condition, dict):
-            raise RuntimeError("网格逐行条件点击的条件无效")
-        grid_region = tuple(map(int, action["grid_region"]))
-        self._row_list_active_snapshot = capture_bgr(self._scale_region(grid_region))
-        try:
-            for row_index, row in enumerate(cells, start=1):
-                left_cell = row[left_column]
-                right_cell = row[right_column]
-                if not self._row_list_condition_matches(left_condition, left_cell, f"第{row_index}行左侧"):
-                    continue
-                if not self._row_list_condition_matches(right_condition, right_cell, f"第{row_index}行右侧"):
-                    continue
-                x, y, width, height = self._scale_region(row[click_column])
-                count = max(1, min(9999, int(action.get("click_count", 1))))
-                self._click_module_point(
-                    x + width // 2, y + height // 2,
-                    str(action.get("button", "left")), count, hwnd,
-                )
-                self._log_event(f"网格逐行点击：第{row_index}行命中，已点击 {count} 次")
-                return None
-            self._log_event("网格逐行点击：本轮没有满足条件的行")
-            return None
-        finally:
-            self._row_list_active_snapshot = None
-
-    def _diagnose_grid_row_condition_click(
-            self, action: dict, hwnd: int | None,
-            result_sink: Callable[[str], None] | None = None) -> dict:
-        """Recognize every saved grid cell without clicking or reading live screen."""
-        del hwnd
-        cells = self._grid_action_cells(action)
-        left_column = int(action["left_column"])
-        right_column = int(action["right_column"])
-        left_condition = action.get("left_condition", {})
-        right_condition = action.get("right_condition", {})
-        image, origin, screenshot_path = self._grid_diagnostic_snapshot(action)
-        self._row_list_active_snapshot = (image, origin)
-        self._row_list_diagnostic_ocr_cache = {}
-        result = {
-            "image_path": str(screenshot_path),
-            "image_origin": list(origin),
-            "grid_region": list(map(int, action["grid_region"])),
-            "horizontal_lines": [int(value) for value in action.get("horizontal_lines", [])],
-            "vertical_lines": [int(value) for value in action.get("vertical_lines", [])],
-            "left_column": left_column,
-            "right_column": right_column,
-            "click_column": int(action["click_column"]),
-            "cells": [],
-        }
-        self._diagnostic_log_event(
-            f"网格逐行识别诊断开始：共 {len(cells)} 行；不执行点击",
-            result_sink,
-        )
-        try:
-            for row_index, row in enumerate(cells, start=1):
-                row_results = []
-                for column_index, cell in enumerate(row, start=1):
-                    if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
-                        raise PlaybackStopped()
-                    crop, crop_origin = self._row_list_snapshot_crop(
-                        self._row_list_active_snapshot, cell,
-                    )
-                    recognized, matches = recognize_image_with_boxes(crop, crop_origin)
-                    self._row_list_diagnostic_ocr_cache[tuple(cell)] = (recognized, matches)
-                    cell_result = {
-                        "row": row_index,
+                for column_index, (key, matched) in enumerate(
+                        (("left_region", left_matched), ("right_region", right_matched)),
+                        start=1,
+                ):
+                    region = translated_regions[key]
+                    cells.append({
+                        "row": row_index + 1,
                         "column": column_index,
-                        "region": list(cell),
-                        "text": str(recognized or "").strip() or "未识别到文字",
-                        "matched": None,
-                    }
-                    row_results.append(cell_result)
-                    result["cells"].append(cell_result)
-
-                left_cell = row[left_column]
-                right_cell = row[right_column]
-                left_matched = self._row_list_condition_matches(
-                    left_condition, left_cell, f"第{row_index}行左侧",
-                )
-                right_matched = self._row_list_condition_matches(
-                    right_condition, right_cell, f"第{row_index}行右侧",
-                )
-                row_results[left_column]["matched"] = bool(left_matched)
-                row_results[right_column]["matched"] = bool(right_matched)
-                self._diagnostic_log_event(
-                    f"网格逐行识别诊断：第{row_index}行左侧第{left_column + 1}列识别成"
-                    f"「{row_results[left_column]['text']}」；右侧第{right_column + 1}列识别成"
-                    f"「{row_results[right_column]['text']}」；"
-                    f"左侧{'命中' if left_matched else '未命中'}，"
-                    f"右侧{'命中' if right_matched else '未命中'}",
-                    result_sink,
-                )
+                        "region": list(region),
+                        "text": self._row_list_diagnostic_cell_text(region, matched),
+                        "matched": bool(matched),
+                    })
         finally:
             self._row_list_active_snapshot = None
             self._row_list_diagnostic_ocr_cache = None
         self._diagnostic_log_event(
-            "网格逐行识别诊断结束：已输出全部行结果，未执行点击",
+            "列表逐行识别诊断结束：已输出全部行结果，未执行点击",
             result_sink,
         )
-        return result
+        return {
+            "subject": "列表逐行",
+            "image_array": snapshot[0],
+            "image_origin": list(snapshot[1]),
+            "left_column": 0,
+            "right_column": 1,
+            "click_column": 2,
+            "cells": cells,
+        }
 
-    def _execute_row_list_condition_click(self, action: dict, hwnd: int | None) -> tuple[str, str | int] | None:
+    def _row_list_diagnostic_cell_text(self, region: tuple[int, int, int, int],
+                                       matched: bool) -> str:
+        """One cell's overlay text: OCR output, or the image-match verdict."""
+        cache = getattr(self, "_row_list_diagnostic_ocr_cache", None) or {}
+        cached = cache.get(tuple(region))
+        if cached is not None:
+            return str(cached[0] or "").strip() or "未识别到文字"
+        return f"图片{'命中' if matched else '未命中'}"
+
+    def _execute_row_list_condition_click(self, action: dict, hwnd: int | None,
+                                          script_stack: set[str] | None = None,
+                                          depth: int = 0) -> tuple[str, str | int] | None:
         """Click the first list row whose left and right conditions both match."""
         regions: dict[str, tuple[int, int, int, int]] = {}
         for key in ("list_region", "left_region", "right_region", "click_region"):
@@ -2566,12 +2679,18 @@ class MacroPlayer:
                     self._log_event(
                         f"列表逐行点击：第{row_index + 1}行命中，已连续点击 {click_count} 次",
                     )
-                    return self._row_list_result_route(action, succeeded=True)
+                    return self._row_list_result_route(
+                        action, succeeded=True, hwnd=hwnd,
+                        script_stack=script_stack, depth=depth,
+                    )
             finally:
                 self._row_list_active_snapshot = None
             if str(action.get("no_match_action", "finish")) != "retry":
                 self._log_event("列表逐行点击：本轮没有满足条件的行，结束扫描")
-                return self._row_list_result_route(action, succeeded=False)
+                return self._row_list_result_route(
+                    action, succeeded=False, hwnd=hwnd,
+                    script_stack=script_stack, depth=depth,
+                )
             self._log_event("列表逐行点击：本轮没有满足条件的行，等待后从顶部重新扫描")
             self._wait(max(0, int(action.get("retry_interval_ms", 500))))
 
@@ -2651,6 +2770,9 @@ class MacroPlayer:
                 enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
                 recognized, matches = recognize_image_with_boxes(enhanced, crop_origin)
                 self._log_event(f"{label} OCR：首次未能解析，已使用同帧图像增强重试")
+            if diagnostic_cache is not None:
+                # 诊断期间留存本轮 OCR 结果，供结果窗口逐格显示识别文字。
+                diagnostic_cache[tuple(region)] = (recognized, matches)
         recognized_text = str(recognized or "").strip() or "未识别到文字"
         if kind == "text":
             expected = str(condition.get("expected_text", ""))

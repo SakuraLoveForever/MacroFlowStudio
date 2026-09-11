@@ -115,6 +115,10 @@ class FocusInputGuard:
     def start(self, timeout: float = 2.0) -> bool:
         if self.active:
             return True
+        if self._thread is not None and self._thread.is_alive():
+            # 上一次会话的钩子线程仍在退出中（可能还持有 BlockInput）：绝不
+            # 并行启动第二个线程，否则旧线程的 finally 会拆掉新会话的状态。
+            return False
         self._ready.clear()
         self._error = None
         self._thread = threading.Thread(target=self._run, name="MacroFlowFocusGuard", daemon=True)
@@ -155,9 +159,15 @@ class FocusInputGuard:
     def _stop_hooks(self) -> None:
         if self._thread_id:
             user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(1.0)
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(1.0)
         self.active = False
+        if thread is not None and thread.is_alive():
+            # 钩子线程没在超时内退出（可能仍卡在 SetWindowsHookExW / BlockInput）：
+            # 保留线程与消息队列标识，让后续 stop()/release() 仍能再发 WM_QUIT
+            # 解锁；否则唯一的解锁入口会随 _thread_id 一起丢掉，只能杀进程。
+            return
         self._thread = None
         self._thread_id = 0
 
@@ -186,6 +196,9 @@ class FocusInputGuard:
                 request = self._input_requests.get_nowait()
             except queue.Empty:
                 return
+            if request["done"].is_set():
+                # PostThreadMessageW 失败时已把错误交给调用方，这一包不能再注入。
+                continue
             try:
                 wininput._send_input_direct(request["input"])
             except Exception as exc:

@@ -17,8 +17,13 @@ from macroflow.input.wininput import is_cursor_near_window_center, is_window_pro
 
 
 def _button_name(button: mouse.Button) -> str:
+    """Return left/right/middle, or an empty string for unsupported buttons.
+
+    侧键（Button.x1/x2）无法回放（SendInput 的 XBUTTON 未实现），旧实现把它
+    静默录成“左键”会在回放时点到完全不同的东西；宁可丢弃并提示用户。
+    """
     text = str(button).split(".")[-1]
-    return text if text in {"left", "right", "middle"} else "left"
+    return text if text in {"left", "right", "middle"} else ""
 
 
 def _key_data(key) -> tuple[int, str]:
@@ -63,6 +68,7 @@ class MacroRecorder:
         self._filter_vks: set[int] = set()
         self.max_actions = 200_000
         self.limit_reached = False
+        self.unsupported_buttons: set[str] = set()
         self._event_times: list[float] = []
 
     def start(self, mode: str = "absolute", interval_ms: int = 100,
@@ -79,9 +85,11 @@ class MacroRecorder:
         # 已绑定快捷键的按键（虚键码）不录进脚本：快捷键只是触发动作的
         # 开关，脚本回放的注入输入才是要记录的内容。
         self._filter_vks = set(int(vk) for vk in (filter_vks or ()) if int(vk) > 0)
-        self.actions = []
-        self._event_times = []
+        with self._lock:
+            self.actions = []
+            self._event_times = []
         self.limit_reached = False
+        self.unsupported_buttons = set()
         now = time.perf_counter()
         self._recording_started_at = now
         self._last_action_time = now
@@ -120,6 +128,7 @@ class MacroRecorder:
         for listener in (self._keyboard_listener, self._mouse_listener):
             if listener:
                 listener.stop()
+                listener.join(1.0)
         if self._raw_listener:
             self._raw_listener.stop()
         self._keyboard_listener = self._mouse_listener = self._raw_listener = None
@@ -130,6 +139,14 @@ class MacroRecorder:
         self._center_lock_samples = 0
         self._center_lock_active = False
         return list(self.actions)
+
+    def set_filter_vks(self, filter_vks: set[int] | None) -> None:
+        """Update the hotkey set excluded from recording.
+
+        绑定可以在录制过程中被修改，而 start() 传进来的是拷贝；不刷新的话
+        新绑定的按键会被录进脚本、已解绑的按键仍被吞掉。
+        """
+        self._filter_vks = set(int(vk) for vk in (filter_vks or ()) if int(vk) > 0)
 
     def current_mode(self) -> str:
         """Resolve the active mouse capture mode for this recording."""
@@ -224,6 +241,12 @@ class MacroRecorder:
             self._center_lock_active = self._center_lock_samples >= 3
         if self.current_mode() != "relative":
             with self._lock:
+                pending = bool(self._raw_dx or self._raw_dy)
+            if pending:
+                # 模式翻转时先把已累积的相对位移落成动作，再清零：否则最多丢掉
+                # 一个刷出窗口的转向量，转向幅度被悄悄录短。
+                self._flush_raw(force=True)
+            with self._lock:
                 self._raw_dx = self._raw_dy = 0
             return
         with self._lock:
@@ -297,10 +320,15 @@ class MacroRecorder:
         mode = self.current_mode()
         # 注入的点击（快捷键脚本回放）也先刷出未落的转向，保持动作顺序。
         self._flush_injected()
+        name = _button_name(button)
+        if not name:
+            # 侧键无法回放：跳过并记录，交给 app 在停止录制后提示。
+            self.unsupported_buttons.add(str(button))
+            return
         if mode == "relative":
             self._flush_raw(force=True)
         self._append({
-            "type": "mouse_button", "button": _button_name(button),
+            "type": "mouse_button", "button": name,
             "down": bool(pressed), "x": int(x), "y": int(y),
             INPUT_MODE_KEY: mode,
         }, when=callback_at)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import itertools
 import threading
 from ctypes import wintypes
 from typing import Callable
@@ -67,6 +68,10 @@ class RAWDATA_UNION(ctypes.Union):
 class RAWINPUT(ctypes.Structure):
     _fields_ = [("header", RAWINPUTHEADER), ("data", RAWDATA_UNION)]
 
+
+# 每次启动用唯一的窗口类名：上一次会话的监听线程若尚未退出，旧类名仍被占用，
+# 复用同名类会直接失败（ERROR_CLASS_ALREADY_EXISTS），原始输入再也起不来。
+_CLASS_SEQUENCE = itertools.count()
 
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
@@ -140,7 +145,7 @@ class RawMouseListener:
         self.hwnd = None
 
     def _run(self) -> None:
-        class_name = f"MacroStudioRawInput_{id(self)}"
+        class_name = f"MacroStudioRawInput_{id(self)}_{next(_CLASS_SEQUENCE)}"
         hinstance = kernel32.GetModuleHandleW(None)
 
         @WNDPROC
@@ -170,6 +175,7 @@ class RawMouseListener:
                                       wintypes.HWND(HWND_MESSAGE), None, hinstance, None)
         if not hwnd:
             self.error = f"创建原始输入窗口失败：{ctypes.get_last_error()}"
+            user32.UnregisterClassW(class_name, hinstance)
             self._ready.set()
             return
         self.hwnd = int(hwnd)
@@ -178,6 +184,7 @@ class RawMouseListener:
         if not ok:
             self.error = f"注册鼠标原始输入失败：{ctypes.get_last_error()}"
             user32.DestroyWindow(hwnd)
+            user32.UnregisterClassW(class_name, hinstance)
             self._ready.set()
             return
         self._ready.set()

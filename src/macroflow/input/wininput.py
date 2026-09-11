@@ -6,6 +6,8 @@ import time
 from ctypes import wintypes
 from dataclasses import dataclass
 
+from macroflow.core.resolution import SUPPORTED_SCALE_PERCENTS
+
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -54,6 +56,29 @@ user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetClientRect.restype = wintypes.BOOL
+user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.MonitorFromWindow.restype = wintypes.HANDLE
+user32.EnumDisplaySettingsW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_void_p,
+]
+user32.EnumDisplaySettingsW.restype = wintypes.BOOL
+user32.ChangeDisplaySettingsExW.argtypes = [
+    wintypes.LPCWSTR, ctypes.c_void_p, wintypes.HWND, wintypes.DWORD, ctypes.c_void_p,
+]
+user32.ChangeDisplaySettingsExW.restype = wintypes.LONG
+user32.GetDisplayConfigBufferSizes.argtypes = [
+    wintypes.UINT, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+]
+user32.GetDisplayConfigBufferSizes.restype = wintypes.LONG
+user32.QueryDisplayConfig.argtypes = [
+    wintypes.UINT, ctypes.POINTER(wintypes.UINT), ctypes.c_void_p,
+    ctypes.POINTER(wintypes.UINT), ctypes.c_void_p, ctypes.c_void_p,
+]
+user32.QueryDisplayConfig.restype = wintypes.LONG
+user32.DisplayConfigGetDeviceInfo.argtypes = [ctypes.c_void_p]
+user32.DisplayConfigGetDeviceInfo.restype = wintypes.LONG
+user32.DisplayConfigSetDeviceInfo.argtypes = [ctypes.c_void_p]
+user32.DisplayConfigSetDeviceInfo.restype = wintypes.LONG
 user32.LoadKeyboardLayoutW.argtypes = [wintypes.LPCWSTR, wintypes.UINT]
 user32.LoadKeyboardLayoutW.restype = wintypes.HANDLE
 user32.ActivateKeyboardLayout.argtypes = [wintypes.HANDLE, wintypes.UINT]
@@ -577,6 +602,421 @@ def get_virtual_screen_rect() -> dict[str, int]:
         "top": int(user32.GetSystemMetrics(77)),
         "width": max(1, int(user32.GetSystemMetrics(78))),
         "height": max(1, int(user32.GetSystemMetrics(79))),
+    }
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
+        ("szDevice", wintypes.WCHAR * 32),
+    ]
+
+
+user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HANDLE, wintypes.BOOL]
+user32.SetWindowRgn.restype = ctypes.c_int
+gdi32 = ctypes.windll.gdi32
+gdi32.CreateRoundRectRgn.argtypes = [
+    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+]
+gdi32.CreateRoundRectRgn.restype = wintypes.HANDLE
+
+user32.GetMonitorInfoW.argtypes = [
+    wintypes.HANDLE, ctypes.POINTER(_MONITORINFO),
+]
+user32.GetMonitorInfoW.restype = wintypes.BOOL
+
+
+DM_PELSWIDTH = 0x00080000
+DM_PELSHEIGHT = 0x00100000
+DM_DISPLAYFREQUENCY = 0x00400000
+CDS_UPDATEREGISTRY = 0x00000001
+DISP_CHANGE_SUCCESSFUL = 0
+ENUM_CURRENT_SETTINGS = 0xFFFFFFFF
+QDC_ONLY_ACTIVE_PATHS = 0x00000002
+DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1
+DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE = -3
+DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE = -4
+ERROR_SUCCESS = 0
+
+
+class _LUID(ctypes.Structure):
+    _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+
+class _DISPLAYCONFIG_DEVICE_INFO_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_int32),
+        ("size", wintypes.UINT),
+        ("adapterId", _LUID),
+        ("id", wintypes.UINT),
+    ]
+
+
+class _DISPLAYCONFIG_PATH_SOURCE_INFO(ctypes.Structure):
+    _fields_ = [
+        ("adapterId", _LUID),
+        ("id", wintypes.UINT),
+        ("modeInfoIdx", wintypes.UINT),
+        ("statusFlags", wintypes.UINT),
+    ]
+
+
+class _DISPLAYCONFIG_RATIONAL(ctypes.Structure):
+    _fields_ = [("Numerator", wintypes.UINT), ("Denominator", wintypes.UINT)]
+
+
+class _DISPLAYCONFIG_PATH_TARGET_INFO(ctypes.Structure):
+    _fields_ = [
+        ("adapterId", _LUID),
+        ("id", wintypes.UINT),
+        ("modeInfoIdx", wintypes.UINT),
+        ("outputTechnology", ctypes.c_int32),
+        ("rotation", wintypes.UINT),
+        ("scaling", wintypes.UINT),
+        ("refreshRate", _DISPLAYCONFIG_RATIONAL),
+        ("scanLineOrdering", ctypes.c_int32),
+        ("targetAvailable", wintypes.BOOL),
+        ("statusFlags", wintypes.UINT),
+    ]
+
+
+class _DISPLAYCONFIG_PATH_INFO(ctypes.Structure):
+    _fields_ = [
+        ("sourceInfo", _DISPLAYCONFIG_PATH_SOURCE_INFO),
+        ("targetInfo", _DISPLAYCONFIG_PATH_TARGET_INFO),
+        ("flags", wintypes.UINT),
+    ]
+
+
+class _DISPLAYCONFIG_SOURCE_DEVICE_NAME(ctypes.Structure):
+    _fields_ = [
+        ("header", _DISPLAYCONFIG_DEVICE_INFO_HEADER),
+        ("viewGdiDeviceName", wintypes.WCHAR * 32),
+    ]
+
+
+class _DISPLAYCONFIG_SOURCE_DPI_SCALE_GET(ctypes.Structure):
+    _fields_ = [
+        ("header", _DISPLAYCONFIG_DEVICE_INFO_HEADER),
+        ("minScaleRel", ctypes.c_int32),
+        ("curScaleRel", ctypes.c_int32),
+        ("maxScaleRel", ctypes.c_int32),
+    ]
+
+
+class _DISPLAYCONFIG_SOURCE_DPI_SCALE_SET(ctypes.Structure):
+    _fields_ = [
+        ("header", _DISPLAYCONFIG_DEVICE_INFO_HEADER),
+        ("scaleRel", ctypes.c_int32),
+    ]
+
+
+class _DEVMODE_DISPLAY_FIELDS(ctypes.Structure):
+    _fields_ = [
+        ("dmPosition", wintypes.POINT),
+        ("dmDisplayOrientation", wintypes.DWORD),
+        ("dmDisplayFixedOutput", wintypes.DWORD),
+    ]
+
+
+class _DEVMODE_DISPLAY_UNION(ctypes.Union):
+    _fields_ = [
+        ("printer_fields", wintypes.SHORT * 8),
+        ("dmPosition", wintypes.POINT),
+        ("display_fields", _DEVMODE_DISPLAY_FIELDS),
+    ]
+
+
+class _DEVMODEW(ctypes.Structure):
+    _fields_ = [
+        ("dmDeviceName", wintypes.WCHAR * 32),
+        ("dmSpecVersion", wintypes.WORD),
+        ("dmDriverVersion", wintypes.WORD),
+        ("dmSize", wintypes.WORD),
+        ("dmDriverExtra", wintypes.WORD),
+        ("dmFields", wintypes.DWORD),
+        ("dmUnion", _DEVMODE_DISPLAY_UNION),
+        ("dmColor", wintypes.SHORT),
+        ("dmDuplex", wintypes.SHORT),
+        ("dmYResolution", wintypes.SHORT),
+        ("dmTTOption", wintypes.SHORT),
+        ("dmCollate", wintypes.SHORT),
+        ("dmFormName", wintypes.WCHAR * 32),
+        ("dmLogPixels", wintypes.WORD),
+        ("dmBitsPerPel", wintypes.DWORD),
+        ("dmPelsWidth", wintypes.DWORD),
+        ("dmPelsHeight", wintypes.DWORD),
+        ("dmDisplayFlags", wintypes.DWORD),
+        ("dmDisplayFrequency", wintypes.DWORD),
+        ("dmICMMethod", wintypes.DWORD),
+        ("dmICMIntent", wintypes.DWORD),
+        ("dmMediaType", wintypes.DWORD),
+        ("dmDitherType", wintypes.DWORD),
+        ("dmReserved1", wintypes.DWORD),
+        ("dmReserved2", wintypes.DWORD),
+        ("dmPanningWidth", wintypes.DWORD),
+        ("dmPanningHeight", wintypes.DWORD),
+    ]
+
+
+def set_rounded_window(hwnd: int | None, radius: int = 10) -> bool:
+    """Clip a window to a rounded rectangle.
+
+    DWM 只对带标准边框的顶层窗口画圆角；无边框的悬浮小窗/提醒条用窗口区域
+    自己做圆角。区域由系统接管，成功时不要 DeleteObject。
+    """
+    if not hwnd:
+        return False
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(wintypes.HWND(int(hwnd)), ctypes.byref(rect)):
+        return False
+    width = max(1, int(rect.right - rect.left))
+    height = max(1, int(rect.bottom - rect.top))
+    diameter = max(2, int(radius) * 2)
+    region = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)
+    if not region:
+        return False
+    if not user32.SetWindowRgn(wintypes.HWND(int(hwnd)), region, True):
+        gdi32.DeleteObject(region)
+        return False
+    return True
+
+
+def get_window_dpi(hwnd: int | None) -> int:
+    """DPI of the monitor the window currently sits on (per-monitor aware)."""
+    if hwnd:
+        try:
+            dpi = int(user32.GetDpiForWindow(wintypes.HWND(int(hwnd))))
+        except (AttributeError, OSError, TypeError, ValueError):
+            dpi = 0
+        if dpi > 0:
+            return dpi
+    try:
+        return int(user32.GetDpiForSystem()) or 96
+    except (AttributeError, OSError):
+        return 96
+
+
+def get_primary_screen_rect() -> dict[str, int]:
+    """Return the primary monitor rectangle, excluding other monitors."""
+    return {
+        "left": 0,
+        "top": 0,
+        "width": max(1, int(user32.GetSystemMetrics(0))),
+        "height": max(1, int(user32.GetSystemMetrics(1))),
+    }
+
+
+def _monitor_info_for_window(hwnd: int | None) -> _MONITORINFO | None:
+    if not hwnd:
+        return None
+    monitor = user32.MonitorFromWindow(wintypes.HWND(int(hwnd)), 2)
+    if not monitor:
+        return None
+    info = _MONITORINFO(cbSize=ctypes.sizeof(_MONITORINFO))
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    return info
+
+
+def get_display_device_name_for_window(hwnd: int | None) -> str | None:
+    """Return the Windows display-device name for the monitor of ``hwnd``."""
+    info = _monitor_info_for_window(hwnd)
+    return str(info.szDevice).strip() if info and info.szDevice else None
+
+
+def set_display_resolution_for_window(hwnd: int | None, width: int, height: int,
+                                      refresh_rate: int = 0) -> bool:
+    """Change only the monitor containing ``hwnd`` to the requested mode."""
+    device_name = get_display_device_name_for_window(hwnd)
+    if not device_name:
+        return False
+    try:
+        width = int(width)
+        height = int(height)
+        refresh_rate = int(refresh_rate or 0)
+    except (TypeError, ValueError):
+        return False
+    if width <= 0 or height <= 0 or refresh_rate < 0:
+        return False
+
+    mode = _DEVMODEW()
+    mode.dmSize = ctypes.sizeof(_DEVMODEW)
+    if not user32.EnumDisplaySettingsW(
+        device_name, ENUM_CURRENT_SETTINGS, ctypes.byref(mode),
+    ):
+        return False
+    mode.dmPelsWidth = width
+    mode.dmPelsHeight = height
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT
+    if refresh_rate:
+        mode.dmDisplayFrequency = refresh_rate
+        mode.dmFields |= DM_DISPLAYFREQUENCY
+    result = user32.ChangeDisplaySettingsExW(
+        device_name, ctypes.byref(mode), None, CDS_UPDATEREGISTRY, None,
+    )
+    return int(result) == DISP_CHANGE_SUCCESSFUL
+
+
+def _display_config_source_for_device(device_name: str) -> tuple[_LUID, int] | None:
+    """Find the CCD source identified by a GDI device name such as DISPLAY2."""
+    path_count = wintypes.UINT()
+    mode_count = wintypes.UINT()
+    if user32.GetDisplayConfigBufferSizes(
+            QDC_ONLY_ACTIVE_PATHS, ctypes.byref(path_count), ctypes.byref(mode_count)) != ERROR_SUCCESS:
+        return None
+    paths = (_DISPLAYCONFIG_PATH_INFO * max(1, int(path_count.value)))()
+    # DISPLAYCONFIG_MODE_INFO is 64 bytes on supported Windows versions.  The
+    # mode data is not inspected here, but QueryDisplayConfig still requires a
+    # correctly sized output buffer.
+    modes = ctypes.create_string_buffer(max(1, int(mode_count.value)) * 64)
+    if user32.QueryDisplayConfig(
+            QDC_ONLY_ACTIVE_PATHS,
+            ctypes.byref(path_count), ctypes.byref(paths),
+            ctypes.byref(mode_count), ctypes.byref(modes), None) != ERROR_SUCCESS:
+        return None
+    for path in paths[:int(path_count.value)]:
+        packet = _DISPLAYCONFIG_SOURCE_DEVICE_NAME()
+        packet.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME
+        packet.header.size = ctypes.sizeof(packet)
+        packet.header.adapterId = path.sourceInfo.adapterId
+        packet.header.id = path.sourceInfo.id
+        if user32.DisplayConfigGetDeviceInfo(ctypes.byref(packet.header)) == ERROR_SUCCESS \
+                and str(packet.viewGdiDeviceName).casefold() == str(device_name).casefold():
+            return path.sourceInfo.adapterId, int(path.sourceInfo.id)
+    return None
+
+
+def _display_scale_info(adapter_id: _LUID, source_id: int) -> tuple[int, int, int, int] | None:
+    packet = _DISPLAYCONFIG_SOURCE_DPI_SCALE_GET()
+    packet.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE
+    packet.header.size = ctypes.sizeof(packet)
+    packet.header.adapterId = adapter_id
+    packet.header.id = int(source_id)
+    if user32.DisplayConfigGetDeviceInfo(ctypes.byref(packet.header)) != ERROR_SUCCESS:
+        return None
+    min_index = max(0, -int(packet.minScaleRel))
+    minimum_index = min_index + int(packet.minScaleRel)
+    current_index = min_index + int(packet.curScaleRel)
+    max_index = min_index + int(packet.maxScaleRel)
+    if not 0 <= minimum_index <= min_index < len(SUPPORTED_SCALE_PERCENTS) \
+            or not min_index <= current_index <= max_index \
+            or max_index >= len(SUPPORTED_SCALE_PERCENTS):
+        return None
+    return (
+        SUPPORTED_SCALE_PERCENTS[current_index],
+        SUPPORTED_SCALE_PERCENTS[minimum_index],
+        SUPPORTED_SCALE_PERCENTS[min_index],
+        SUPPORTED_SCALE_PERCENTS[max_index],
+    )
+
+
+def get_display_resolution_for_window(hwnd: int | None) -> tuple[int, int, int] | None:
+    """当前显示器分辨率与刷新率 (width, height, hz)；取不到返回 None。"""
+    device_name = get_display_device_name_for_window(hwnd)
+    if not device_name:
+        return None
+    mode = _DEVMODEW()
+    mode.dmSize = ctypes.sizeof(_DEVMODEW)
+    if not user32.EnumDisplaySettingsW(
+            device_name, ENUM_CURRENT_SETTINGS, ctypes.byref(mode)):
+        return None
+    return int(mode.dmPelsWidth), int(mode.dmPelsHeight), int(mode.dmDisplayFrequency)
+
+
+def get_display_scaling_for_window(hwnd: int | None) -> int | None:
+    """当前显示器缩放百分比；CCD 不支持时按窗口 DPI 反推。"""
+    device_name = get_display_device_name_for_window(hwnd)
+    if device_name:
+        source = _display_config_source_for_device(device_name)
+        if source is not None:
+            info = _display_scale_info(*source)
+            if info is not None:
+                return info[0]
+    dpi = get_window_dpi(hwnd)
+    if not dpi:
+        return None
+    percent = round(dpi / 96.0 * 100)
+    return min(SUPPORTED_SCALE_PERCENTS, key=lambda value: abs(value - percent))
+
+
+def set_display_scaling_for_window(hwnd: int | None, scale_percent: int = 100) -> bool:
+    """Set the Windows per-monitor display scale for the monitor of ``hwnd``."""
+    device_name = get_display_device_name_for_window(hwnd)
+    if not device_name:
+        return False
+    try:
+        scale_percent = int(scale_percent)
+    except (TypeError, ValueError):
+        return False
+    if scale_percent not in SUPPORTED_SCALE_PERCENTS:
+        return False
+    source = _display_config_source_for_device(device_name)
+    if source is None:
+        return False
+    adapter_id, source_id = source
+    scale_info = _display_scale_info(adapter_id, source_id)
+    if scale_info is None:
+        return False
+    _current, minimum, recommended, maximum = scale_info
+    if not minimum <= scale_percent <= maximum:
+        return False
+    recommended_index = SUPPORTED_SCALE_PERCENTS.index(recommended)
+    desired_index = SUPPORTED_SCALE_PERCENTS.index(scale_percent)
+    packet = _DISPLAYCONFIG_SOURCE_DPI_SCALE_SET()
+    packet.header.type = DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE
+    packet.header.size = ctypes.sizeof(packet)
+    packet.header.adapterId = adapter_id
+    packet.header.id = source_id
+    packet.scaleRel = desired_index - recommended_index
+    return user32.DisplayConfigSetDeviceInfo(ctypes.byref(packet.header)) == ERROR_SUCCESS
+
+
+user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+user32.MonitorFromPoint.restype = wintypes.HANDLE
+
+
+def _work_area_of(monitor) -> dict[str, int] | None:
+    if not monitor:
+        return None
+    info = _MONITORINFO(cbSize=ctypes.sizeof(_MONITORINFO))
+    if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    rect = info.rcWork
+    return {
+        "left": int(rect.left),
+        "top": int(rect.top),
+        "width": max(1, int(rect.right - rect.left)),
+        "height": max(1, int(rect.bottom - rect.top)),
+    }
+
+
+def get_monitor_work_area_for_window(hwnd: int | None) -> dict[str, int] | None:
+    """显示器可用区域（排除任务栏），窗口所在屏；坐标是物理像素，可为负。"""
+    if not hwnd:
+        return None
+    return _work_area_of(user32.MonitorFromWindow(wintypes.HWND(int(hwnd)), 2))
+
+
+def get_monitor_work_area_for_point(x: int, y: int) -> dict[str, int] | None:
+    """包含该点的那块显示器的可用区域。"""
+    return _work_area_of(user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)), 2))
+
+
+def get_monitor_rect_for_window(hwnd: int | None) -> dict[str, int] | None:
+    """Return the physical desktop rectangle of the monitor containing ``hwnd``."""
+    info = _monitor_info_for_window(hwnd)
+    if info is None:
+        return None
+    rect = info.rcMonitor
+    return {
+        "left": int(rect.left),
+        "top": int(rect.top),
+        "width": max(1, int(rect.right - rect.left)),
+        "height": max(1, int(rect.bottom - rect.top)),
     }
 
 

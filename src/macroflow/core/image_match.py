@@ -86,38 +86,6 @@ def stabilize_row_offsets(
     return corrected
 
 
-def build_grid_cells(
-    region: tuple[int, int, int, int],
-    horizontal_lines: list[int] | tuple[int, ...] = (),
-    vertical_lines: list[int] | tuple[int, ...] = (),
-) -> list[list[tuple[int, int, int, int]]]:
-    """Build absolute grid cells from separator positions relative to a region."""
-    left, top, width, height = map(int, region)
-    if width <= 0 or height <= 0:
-        raise ValueError("网格区域宽高必须大于零")
-
-    def boundaries(lines, limit: int) -> list[int]:
-        values = sorted({int(value) for value in lines})
-        if any(value <= 0 or value >= limit for value in values):
-            raise ValueError("网格分隔线必须位于区域内部")
-        return [0, *values, limit]
-
-    y_boundaries = boundaries(horizontal_lines, height)
-    x_boundaries = boundaries(vertical_lines, width)
-    return [
-        [
-            (
-                left + x_boundaries[column],
-                top + y_boundaries[row],
-                x_boundaries[column + 1] - x_boundaries[column],
-                y_boundaries[row + 1] - y_boundaries[row],
-            )
-            for column in range(len(x_boundaries) - 1)
-        ]
-        for row in range(len(y_boundaries) - 1)
-    ]
-
-
 def find_template(template_path: str | Path, threshold: float = 0.85,
                   region: tuple[int, int, int, int] | None = None,
                   ignore_background: bool = False,

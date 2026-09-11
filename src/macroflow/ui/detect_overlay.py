@@ -36,6 +36,7 @@ LWA_COLORKEY = 0x00000001
 KEY_COLOR = 0x00FF00FF  # 洋红：作为窗口背景键色，被变为全透明
 PS_SOLID = 0
 TRANSPARENT_BKMODE = 1
+NULL_BRUSH = 5  # GetStockObject(NULL_BRUSH)：空心矩形只画边框
 WM_PAINT = 0x000F
 WM_TIMER = 0x0113
 WM_CLOSE = 0x0010
@@ -105,8 +106,32 @@ def _monitor_dpi(x: int, y: int) -> int:
     return 96
 
 
+def _process_is_dpi_aware() -> bool:
+    """Whether this process receives physical pixels (打包版为 SYSTEM_AWARE)."""
+    try:
+        awareness = ctypes.c_int(-1)
+        if _shcore.GetProcessDpiAwareness(None, ctypes.byref(awareness)) == 0:
+            return int(awareness.value) > 0
+    except (AttributeError, OSError):
+        pass
+    return True
+
+
+def _system_scale() -> float:
+    try:
+        return max(1.0, int(_user32.GetDpiForSystem()) / 96.0)
+    except (AttributeError, OSError):
+        return 1.0
+
+
 def _to_virtualized(rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    """Convert physical pixels to virtualized pixels on a DPI-unaware process."""
+    """Convert physical pixels to virtualized pixels on a DPI-unaware process.
+
+    DPI 感知进程拿到的是物理像素，直接使用；只有 DPI 不感知的进程才需要按
+    显示器缩放换算，否则高 DPI 下高亮框会画到错误的位置/尺寸。
+    """
+    if _process_is_dpi_aware():
+        return rect
     left, top, width, height = rect
     dpi = _monitor_dpi(left, top)
     scale = dpi / 96.0
@@ -129,12 +154,18 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             border_color = _pending[4] if _pending else DEFAULT_COLOR
         # 背景填充为键色（透明），再画一圈细边框。
         brush = _gdi32.CreateSolidBrush(KEY_COLOR)
-        _gdi32.FillRect(hdc, ctypes.byref(rect), brush)
+        _user32.FillRect(hdc, ctypes.byref(rect), brush)
         _gdi32.DeleteObject(brush)
-        pen = _gdi32.CreatePen(PS_SOLID, BORDER_PX, border_color)
+        border_px = max(2, round(BORDER_PX * _system_scale()))
+        pen = _gdi32.CreatePen(PS_SOLID, border_px, border_color)
         old_pen = _gdi32.SelectObject(hdc, pen)
+        # Rectangle 会用 DC 当前画刷填充框内：必须选入空画刷，否则 GDI 用默认的
+        # 白色画刷把框内整个填成白块，把识别到的目标挡得严严实实（键色只抠洋红，
+        # 填出来的白不会被抠掉）。选空画刷后只有一圈细边框可见。
+        old_brush = _gdi32.SelectObject(hdc, _gdi32.GetStockObject(NULL_BRUSH))
         _gdi32.SetBkMode(hdc, TRANSPARENT_BKMODE)
         _gdi32.Rectangle(hdc, 1, 1, max(2, rect.right - 1), max(2, rect.bottom - 1))
+        _gdi32.SelectObject(hdc, old_brush)
         _gdi32.SelectObject(hdc, old_pen)
         _gdi32.DeleteObject(pen)
         _user32.EndPaint(hwnd, ctypes.byref(paint))
@@ -150,9 +181,10 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             return 0
         left, top, width, height, _color, duration_ms = data
         left, top, width, height = _to_virtualized((left, top, width, height))
+        border_px = max(2, round(BORDER_PX * _system_scale()))
         _user32.MoveWindow(
-            hwnd, left - BORDER_PX, top - BORDER_PX,
-            max(1, width + BORDER_PX * 2), max(1, height + BORDER_PX * 2),
+            hwnd, left - border_px, top - border_px,
+            max(1, width + border_px * 2), max(1, height + border_px * 2),
             True,
         )
         _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)

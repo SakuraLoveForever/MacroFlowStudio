@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -21,6 +23,28 @@ if __package__ in (None, ""):
     if str(_SRC_ROOT) not in sys.path:
         sys.path.insert(0, str(_SRC_ROOT))
 
+def enable_per_monitor_dpi_awareness() -> None:
+    """按显示器缩放（Per-Monitor v2），必须在创建 Tk 窗口之前调用。
+
+    ttkbootstrap 在创建窗口时会调 SetProcessDPIAware()（SYSTEM_AWARE），而
+    进程的 DPI 感知级别**只有第一次调用生效**。笔记本 + 外接屏不同缩放时，
+    SYSTEM_AWARE 会把另一块屏按主屏 DPI 虚拟化：坐标、截图、虚拟桌面尺寸
+    全部错位（实测虚拟桌面被算成 6360×2522，真实只有 4440×1680）。
+    """
+    try:
+        # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+    except (AttributeError, OSError):
+        pass
+
+
+enable_per_monitor_dpi_awareness()
+
 import ttkbootstrap as ttk
 import pystray
 from PIL import Image, ImageDraw
@@ -29,6 +53,7 @@ from pynput import keyboard
 from macroflow.core.alerts import play_alert, prewarm_alert
 from macroflow.ui.detect_overlay import show_overlay
 from macroflow.ui.update_queue import UIUpdateQueue
+from macroflow.ui import dialogs as dialogs_ui
 from macroflow.ui.dialogs import (
     ClickDialog, GameSetupNoteDialog, GlobalDetectDialog, TurnActionDialog,
     HotkeyScriptsDialog,
@@ -36,10 +61,10 @@ from macroflow.ui.dialogs import (
     RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
     RowListConditionClickDialog,
     RowListDiagnosticResultDialog,
-    GridRowDiagnosticResultDialog,
-    GridRowConditionClickDialog,
+    RowRecognitionResultDialog,
     ModulePickerDialog,
-    MouseMoveDialog, ScheduleDialog,
+    MouseMoveDialog, ResolutionStylesDialog, ScheduleDialog,
+    SetResolutionActionDialog,
     OpenAppDialog, ScriptDirectoriesDialog, TemplateRegionFormDialog,
     TemplateRegionManagerDialog, WindowPicker,
     WorkflowBatchSettingsDialog, WorkflowRepeatDialog,
@@ -56,12 +81,14 @@ from macroflow.core.ocr import (
 from macroflow.core.models import (
     ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
-    END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID, SCRIPT_START_TARGET_ID,
+    END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
+    SCRIPT_START_TARGET_ID,
     MacroScript, Workflow, clone_actions_with_new_ids,
     ensure_action_ids, ensure_workflow_step_ids, is_global_script,
     new_action_id,
     script_ref_repeat_count,
 )
+from macroflow.core.resolution import resolution_styles_from_settings
 from macroflow.input.input_guard import (
     FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS,
 )
@@ -80,17 +107,21 @@ from macroflow.core.storage import (
     display_path, ensure_dirs, migrate_workflow_templates, safe_name,
     DIRECTION_SCRIPTS_DIR,
     load_app_settings, load_script, load_workflow,
+    script_category_for_path,
     registered_module_object, registered_template_region, remap_hotkey_script_bindings,
     resolve_path, save_app_settings,
     save_script, save_workflow,
     update_module_object,
 )
 from macroflow.input.wininput import (
-    WindowInfo, activate_window, enum_windows, get_cursor_pos, get_virtual_screen_rect,
+    WindowInfo, activate_window, enum_windows, get_cursor_pos,
+    get_monitor_rect_for_window, get_monitor_work_area_for_point,
+    get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect,
+    get_window_dpi,
     force_english_input, get_foreground_window_info, get_window_rect,
     is_current_process_window, is_window, is_window_process_foreground,
     make_window_no_activate, send_button, send_move_absolute,
-    set_dark_titlebar, show_window,
+    set_dark_titlebar, set_rounded_window, show_window,
     show_window_no_activate,
 )
 
@@ -153,9 +184,8 @@ FLOATING_NOTICE_POSITIONS = ("左上", "顶部居中", "右上", "左下", "底�
 SCRIPT_CATEGORY_VALUES = ("关卡", "关卡封装", "切换", "方向")
 FLOATING_NOTICE_WIDTH = 360
 FLOATING_NOTICE_HEIGHT = 68
-DEFAULT_MAIN_GEOMETRY = "1540x860"
-MIN_MAIN_WIDTH = 1280
-MIN_MAIN_HEIGHT = 700
+MIN_MAIN_WIDTH = 1180
+MIN_MAIN_HEIGHT = 640
 
 COLOR_BG = "#0E1419"
 COLOR_SIDEBAR = "#131B22"
@@ -167,6 +197,49 @@ COLOR_MUTED = "#94A1AD"
 COLOR_BLUE = "#2F80ED"
 COLOR_RED = "#E04444"
 COLOR_GREEN = "#18A66F"
+# 悬停行 / 输入聚焦用的辅助色，只做轻微提亮，不抢主色。
+COLOR_HOVER = "#1E2A35"
+COLOR_FOCUS = "#2F80ED"
+# 字体族与字号集中维护：正文 9pt + 紧凑间距在 100% DPI 下清晰，
+# 高 DPI 由系统整体放大，不再靠加大字号撑版面。
+FONT_FAMILY = "Microsoft YaHei UI"
+FONT_MONO = "Consolas"
+FONT_SMALL = 8
+FONT_BODY = 9
+FONT_SUBTITLE = 10
+FONT_TITLE = 12
+FONT_BRAND = 15
+# ---- DPI 缩放 ----
+# 打包版进程是 DPI 感知的（SYSTEM_AWARE）：Tk 的字体按真实 DPI 放大，而
+# geometry/padding/rowheight/列宽这些像素值不会自动缩放。所有按 96 DPI
+# 设计的像素常量都必须经过 px()/pad() 换算，否则高 DPI 下文字会撑破行高与
+# 列宽（表现为“文字被裁切”“下一行文字被上一行遮挡”）。
+_UI_SCALE = 1.0
+
+
+def set_ui_scale(root) -> float:
+    """记录 Tk 的 DPI 缩放系数（1.0 = 96 DPI / 100%）。"""
+    global _UI_SCALE
+    try:
+        scaling = float(root.tk.call("tk", "scaling"))
+    except (AttributeError, tk.TclError, ValueError):
+        scaling = 96.0 / 72.0
+    _UI_SCALE = max(1.0, scaling / (96.0 / 72.0))
+    return _UI_SCALE
+
+
+def px(value) -> int:
+    """把按 96 DPI 设计的像素值换算到当前 DPI（0 仍为 0）。"""
+    number = float(value)
+    if number == 0:
+        return 0
+    return max(1, int(round(number * _UI_SCALE)))
+
+
+def pad(*values) -> tuple[int, ...]:
+    """换算一组像素值（padding/padx/pady）。"""
+    return tuple(px(value) for value in values)
+
 
 ACTION_ICONS = {
     "delay": "◷",
@@ -183,12 +256,12 @@ ACTION_ICONS = {
     "ocr_compare": "⇄",
     "multi_condition_click": "⊞",
     "row_list_condition_click": "▤",
-    "grid_row_condition_click": "▦",
     "notice": "i",
     "comment": "≡",
     "script_ref": "⇄",
     "open_app": "▶",
     "close_app": "✕",
+    "set_resolution": "▣",
     "jump": "⇢",
     "jump_current_script_last": "⇥",
     "block": "⏸",
@@ -244,16 +317,125 @@ def disable_combobox_wheel_selection(root) -> None:
         root.bind_class("TCombobox", sequence, stop)
 
 
+def apply_pointer_cursors(widget) -> None:
+    """Give every clickable control a hand cursor (Tk has no hover CSS)."""
+    for child in widget.winfo_children():
+        if isinstance(child, (ttk.Button, ttk.Checkbutton, tk.Button, tk.Checkbutton)):
+            try:
+                child.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+        apply_pointer_cursors(child)
+
+
+# 表格列宽按 96 DPI 设计，创建和 DPI 变化时都用 px() 换算（见 _apply_column_widths）。
+ACTION_TREE_COLUMNS = (
+    ("index", "#", 46, "center"), ("kind", "动作", 96, "w"),
+    ("detail", "参数", 420, "w"), ("delay", "执行前延时", 92, "center"),
+)
+WORKFLOW_TREE_COLUMNS = (
+    ("index", "步骤", 50, "center"), ("script", "脚本 / 模块", 320, "w"),
+    ("repeat", "执行次数", 76, "center"), ("before", "开始前等待", 92, "center"),
+    ("interval", "重复间隔", 92, "center"), ("enabled", "状态", 64, "center"),
+)
+GLOBAL_TREE_COLUMNS = (
+    ("index", "步骤", 50, "center"),
+    ("module", "全局检测模块", 420, "w"),
+    ("status", "状态", 80, "center"),
+)
+
+
+def attach_autohide_scrollbar(tree, scrollbar) -> None:
+    """Hide the vertical scrollbar while the whole list already fits.
+
+    ttk 没有自动隐藏：内容不满一屏时滚动条仍会显示成一条空槽，看起来像“没
+    占满却先上了滚动条”。这里按 tree 的可见范围自动显隐。
+    """
+    manager = scrollbar.winfo_manager() or "pack"
+    state = {"visible": True}
+
+    def set_visible(visible: bool) -> None:
+        if visible == state["visible"]:
+            return
+        state["visible"] = visible
+        if manager == "grid":
+            if visible:
+                scrollbar.grid()
+            else:
+                scrollbar.grid_remove()
+        elif visible:
+            scrollbar.pack(side="right", fill="y")
+        else:
+            scrollbar.pack_forget()
+
+    def on_yscrollcommand(first, last) -> None:
+        set_visible(not (float(first) <= 0.0 and float(last) >= 1.0))
+        scrollbar.set(first, last)
+
+    tree.configure(yscrollcommand=on_yscrollcommand)
+
+
+def bind_tree_hover(tree, tag: str = "hover") -> None:
+    """Highlight the row under the cursor so long lists stay easy to follow."""
+    tree.tag_configure(tag, background=COLOR_HOVER)
+
+    def set_hover(row: str | None) -> None:
+        previous = getattr(tree, "_hover_row", "")
+        if previous == (row or ""):
+            return
+        if previous and tree.exists(previous) and tag in tree.item(previous, "tags"):
+            tree.item(previous, tags=tuple(
+                item for item in tree.item(previous, "tags") if item != tag
+            ))
+        if row and tree.exists(row):
+            tags = tree.item(row, "tags")
+            if tag not in tags:
+                tree.item(row, tags=tuple(tags) + (tag,))
+        tree._hover_row = row or ""
+
+    def on_motion(event):
+        set_hover(tree.identify_row(event.y))
+
+    def on_leave(_event):
+        set_hover(None)
+
+    tree.bind("<Motion>", on_motion, add="+")
+    tree.bind("<Leave>", on_leave, add="+")
+
+
+def default_main_geometry() -> str:
+    """默认窗口尺寸：比旧版更紧凑，并按当前显示器收敛，永不超过屏幕。"""
+    screen = get_virtual_screen_rect()
+    scale = _UI_SCALE if _UI_SCALE > 0 else 1.0
+    logical_width = int(screen.get("width", 0)) / scale
+    logical_height = int(screen.get("height", 0)) / scale
+    width = min(1440, max(MIN_MAIN_WIDTH, int(logical_width) - 80))
+    height = min(820, max(MIN_MAIN_HEIGHT, int(logical_height) - 80))
+    return f"{px(width)}x{px(height)}"
+
+
 def workflow_script_name(value: str) -> str:
     """Show a workflow script as a clean name, never as scripts/name.json."""
     return Path(str(value).replace("\\", "/")).stem or str(value)
 
 
+SCRIPT_CATEGORY_LABELS = {
+    "level": "关卡", "level_pack": "关卡封装",
+    "switch": "切换", "direction": "方向",
+}
+
+
 def script_category_key(label: str) -> str:
-    return {
-        "关卡": "level", "关卡封装": "level_pack",
-        "切换": "switch", "方向": "direction",
-    }.get(label, "level")
+    """脚本类别显示名 → 保存键；未知显示名按关卡处理。"""
+    for key, value in SCRIPT_CATEGORY_LABELS.items():
+        if value == label:
+            return key
+    return "level"
+
+
+def script_category_label(key: str) -> str:
+    """保存键 → 类别显示名；旧脚本缺失或非法键按关卡处理。"""
+    return SCRIPT_CATEGORY_LABELS.get(str(key).strip(), "关卡")
 
 
 def workflow_execution_progress(script_number: int, script_total: int, script_name: str,
@@ -369,8 +551,8 @@ def _module_ref_summary(action: dict, label: str,
             f" · 持续超过 {int(obj.get('hold_ms', 1000))} ms"
             if obj.get("hold_enabled", False) else " · 识别到立即执行"
         )
-    if obj.get("category") == "script_global" and int(obj.get("start_delay_ms", 0)) > 0:
-        detail += f" · {int(obj.get('start_delay_ms', 0))} ms 后开始识别"
+    if int(obj.get("start_delay_ms", 0) or 0) > 0:
+        detail += f" · 进入前延时 {int(obj.get('start_delay_ms', 0))} ms"
     if not number_mode and (bool(obj.get("run_code_after_action", False)) or after == "run_actions"):
         detail += f" · 再执行代码段 {len(obj.get('on_success_actions') or [])} 项"
     if bool(obj.get("run_code_on_timeout", False)):
@@ -715,30 +897,6 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
             f"失败后:{result_summary('on_timeout', 'timeout_jump_action_id')} · 未命中:{no_match}",
             delay,
         )
-    if kind == "grid_row_condition_click":
-        region_values = action.get("grid_region", [])
-        region_text = (
-            ",".join(str(int(part)) for part in region_values)
-            if isinstance(region_values, (list, tuple)) and len(region_values) == 4
-            else "未设置"
-        )
-        horizontal_count = len(action.get("horizontal_lines", []) or [])
-        vertical_count = len(action.get("vertical_lines", []) or [])
-        def grid_column_text(key):
-            value = action.get(key)
-            try:
-                return str(int(value) + 1) if value is not None else "未锁定"
-            except (TypeError, ValueError):
-                return "未锁定"
-        return (
-            action_kind_label(kind, "网格逐行点击"),
-            f"总区域 {region_text} · 横线 {horizontal_count} 条 · 竖线 {vertical_count} 条 · "
-            f"左条件列 {grid_column_text('left_column')} · "
-            f"右条件列 {grid_column_text('right_column')} · "
-            f"点击列 {grid_column_text('click_column')} · "
-            f"连续点击 {int(action.get('click_count', 1))} 次",
-            delay,
-        )
     if kind == "global_detect":
         if action.get("module_ref"):
             return _module_ref_summary(action, "脚本全局模块", action_rows)
@@ -802,6 +960,20 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         ) if on]
         detail = f"结束 {name}（{mode}" + ("、" + "、".join(extras) if extras else "") + "）"
         return action_kind_label(kind, "关闭软件"), detail, delay
+    if kind == "set_resolution":
+        name = str(action.get("name", "")).strip() or "未设置"
+        size = f"{action.get('width', 0)}×{action.get('height', 0)}"
+        refresh = int(action.get("refresh_rate", 0) or 0)
+        refresh_text = f" · {refresh} Hz" if refresh else " · 沿用当前刷新率"
+        scale = int(action.get("scale_percent", 100) or 100)
+        signature = action.get("window") or {}
+        window_name = str(
+            signature.get("title") or signature.get("class_name") or ""
+        ).strip()
+        target = f"参照窗口：{window_name}" if window_name else "当前软件所在显示器"
+        return action_kind_label(kind, "分辨率"), (
+            f"切换到 {name}（{size}{refresh_text} · 缩放 {scale}%） · {target}"
+        ), delay
     if kind == "restart_workflow":
         try:
             row = max(0, int(action.get("restart_workflow_target_row", 0) or 0))
@@ -870,6 +1042,13 @@ def recorded_action_description(action: dict) -> str:
 
 
 class MacroFlowApp:
+    @staticmethod
+    def _actions_need_bound_window(actions: list[dict]) -> bool:
+        return any(
+            str(action.get("type")) in {"turn", "mouse_move"}
+            for action in actions
+        )
+
     def __init__(self):
         ensure_dirs()
         migrate_workflow_templates()
@@ -882,20 +1061,29 @@ class MacroFlowApp:
         )
         self.log_file_lock = threading.Lock()
         self.root = ttk.Window(themename="darkly")
+        # DPI 缩放必须在建界面之前算好：所有像素常量都按它换算。
+        set_ui_scale(self.root)
+        dialogs_ui.set_ui_scale(self.root)
         self.root._macroflow_app = self
-        self.ui_queue = UIUpdateQueue(self.root, interval_ms=50)
+        # 33ms ≈ 30fps：状态/日志刷新的感知延迟更低，CPU 开销仍可忽略。
+        self.ui_queue = UIUpdateQueue(self.root, interval_ms=33)
         self.root.title(f"{APP_NAME}  {APP_VERSION}")
-        self.root.geometry(DEFAULT_MAIN_GEOMETRY)
-        self.root.minsize(MIN_MAIN_WIDTH, MIN_MAIN_HEIGHT)
-        self.root.option_add("*Font", ("Microsoft YaHei UI", 10))
+        self.root.geometry(default_main_geometry())
+        self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
+        self.root.option_add("*Font", (FONT_FAMILY, FONT_BODY))
         disable_combobox_wheel_selection(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._configure_dark_theme()
         self.root.update_idletasks()
         set_dark_titlebar(self.root.winfo_id())
+        # 映射后再设一次：部分 Windows 11 版本只在窗口已有 HWND 后接受
+        # DWMWA_WINDOW_CORNER_PREFERENCE（圆角）；最大化时系统本身不圆角。
+        self.root.after(120, lambda: set_dark_titlebar(self.root.winfo_id()))
 
         self.app_settings = load_app_settings()
         self._restore_main_window_geometry()
+        self._apply_startup_window_state()
+        self._sync_ui_scale_to_monitor()
         # 游戏设置说明（用户可编辑的使用前参数清单）：随 app_settings 持久化。
         self._game_setup_note = self.app_settings.get("game_setup_note")
         # 快捷键脚本绑定：录制与执行过程中按快捷键立即执行绑定的脚本。
@@ -988,6 +1176,7 @@ class MacroFlowApp:
             on_target_window_request=lambda: self._bound_hwnd(update_display=False),
             on_guard_poll=self._evaluate_global_guards,
             on_ocr_engine_wait=self._wait_ocr_ready,
+            on_resolution_monitor_request=self._resolution_monitor_hwnd,
         )
         self.input_guard = FocusInputGuard(
             lambda: self._ui(self.stop_all),
@@ -1068,6 +1257,7 @@ class MacroFlowApp:
         self.exiting = False
 
         self._create_variables()
+        self._refresh_resolution_styles_summary()
         self.player.set_playback_speed(self.playback_speed_var.get())
         self.hotkey_player.set_playback_speed(self.playback_speed_var.get())
         self._build_ui()
@@ -1094,6 +1284,7 @@ class MacroFlowApp:
             # Some Windows launchers propagate SW_HIDE to the first created window.
             self.root.after(120, self._ensure_startup_visible)
         self.root.after_idle(self._start_execution_prewarm)
+        self.root.after(1200, self._watch_display_dpi)
         if self.startup_open_script:
             self.root.after(300, lambda: self._load_startup_script(resolve_path(self.startup_open_script)))
         if self.startup_edit_module:
@@ -1114,62 +1305,91 @@ class MacroFlowApp:
         style.configure("Toolbar.TFrame", background=COLOR_BG)
         style.configure("Status.TFrame", background=COLOR_BG)
 
-        style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT)
+        style.configure("TLabel", background=COLOR_BG, foreground=COLOR_TEXT,
+                        font=(FONT_FAMILY, FONT_BODY))
         style.configure("Sidebar.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT)
-        style.configure("Brand.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
-                        font=("Microsoft YaHei UI", 18, "bold"))
-        style.configure("Muted.TLabel", background=COLOR_BG, foreground=COLOR_MUTED)
-        style.configure("SidebarMuted.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_MUTED)
+        style.configure("Brand.TLabel", background=COLOR_SIDEBAR, foreground="#FFFFFF",
+                        font=(FONT_FAMILY, FONT_BRAND, "bold"))
+        style.configure("Muted.TLabel", background=COLOR_BG, foreground=COLOR_MUTED,
+                        font=(FONT_FAMILY, FONT_SMALL))
+        style.configure("SidebarMuted.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_MUTED,
+                        font=(FONT_FAMILY, FONT_SMALL))
         style.configure("Section.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
-                        font=("Microsoft YaHei UI", 11, "bold"))
+                        font=(FONT_FAMILY, FONT_SUBTITLE, "bold"))
         style.configure("SidebarSection.TLabel", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
-                        font=("Microsoft YaHei UI", 12, "bold"))
+                        font=(FONT_FAMILY, FONT_SUBTITLE, "bold"))
         style.configure("PageTitle.TLabel", background=COLOR_BG, foreground=COLOR_TEXT,
-                        font=("Microsoft YaHei UI", 13, "bold"))
+                        font=(FONT_FAMILY, FONT_TITLE, "bold"))
         style.configure("Empty.TLabel", background=COLOR_SURFACE, foreground=COLOR_MUTED,
-                        font=("Microsoft YaHei UI", 11))
+                        font=(FONT_FAMILY, FONT_SUBTITLE))
         style.configure("StatusText.TLabel", background=COLOR_BG, foreground=COLOR_GREEN,
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.configure("MiniTitle.TLabel", background=COLOR_SURFACE, foreground=COLOR_RED,
-                        font=("Microsoft YaHei UI", 12, "bold"))
-        style.configure("MiniText.TLabel", background=COLOR_SURFACE, foreground=COLOR_MUTED)
+                        font=(FONT_FAMILY, FONT_SUBTITLE, "bold"))
+        style.configure("MiniText.TLabel", background=COLOR_SURFACE, foreground=COLOR_MUTED,
+                        font=(FONT_FAMILY, FONT_SMALL))
         style.configure("MiniTime.TLabel", background=COLOR_SURFACE, foreground=COLOR_TEXT,
-                        font=("Consolas", 13, "bold"))
+                        font=(FONT_MONO, FONT_TITLE, "bold"))
         style.configure("MiniWarning.TLabel", background=COLOR_SURFACE, foreground=COLOR_RED,
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.configure("GlobalMarker.TLabel", background=COLOR_BG, foreground="#7BC96F",
-                        font=("Microsoft YaHei UI", 10, "bold"))
+                        font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.configure("GlobalTrigger.TFrame", background=COLOR_SURFACE)
         style.configure("GlobalTriggerTitle.TLabel", background=COLOR_SURFACE,
-                        foreground=COLOR_TEXT, font=("Microsoft YaHei UI", 10, "bold"))
+                        foreground=COLOR_TEXT, font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.configure("GlobalTriggerSummary.TLabel", background=COLOR_SURFACE,
-                        foreground=COLOR_TEXT)
+                        foreground=COLOR_TEXT, font=(FONT_FAMILY, FONT_BODY))
 
         style.configure("TEntry", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        insertcolor=COLOR_TEXT, padding=5)
+                        insertcolor=COLOR_TEXT, padding=px(3))
+        style.map("TEntry", bordercolor=[("focus", COLOR_FOCUS)],
+                  lightcolor=[("focus", COLOR_FOCUS)], darkcolor=[("focus", COLOR_FOCUS)])
         style.configure("TSpinbox", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
-                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=4)
+                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=px(2))
         style.configure("TCombobox", fieldbackground=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
-                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=4)
-        style.configure("TSeparator", background=COLOR_BORDER)
-        style.configure("TButton", padding=(9, 5), font=("Microsoft YaHei UI", 9))
-        style.configure("TCheckbutton", padding=(2, 2), font=("Microsoft YaHei UI", 9))
+                        bordercolor=COLOR_BORDER, arrowcolor=COLOR_MUTED, padding=px(2))
+        style.map("TCombobox", bordercolor=[("focus", COLOR_FOCUS)],
+                  lightcolor=[("focus", COLOR_FOCUS)], darkcolor=[("focus", COLOR_FOCUS)])
+        # ttkbootstrap 会把 "TSeparator" 当成新样式去派生（内部 element_create 一个
+        # 全局元素），第二次 configure 就抛 "Duplicate element Horizontal.Separator
+        # .separator"。这里只设与 DPI 无关的颜色，配一次即可——本方法会在 DPI 变化
+        # 时重跑（见 _sync_ui_scale_to_monitor / _apply_display_dpi）。
+        if not getattr(self, "_separator_style_configured", False):
+            self._separator_style_configured = True
+            style.configure("TSeparator", background=COLOR_BORDER)
+        style.configure("TButton", padding=pad(8, 3), font=(FONT_FAMILY, FONT_BODY))
+        style.configure("TCheckbutton", padding=pad(1, 1), font=(FONT_FAMILY, FONT_BODY))
+        style.map("TCheckbutton",
+                  background=[("active", COLOR_SURFACE_ALT)],
+                  foreground=[("active", "#FFFFFF")])
+        # ttkbootstrap 的语义按钮（bootstyle=primary/success/danger/…）也要跟着
+        # 变紧凑，否则同一界面里两套按钮高度。样式名由 ttkbootstrap 拼接：
+        # <Color>.TButton / <Color>.Outline.TButton。
+        for color in ("primary", "secondary", "success", "info", "warning", "danger", "light", "dark"):
+            style.configure(f"{color.title()}.TButton", padding=pad(8, 3),
+                            font=(FONT_FAMILY, FONT_BODY))
+            style.configure(f"{color.title()}.Outline.TButton", padding=pad(8, 3),
+                            font=(FONT_FAMILY, FONT_BODY))
 
         style.configure("TNotebook", background=COLOR_BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure("TNotebook.Tab", background=COLOR_BG, foreground=COLOR_MUTED,
-                        borderwidth=0, padding=(14, 8), font=("Microsoft YaHei UI", 10))
+                        borderwidth=0, padding=pad(12, 5), font=(FONT_FAMILY, FONT_BODY))
         style.map("TNotebook.Tab",
-                  background=[("selected", COLOR_BG), ("active", COLOR_SURFACE)],
+                  # 选中的页签用略亮的卡片底色，层次比“只有文字变色”更清楚。
+                  background=[("selected", COLOR_SURFACE), ("active", COLOR_SURFACE_ALT)],
                   foreground=[("selected", COLOR_TEXT), ("active", COLOR_TEXT)],
                   lightcolor=[("selected", COLOR_BLUE)], bordercolor=[("selected", COLOR_BLUE)])
 
+        # 行高按字体实际行高算，避免高 DPI 下文字上下被截（行高必须 > 字体行高）。
+        tree_font = tkfont.Font(family=FONT_FAMILY, size=FONT_BODY)
         style.configure("Treeview", background=COLOR_SURFACE, fieldbackground=COLOR_SURFACE,
-                        foreground=COLOR_TEXT, bordercolor=COLOR_BORDER, rowheight=34,
-                        font=("Microsoft YaHei UI", 10))
+                        foreground=COLOR_TEXT, bordercolor=COLOR_BORDER,
+                        rowheight=tree_font.metrics("linespace") + px(8),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.configure("Treeview.Heading", background=COLOR_SURFACE_ALT, foreground=COLOR_MUTED,
-                        bordercolor=COLOR_BORDER, relief="flat", padding=(8, 7),
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        bordercolor=COLOR_BORDER, relief="flat", padding=pad(6, 4),
+                        font=(FONT_FAMILY, FONT_SMALL, "bold"))
         style.map("Treeview", background=[("selected", "#244D78")],
                   foreground=[("selected", "#FFFFFF")])
         style.configure("Workflow.Treeview")
@@ -1178,57 +1398,58 @@ class MacroFlowApp:
         style.map("Treeview.Heading", background=[("active", "#24313B")])
         style.configure("Ghost.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(10, 5),
-                        font=("Microsoft YaHei UI", 9))
+                        relief="solid", borderwidth=1, padding=pad(8, 3),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.map("Ghost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
                   bordercolor=[("active", "#516170")])
         style.configure("CompactGhost.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(8, 4),
-                        font=("Microsoft YaHei UI", 9))
+                        relief="solid", borderwidth=1, padding=pad(6, 2),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.map("CompactGhost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
                   bordercolor=[("active", "#516170")])
         style.configure("ToolGroupTitle.TLabel", background=COLOR_BG, foreground=COLOR_MUTED,
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        font=(FONT_FAMILY, FONT_SMALL, "bold"))
         style.configure("SectionCard.TLabelframe", background=COLOR_SURFACE,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER,
                         darkcolor=COLOR_BORDER, relief="solid", borderwidth=1)
         style.configure("SectionCard.TLabelframe.Label", background=COLOR_SURFACE,
-                        foreground=COLOR_TEXT, font=("Microsoft YaHei UI", 10, "bold"))
+                        foreground=COLOR_TEXT, font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.configure("ScriptTool.TButton", background=COLOR_BG, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(5, 5),
-                        font=("Microsoft YaHei UI", 9))
+                        relief="solid", borderwidth=1, padding=pad(4, 3),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.map("ScriptTool.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
                   bordercolor=[("active", "#516170")])
         style.configure("AccentScriptTool.TButton", background="#122D48", foreground="#8FC4FF",
                         bordercolor=COLOR_BLUE, lightcolor=COLOR_BLUE, darkcolor=COLOR_BLUE,
-                        relief="solid", borderwidth=1, padding=(5, 5),
-                        font=("Microsoft YaHei UI", 9, "bold"))
+                        relief="solid", borderwidth=1, padding=pad(4, 3),
+                        font=(FONT_FAMILY, FONT_BODY, "bold"))
         style.map("AccentScriptTool.TButton",
                   background=[("active", "#18426A"), ("pressed", "#205582")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")])
         style.configure("DangerScriptTool.TButton", background=COLOR_BG, foreground="#FF6B6B",
                         bordercolor="#A93636", lightcolor="#A93636", darkcolor="#A93636",
-                        relief="solid", borderwidth=1, padding=(5, 5),
-                        font=("Microsoft YaHei UI", 9))
+                        relief="solid", borderwidth=1, padding=pad(4, 3),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.map("DangerScriptTool.TButton",
                   background=[("active", "#3B1E22"), ("pressed", "#522329")],
                   foreground=[("active", "#FFFFFF")], bordercolor=[("active", COLOR_RED)])
         style.configure("SidebarGhost.TButton", background=COLOR_SIDEBAR, foreground=COLOR_TEXT,
                         bordercolor=COLOR_BORDER, lightcolor=COLOR_BORDER, darkcolor=COLOR_BORDER,
-                        relief="solid", borderwidth=1, padding=(9, 5),
-                        font=("Microsoft YaHei UI", 9))
+                        relief="solid", borderwidth=1, padding=pad(7, 2),
+                        font=(FONT_FAMILY, FONT_BODY))
         style.map("SidebarGhost.TButton",
                   background=[("active", COLOR_SURFACE_ALT), ("pressed", "#263541")],
                   foreground=[("disabled", "#58646F"), ("active", "#FFFFFF")],
                   bordercolor=[("active", "#516170")])
+
         self.root.option_add("*TCombobox*Listbox*Background", COLOR_SURFACE_ALT)
         self.root.option_add("*TCombobox*Listbox*Foreground", COLOR_TEXT)
 
@@ -1261,7 +1482,7 @@ class MacroFlowApp:
         self.key_search_match_var = tk.StringVar(value="")
         self._input_search_capturer = None
         self.coordinate_scale_var = tk.StringVar(value=coordinate_scale_summary(
-            self.script.settings.get("recorded_screen"), get_virtual_screen_rect(),
+            self.script.settings.get("recorded_screen"), self._playback_reference_screen(),
         ))
         self.record_count_var = tk.StringVar(value="0 个动作")
         self.workflow_name_var = tk.StringVar(value=self.workflow.name)
@@ -1287,6 +1508,8 @@ class MacroFlowApp:
         self.playback_speed_label_var = tk.StringVar(value=f"{playback_speed:.1f}×")
         self.focus_mode_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("focus_mode_enabled", False)))
         self.activate_target_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("activate_target_enabled", True)))
+        self.resolution_styles = resolution_styles_from_settings(self.app_settings)
+        self.resolution_styles_summary_var = tk.StringVar(value="")
         notice_position = str(self.app_settings.get("floating_notice_position", "顶部居中"))
         if notice_position not in FLOATING_NOTICE_POSITIONS:
             notice_position = "顶部居中"
@@ -1329,8 +1552,9 @@ class MacroFlowApp:
     def _build_ui(self):
         root_frame = ttk.Frame(self.root, style="Workspace.TFrame")
         root_frame.pack(fill="both", expand=True)
-        status = ttk.Frame(root_frame, padding=(16, 8, 16, 8), style="Status.TFrame")
+        status = ttk.Frame(root_frame, padding=pad(14, 5, 14, 5), style="Status.TFrame")
         status.pack(side="bottom", fill="x")
+        ttk.Separator(root_frame, orient="horizontal").pack(side="bottom", fill="x")
         self.status_dot = ttk.Label(status, textvariable=self.status_var, style="StatusText.TLabel")
         self.status_dot.pack(side="left")
         ttk.Label(status, textvariable=self.coordinate_scale_var, style="Muted.TLabel").pack(side="right")
@@ -1338,7 +1562,7 @@ class MacroFlowApp:
         content = ttk.Frame(root_frame, style="Workspace.TFrame")
         content.pack(fill="both", expand=True)
         self._build_sidebar(content)
-        main = ttk.Frame(content, padding=(22, 18, 22, 10), style="Workspace.TFrame")
+        main = ttk.Frame(content, padding=pad(14, 10, 14, 8), style="Workspace.TFrame")
         main.pack(side="left", fill="both", expand=True)
         self.notebook = ttk.Notebook(main)
         self.notebook.pack(fill="both", expand=True)
@@ -1352,6 +1576,7 @@ class MacroFlowApp:
         self._build_script_tab()
         self._build_workflow_tab()
         self._build_log_tab()
+        apply_pointer_cursors(root_frame)
 
     def _on_tab_changed(self, _event=None):
         """Refresh workflow displays when the workflow tab is shown."""
@@ -1367,18 +1592,18 @@ class MacroFlowApp:
         # Keep the configuration panel usable on shorter screens. The inner
         # frame keeps its existing layout while the canvas provides vertical
         # scrolling for all controls.
-        sidebar_shell = ttk.Frame(parent, width=380, style="Sidebar.TFrame")
+        sidebar_shell = ttk.Frame(parent, width=px(372), style="Sidebar.TFrame")
         sidebar_shell.pack(side="left", fill="y")
         sidebar_shell.pack_propagate(False)
         sidebar_canvas = tk.Canvas(
             sidebar_shell, background=COLOR_SIDEBAR, highlightthickness=0,
-            borderwidth=0, width=358,
+            borderwidth=0, width=px(350),
         )
         sidebar_scrollbar = ttk.Scrollbar(sidebar_shell, orient="vertical", command=sidebar_canvas.yview)
         sidebar_canvas.configure(yscrollcommand=sidebar_scrollbar.set)
         sidebar_canvas.pack(side="left", fill="both", expand=True)
         sidebar_scrollbar.pack(side="right", fill="y")
-        sidebar = ttk.Frame(sidebar_canvas, width=358, padding=(20, 22), style="Sidebar.TFrame")
+        sidebar = ttk.Frame(sidebar_canvas, width=px(350), padding=pad(14, 14), style="Sidebar.TFrame")
         sidebar_window = sidebar_canvas.create_window((0, 0), window=sidebar, anchor="nw")
 
         def update_sidebar_scrollregion(_event=None):
@@ -1399,67 +1624,68 @@ class MacroFlowApp:
             for child in widget.winfo_children():
                 bind_sidebar_wheel(child)
         ttk.Label(sidebar, text="MacroFlow", style="Brand.TLabel").pack(anchor="w")
-        ttk.Label(sidebar, text="录制、识图与自动工作流", style="SidebarMuted.TLabel").pack(anchor="w", pady=(2, 22))
+        ttk.Label(sidebar, text="录制、识图与自动工作流", style="SidebarMuted.TLabel").pack(anchor="w", pady=pad(1, 7))
+        ttk.Separator(sidebar, orient="horizontal").pack(fill="x", pady=pad(0, 9))
 
         self.record_button = ttk.Button(sidebar, text="开始录制    F8", command=lambda: self.toggle_record(from_ui=True), bootstyle="danger")
-        self.record_button.pack(fill="x", ipady=7)
+        self.record_button.pack(fill="x", ipady=px(3))
         self.run_button = ttk.Button(sidebar, text="执行当前脚本    F9", command=self.run_current_script, bootstyle="success")
-        self.run_button.pack(fill="x", ipady=7, pady=(10, 0))
-        ttk.Button(sidebar, text="紧急停止    F12", command=self.stop_all, style="SidebarGhost.TButton").pack(fill="x", pady=(10, 0))
+        self.run_button.pack(fill="x", ipady=px(3), pady=pad(5, 0))
+        ttk.Button(sidebar, text="紧急停止    F12", command=self.stop_all, style="SidebarGhost.TButton").pack(fill="x", pady=pad(5, 0))
         ttk.Button(
             sidebar, text="游戏设置说明…", command=self.open_game_setup_note,
             style="SidebarGhost.TButton",
-        ).pack(fill="x", pady=(10, 20))
+        ).pack(fill="x", pady=pad(5, 11))
 
         settings_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        settings_title.pack(fill="x", pady=(0, 8))
+        settings_title.pack(fill="x", pady=pad(0, 5))
         ttk.Label(settings_title, text="录制设置", style="SidebarSection.TLabel").pack(side="left")
         ttk.Button(settings_title, text="测试声音", command=self.test_sound,
                    style="SidebarGhost.TButton", width=7).pack(side="right")
         ttk.Button(settings_title, text="保存配置", command=self.save_sidebar_config,
-                   style="SidebarGhost.TButton", width=7).pack(side="right", padx=(0, 4))
+                   style="SidebarGhost.TButton", width=7).pack(side="right", padx=pad(0, 4))
         option_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        option_row.pack(fill="x", pady=(0, 15))
+        option_row.pack(fill="x", pady=pad(0, 10))
         check_style = {
             "anchor": "w", "background": COLOR_SIDEBAR, "activebackground": COLOR_SIDEBAR,
-            "foreground": COLOR_TEXT, "activeforeground": COLOR_TEXT, "selectcolor": COLOR_SURFACE_ALT,
-            "highlightthickness": 0, "borderwidth": 0, "font": ("Microsoft YaHei UI", 11),
+            "foreground": COLOR_TEXT, "activeforeground": "#FFFFFF", "selectcolor": COLOR_SURFACE_ALT,
+            "highlightthickness": 0, "borderwidth": 0, "font": (FONT_FAMILY, FONT_BODY),
         }
         tk.Checkbutton(option_row, text="快捷键提示音", variable=self.sound_enabled_var,
-                       command=self._settings_changed, **check_style).pack(anchor="w", pady=2)
+                       command=self._settings_changed, **check_style).pack(anchor="w", pady=px(1))
         tk.Checkbutton(option_row, text="录制时显示悬浮小窗", variable=self.mini_window_enabled_var,
-                       command=self._settings_changed, **check_style).pack(anchor="w", pady=2)
+                       command=self._settings_changed, **check_style).pack(anchor="w", pady=px(1))
         tk.Checkbutton(option_row, text="执行时显示悬浮小窗", variable=self.execution_mini_enabled_var,
-                       command=self._settings_changed, **check_style).pack(anchor="w", pady=2)
+                       command=self._settings_changed, **check_style).pack(anchor="w", pady=px(1))
         ttk.Button(
             option_row, text="调节录制/执行小窗位置（显示边界）",
             command=self._adjust_execution_mini_position,
             style="SidebarGhost.TButton",
-        ).pack(anchor="w", fill="x", pady=(2, 6))
-        ttk.Label(option_row, text="点击关闭按钮时", style="Section.TLabel").pack(anchor="w", pady=(9, 3))
+        ).pack(anchor="w", fill="x", pady=pad(2, 6))
+        ttk.Label(option_row, text="点击关闭按钮时", style="Section.TLabel").pack(anchor="w", pady=pad(7, 2))
         close_row = ttk.Frame(option_row, style="Sidebar.TFrame")
         close_row.pack(fill="x")
         ttk.Label(close_row, text="保存并完全退出程序", style="Sidebar.TLabel").pack(side="left")
 
         record_mode_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        record_mode_title.pack(fill="x", pady=(0, 7))
+        record_mode_title.pack(fill="x", pady=pad(0, 5))
         ttk.Label(record_mode_title, text="智能录制", style="SidebarSection.TLabel").pack(side="left")
         self._help_badge(
             record_mode_title,
             "桌面自动记录坐标；绑定游戏窗口，或在游戏中按 F8，可自动记录锁中心的视角转向。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(7, 0))
+        ).pack(side="left", padx=pad(7, 0))
         # 标题与控件分两行：单行会把标题、帮助徽章、数字框、单位框和按钮
         # 全部挤在 318px 内，高 DPI 下整行溢出侧栏，按钮文字被裁切。
         interval_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        interval_title.pack(fill="x", pady=(0, 7))
+        interval_title.pack(fill="x", pady=pad(0, 5))
         ttk.Label(interval_title, text="桌面轨迹间隔", style="Sidebar.TLabel").pack(side="left")
         self._help_badge(
             interval_title, "录制桌面鼠标移动时，相邻轨迹点的最小间隔；数值越小记录越细。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         interval_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        interval_row.pack(fill="x", pady=(0, 15))
+        interval_row.pack(fill="x", pady=pad(0, 15))
         self.interval_spin = ttk.Spinbox(
             interval_row, from_=10, to=500, increment=5,
             textvariable=self.interval_var, width=7,
@@ -1468,34 +1694,35 @@ class MacroFlowApp:
         ttk.Combobox(
             interval_row, textvariable=self.interval_var.unit, values=TIME_UNITS,
             state="readonly", width=4,
-        ).pack(side="left", padx=(5, 0))
+        ).pack(side="left", padx=pad(5, 0))
         self.interval_edit_button = ttk.Button(
             interval_row, text="修改", width=5, style="SidebarGhost.TButton",
             command=lambda: self._toggle_locked_spinbox(
                 self.interval_spin, self.interval_edit_button, self._settings_changed,
             ),
         )
-        self.interval_edit_button.pack(side="left", padx=(8, 0))
+        self.interval_edit_button.pack(side="left", padx=pad(8, 0))
         self.interval_spin.configure(state="disabled")
 
-        ttk.Separator(sidebar).pack(fill="x", pady=4)
+        ttk.Separator(sidebar).pack(fill="x", pady=px(4))
         target_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        target_title.pack(fill="x", pady=(16, 7))
+        target_title.pack(fill="x", pady=pad(16, 7))
         ttk.Label(target_title, text="目标窗口", style="Section.TLabel").pack(side="left")
         self._help_badge(
             target_title,
             "绑定后，坐标会按目标窗口记录和回放；游戏相对转向保持原始视角幅度，不参与分辨率缩放。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(7, 0))
+        ).pack(side="left", padx=pad(7, 0))
+        # wraplength 必须等于侧栏可用宽度：小于它才会换行，等于更大只会被裁切。
         self.bind_label_widget = ttk.Label(sidebar, textvariable=self.bind_label_var,
-                                           wraplength=250, style="SidebarMuted.TLabel")
-        self.bind_label_widget.pack(anchor="w", fill="x", pady=(0, 8))
+                                           wraplength=px(318), style="SidebarMuted.TLabel")
+        self.bind_label_widget.pack(anchor="w", fill="x", pady=pad(0, 8))
         row = ttk.Frame(sidebar, style="Sidebar.TFrame")
         row.pack(fill="x")
         ttk.Button(row, text="选择窗口", command=self.choose_window, bootstyle="primary").pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="清除绑定", command=self.unbind_window, width=7, style="SidebarGhost.TButton").pack(side="left", padx=(8, 0))
+        ttk.Button(row, text="清除绑定", command=self.unbind_window, width=7, style="SidebarGhost.TButton").pack(side="left", padx=pad(8, 0))
         coordinate_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        coordinate_row.pack(fill="x", pady=(8, 0))
+        coordinate_row.pack(fill="x", pady=pad(8, 0))
         self.cursor_position_button = ttk.Button(
             coordinate_row, text="开始实时读取", command=self.toggle_cursor_tracking,
             style="SidebarGhost.TButton",
@@ -1504,11 +1731,11 @@ class MacroFlowApp:
         ttk.Label(
             coordinate_row, textvariable=self.cursor_position_var,
             style="SidebarMuted.TLabel",
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
 
-        ttk.Label(sidebar, text="执行设置", style="SidebarSection.TLabel").pack(anchor="w", pady=(18, 7))
+        ttk.Label(sidebar, text="执行设置", style="SidebarSection.TLabel").pack(anchor="w", pady=pad(18, 7))
         playback_speed_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        playback_speed_title.pack(fill="x", pady=(0, 2))
+        playback_speed_title.pack(fill="x", pady=pad(0, 2))
         ttk.Label(playback_speed_title, text="Playback speed", style="Sidebar.TLabel").pack(side="left")
         ttk.Label(
             playback_speed_title, textvariable=self.playback_speed_label_var,
@@ -1518,14 +1745,32 @@ class MacroFlowApp:
             sidebar, from_=0.5, to=2.0, variable=self.playback_speed_var,
             command=self._on_playback_speed_changed,
         )
-        playback_speed_scale.pack(fill="x", pady=(0, 2))
+        playback_speed_scale.pack(fill="x", pady=pad(0, 2))
         playback_speed_scale.bind("<ButtonRelease-1>", self._settings_changed, add="+")
         ttk.Label(
             sidebar, text="0.5x slow  |  1.0x normal  |  2.0x fast (waits only)",
             style="SidebarMuted.TLabel",
-        ).pack(anchor="w", pady=(0, 8))
+        ).pack(anchor="w", pady=pad(0, 8))
+        resolution_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        resolution_title.pack(fill="x", pady=pad(4, 2))
+        ttk.Label(resolution_title, text="分辨率样式", style="Sidebar.TLabel").pack(side="left")
+        self._help_badge(
+            resolution_title,
+            "脚本中的“分辨率”动作从这里选择样式；参照窗口留空即改当前软件所在的显示器，"
+            "选了窗口则只改该窗口所在的显示器。",
+            background=COLOR_SIDEBAR,
+        ).pack(side="left", padx=pad(6, 0))
+        ttk.Button(
+            resolution_title, text="设置…", width=7,
+            command=self._configure_resolution_styles,
+            style="SidebarGhost.TButton",
+        ).pack(side="right")
+        ttk.Label(
+            sidebar, textvariable=self.resolution_styles_summary_var,
+            wraplength=px(250), style="SidebarMuted.TLabel",
+        ).pack(anchor="w", pady=pad(0, 8))
         focus_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        focus_row.pack(fill="x", pady=(0, 6))
+        focus_row.pack(fill="x", pady=pad(0, 6))
         tk.Checkbutton(
             focus_row, text="强制专注模式",
             variable=self.focus_mode_enabled_var,
@@ -1535,9 +1780,9 @@ class MacroFlowApp:
         self._help_badge(
             focus_row, "执行时锁定实体键鼠，适合需要持续前台操作的目标。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         activate_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        activate_row.pack(fill="x", pady=(0, 6))
+        activate_row.pack(fill="x", pady=pad(0, 6))
         tk.Checkbutton(
             activate_row, text="执行时前置目标",
             variable=self.activate_target_enabled_var,
@@ -1547,9 +1792,9 @@ class MacroFlowApp:
         self._help_badge(
             activate_row, "勾选后每次执行前激活目标窗口；取消勾选只停止前置，不会清除已保存的目标窗口。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         activation_toggle_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        activation_toggle_row.pack(fill="x", pady=(0, 4))
+        activation_toggle_row.pack(fill="x", pady=pad(0, 4))
         tk.Checkbutton(
             activation_toggle_row, text="启用执行前置窗口",
             variable=self.activation_enabled_var,
@@ -1559,14 +1804,14 @@ class MacroFlowApp:
         self._help_badge(
             activation_toggle_row, "可指定另一个窗口先被激活，再执行当前脚本。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         ttk.Label(sidebar, text="执行前置窗口", style="SidebarMuted.TLabel").pack(anchor="w")
         ttk.Label(
             sidebar, textvariable=self.activation_label_var,
-            wraplength=250, style="SidebarMuted.TLabel",
-        ).pack(anchor="w", fill="x", pady=(2, 6))
+            wraplength=px(318), style="SidebarMuted.TLabel",
+        ).pack(anchor="w", fill="x", pady=pad(2, 6))
         activation_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        activation_row.pack(fill="x", pady=(0, 8))
+        activation_row.pack(fill="x", pady=pad(0, 8))
         ttk.Button(
             activation_row, text="选择前置窗口", command=self.choose_activation_window,
             style="SidebarGhost.TButton",
@@ -1574,15 +1819,15 @@ class MacroFlowApp:
         ttk.Button(
             activation_row, text="跟随目标", command=self.unbind_activation_window,
             width=8, style="SidebarGhost.TButton",
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         # 同“桌面轨迹间隔”：标题与控件分两行，避免高 DPI 下控件被挤出侧栏。
         repeat_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        repeat_title.pack(fill="x", pady=(0, 7))
+        repeat_title.pack(fill="x", pady=pad(0, 7))
         ttk.Label(repeat_title, text="脚本重复次数", style="Sidebar.TLabel").pack(side="left")
         self._help_badge(
             repeat_title, "执行当前脚本时完整重复的次数。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         repeat_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
         repeat_row.pack(fill="x")
         self.repeat_spin = ttk.Spinbox(
@@ -1595,18 +1840,18 @@ class MacroFlowApp:
                 self.repeat_spin, self.repeat_edit_button, self._settings_changed,
             ),
         )
-        self.repeat_edit_button.pack(side="left", padx=(8, 0))
+        self.repeat_edit_button.pack(side="left", padx=pad(8, 0))
         self.repeat_spin.configure(state="disabled")
 
         notice_position_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        notice_position_row.pack(fill="x", pady=(9, 0))
+        notice_position_row.pack(fill="x", pady=pad(9, 0))
         notice_title = ttk.Frame(notice_position_row, style="Sidebar.TFrame")
         notice_title.pack(side="left")
         ttk.Label(notice_title, text="浮动提醒位置", style="Sidebar.TLabel").pack(side="left")
         self._help_badge(
             notice_title, "选择脚本“提醒”动作在屏幕上的显示位置。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         notice_position_box = ttk.Combobox(
             notice_position_row,
             textvariable=self.floating_notice_position_var,
@@ -1618,16 +1863,16 @@ class MacroFlowApp:
         notice_position_box.bind("<<ComboboxSelected>>", self._settings_changed)
         notice_position_box.bind("<MouseWheel>", lambda _event: "break")
 
-        ttk.Separator(sidebar).pack(fill="x", pady=(16, 4))
+        ttk.Separator(sidebar).pack(fill="x", pady=pad(16, 4))
         ttk.Label(sidebar, text="启动与备份", style="SidebarSection.TLabel").pack(
-            anchor="w", pady=(12, 7),
+            anchor="w", pady=pad(12, 7),
         )
         tk.Checkbutton(
             sidebar, text="启用定时备份", variable=self.timed_backup_enabled_var,
             command=self._startup_backup_settings_changed, **check_style,
-        ).pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=px(2))
         backup_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        backup_row.pack(fill="x", pady=(5, 8))
+        backup_row.pack(fill="x", pady=pad(5, 8))
         ttk.Label(backup_row, text="备份间隔", style="Sidebar.TLabel").pack(side="left")
         self.backup_interval_box = ttk.Combobox(
             backup_row, textvariable=self.backup_interval_var,
@@ -1641,17 +1886,17 @@ class MacroFlowApp:
         tk.Checkbutton(
             sidebar, text="开机自启动", variable=self.windows_startup_enabled_var,
             command=self._startup_backup_settings_changed, **check_style,
-        ).pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=px(2))
         tk.Checkbutton(
             sidebar, text="启动时最小化到托盘", variable=self.start_minimized_to_tray_var,
             command=self._startup_backup_settings_changed, **check_style,
-        ).pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=px(2))
         tk.Checkbutton(
             sidebar, text="启动时执行工作流", variable=self.startup_run_workflow_var,
             command=self._startup_backup_settings_changed, **check_style,
-        ).pack(anchor="w", pady=2)
+        ).pack(anchor="w", pady=px(2))
         startup_workflow_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        startup_workflow_row.pack(fill="x", pady=(5, 0))
+        startup_workflow_row.pack(fill="x", pady=pad(5, 0))
         ttk.Entry(
             startup_workflow_row, textvariable=self.startup_workflow_path_var,
             state="readonly", width=22,
@@ -1659,33 +1904,33 @@ class MacroFlowApp:
         ttk.Button(
             startup_workflow_row, text="选择…", width=6, style="SidebarGhost.TButton",
             command=self._choose_startup_workflow,
-        ).pack(side="left", padx=(6, 0))
+        ).pack(side="left", padx=pad(6, 0))
         ttk.Label(
             sidebar, text="每个脚本固定覆盖同一份备份，不累计历史副本。",
-            wraplength=250, style="SidebarMuted.TLabel",
-        ).pack(anchor="w", pady=(5, 0))
+            wraplength=px(250), style="SidebarMuted.TLabel",
+        ).pack(anchor="w", pady=pad(5, 0))
 
-        ttk.Separator(sidebar).pack(fill="x", pady=(16, 4))
+        ttk.Separator(sidebar).pack(fill="x", pady=pad(16, 4))
         hotkey_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        hotkey_title.pack(fill="x", pady=(12, 7))
+        hotkey_title.pack(fill="x", pady=pad(12, 7))
         ttk.Label(hotkey_title, text="快捷键脚本", style="SidebarSection.TLabel").pack(side="left")
         self._help_badge(
             hotkey_title,
             "把脚本绑定到快捷键：录制或执行脚本的过程中，按下快捷键立即执行该脚本，"
             "例如游戏中按 J 执行“转向左 90°”。",
             background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=(7, 0))
+        ).pack(side="left", padx=pad(7, 0))
         ttk.Button(
             hotkey_title, text="设置…", width=7, style="SidebarGhost.TButton",
             command=self._configure_hotkey_scripts,
         ).pack(side="right")
         ttk.Label(
-            sidebar, textvariable=self.hotkey_summary_var, wraplength=250,
+            sidebar, textvariable=self.hotkey_summary_var, wraplength=px(318),
             style="SidebarMuted.TLabel",
-        ).pack(anchor="w", pady=(0, 4))
+        ).pack(anchor="w", pady=pad(0, 4))
 
         ttk.Label(sidebar, text="专注执行：F12 停止；无响应时按 Ctrl + Alt + Del。",
-                  wraplength=250, style="SidebarMuted.TLabel").pack(anchor="w", pady=(10, 0))
+                  wraplength=px(318), style="SidebarMuted.TLabel").pack(anchor="w", pady=pad(10, 0))
 
         bind_sidebar_wheel(sidebar)
         update_sidebar_scrollregion()
@@ -1697,7 +1942,7 @@ class MacroFlowApp:
             parent, text="?", width=2, cursor="hand2",
             background=COLOR_BLUE, foreground="#EAF4FF",
             activebackground=COLOR_BLUE, activeforeground="#FFFFFF",
-            font=("Microsoft YaHei UI", 9, "bold"), relief="flat",
+            font=(FONT_FAMILY, FONT_BODY, "bold"), relief="flat",
         )
         Tooltip(badge, text, anchor=parent)
         return badge
@@ -1717,65 +1962,65 @@ class MacroFlowApp:
             ("⇄ 数字比较", "add_ocr_compare", "AccentScriptTool.TButton"),
             ("⊞ 多条件识图", "add_multi_condition_click", "AccentScriptTool.TButton"),
             ("▤ 列表逐行点击", "add_row_list_condition_click", "AccentScriptTool.TButton"),
-            ("▦ 网格逐行点击", "add_grid_row_condition_click", "AccentScriptTool.TButton"),
             ("▶ 软件", "add_open_app", "ScriptTool.TButton"),
             ("✕ 关闭", "add_close_app", "ScriptTool.TButton"),
+            ("▣ 分辨率", "add_set_resolution", "AccentScriptTool.TButton"),
         ("▤ 模块", "add_module", "AccentScriptTool.TButton"),
         ("⇢ 跳转", "add_jump", "AccentScriptTool.TButton"),
         ("⏸ 阻塞", "add_block", "AccentScriptTool.TButton"),
         )
 
     def _build_script_tab(self):
-        header = ttk.Frame(self.script_tab, padding=(16, 14, 16, 8), style="Workspace.TFrame")
+        header = ttk.Frame(self.script_tab, padding=pad(16, 14, 16, 8), style="Workspace.TFrame")
         header.pack(fill="x")
         meta_row = ttk.Frame(header, style="Workspace.TFrame")
         meta_row.pack(fill="x")
         ttk.Label(meta_row, text="脚本名称", style="PageTitle.TLabel").pack(side="left")
         name_entry = ttk.Entry(meta_row, textvariable=self.script_name_var, width=30)
-        name_entry.pack(side="left", padx=(12, 14), ipady=2)
+        name_entry.pack(side="left", padx=pad(12, 14), ipady=px(2))
         name_entry.bind("<KeyRelease>", lambda _: self._mark_dirty())
         self.global_script_marker = ttk.Label(meta_row, text="", style="GlobalMarker.TLabel")
-        self.global_script_marker.pack(side="left", padx=(0, 10))
+        self.global_script_marker.pack(side="left", padx=pad(0, 10))
         ttk.Label(meta_row, text="类别").pack(side="left")
         category_box = ttk.Combobox(
             meta_row, textvariable=self.script_category_var,
             values=SCRIPT_CATEGORY_VALUES, state="readonly", width=10,
         )
-        category_box.pack(side="left", padx=(6, 14))
+        category_box.pack(side="left", padx=pad(6, 14))
         category_box.bind("<<ComboboxSelected>>", self._script_category_changed)
         ttk.Label(meta_row, textvariable=self.record_count_var, style="Muted.TLabel").pack(side="right")
 
         file_row = ttk.Frame(header, style="Workspace.TFrame")
-        file_row.pack(fill="x", pady=(10, 0))
+        file_row.pack(fill="x", pady=pad(10, 0))
         ttk.Button(file_row, text="新建", command=self.new_script, style="Ghost.TButton").pack(side="left")
-        ttk.Button(file_row, text="打开", command=self.open_script, style="Ghost.TButton").pack(side="left", padx=(6, 0))
-        ttk.Button(file_row, text="关闭", command=self.close_script, style="DangerScriptTool.TButton").pack(side="left", padx=(6, 0))
+        ttk.Button(file_row, text="打开", command=self.open_script, style="Ghost.TButton").pack(side="left", padx=pad(6, 0))
+        ttk.Button(file_row, text="关闭", command=self.close_script, style="DangerScriptTool.TButton").pack(side="left", padx=pad(6, 0))
         self.undo_open_button = ttk.Button(
             file_row, text="↩ 撤销打开", command=self.undo_open_script,
             style="Ghost.TButton", state="disabled",
         )
-        self.undo_open_button.pack(side="left", padx=(6, 0))
-        ttk.Button(file_row, text="保存", command=self.save_current_script, bootstyle="primary").pack(side="left", padx=(6, 0))
-        ttk.Button(file_row, text="新开窗口", command=self.open_new_window, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+        self.undo_open_button.pack(side="left", padx=pad(6, 0))
+        ttk.Button(file_row, text="保存", command=self.save_current_script, bootstyle="primary").pack(side="left", padx=pad(6, 0))
+        ttk.Button(file_row, text="新开窗口", command=self.open_new_window, style="Ghost.TButton").pack(side="left", padx=pad(6, 0))
         ttk.Button(file_row, text="模块管理…", command=self.open_template_region_manager,
                    style="Ghost.TButton").pack(side="right")
         ttk.Button(file_row, text="目录设置…", command=self._configure_script_directories,
-                   style="Ghost.TButton").pack(side="right", padx=(0, 6))
+                   style="Ghost.TButton").pack(side="right", padx=pad(0, 6))
         ttk.Button(file_row, text="打开脚本目录", command=lambda: self.open_folder(self._script_category_dir()),
-                   style="Ghost.TButton").pack(side="right", padx=(0, 6))
+                   style="Ghost.TButton").pack(side="right", padx=pad(0, 6))
 
-        toolbar = ttk.Frame(self.script_tab, padding=(16, 4, 16, 10), style="Toolbar.TFrame")
+        toolbar = ttk.Frame(self.script_tab, padding=pad(16, 4, 16, 10), style="Toolbar.TFrame")
         toolbar.pack(fill="x")
         toolbar.columnconfigure(0, weight=1)
 
         add_group = ttk.Frame(toolbar, style="Toolbar.TFrame")
         add_group.grid(row=0, column=0, sticky="ew")
         lower_toolbar = ttk.Frame(toolbar, style="Toolbar.TFrame")
-        lower_toolbar.grid(row=1, column=0, sticky="ew", pady=(9, 0))
+        lower_toolbar.grid(row=1, column=0, sticky="ew", pady=pad(9, 0))
         lower_toolbar.columnconfigure(2, weight=1)
         pos_group = ttk.Frame(lower_toolbar, style="Toolbar.TFrame")
-        pos_group.grid(row=0, column=0, sticky="w", padx=(0, 14))
-        ttk.Label(pos_group, text="插入位置", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
+        pos_group.grid(row=0, column=0, sticky="w", padx=pad(0, 14))
+        ttk.Label(pos_group, text="插入位置", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=pad(0, 5))
         pos_buttons = ttk.Frame(pos_group, style="Toolbar.TFrame")
         pos_buttons.pack(fill="x")
         self.insert_above_button = ttk.Button(
@@ -1787,13 +2032,13 @@ class MacroFlowApp:
             pos_buttons, text="▼ 向下插入",
             command=lambda: self._set_insert_position(False),
         )
-        self.insert_below_button.pack(side="left", padx=(6, 0))
-        ttk.Separator(lower_toolbar, orient="vertical").grid(row=0, column=1, sticky="nsw", padx=(0, 14))
+        self.insert_below_button.pack(side="left", padx=pad(6, 0))
+        ttk.Separator(lower_toolbar, orient="vertical").grid(row=0, column=1, sticky="nsw", padx=pad(0, 14))
         edit_group = ttk.Frame(lower_toolbar, style="Toolbar.TFrame")
         edit_group.grid(row=0, column=2, sticky="ew")
         self._set_insert_position(False)
 
-        ttk.Label(add_group, text="添加动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
+        ttk.Label(add_group, text="添加动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=pad(0, 5))
         add_buttons = ttk.Frame(add_group, style="Toolbar.TFrame")
         add_buttons.pack(fill="x")
         add_button_specs = tuple(
@@ -1809,7 +2054,7 @@ class MacroFlowApp:
                     side="left", padx=(0 if index == 0 else 4, 0),
                     expand=False, fill="none",
                 )
-        ttk.Label(edit_group, text="编辑选中动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=(0, 5))
+        ttk.Label(edit_group, text="编辑选中动作", style="ToolGroupTitle.TLabel").pack(anchor="w", pady=pad(0, 5))
         edit_buttons = ttk.Frame(edit_group, style="Toolbar.TFrame")
         edit_buttons.pack(fill="x")
         self.undo_button = ttk.Button(edit_buttons, text="↶ 撤销",
@@ -1819,7 +2064,7 @@ class MacroFlowApp:
         self.redo_button = ttk.Button(edit_buttons, text="↷ 重做",
                                       command=lambda: self._undo_redo_action_edit(True),
                                       style="ScriptTool.TButton", state="disabled")
-        self.redo_button.pack(side="left", padx=(4, 0))
+        self.redo_button.pack(side="left", padx=pad(4, 0))
         edit_button_specs = (
             ("✎ 编辑", self.edit_selected_action, "ScriptTool.TButton"),
             ("⧉ 复制", self.copy_selected_actions_down, "ScriptTool.TButton"),
@@ -1833,17 +2078,17 @@ class MacroFlowApp:
         for index, (text, command, style_name) in enumerate(edit_button_specs):
             button = ttk.Button(edit_buttons, text=text, command=command, style=style_name)
             button.pack(
-                side="left", padx=(4, 0),
+                side="left", padx=pad(4, 0),
             )
             if index == 0:
                 self.edit_action_button = button
 
         # 全局脚本：触发条件区块 + 语句体标题（类别为"全局"时显示）。
-        self.trigger_holder = ttk.Frame(self.script_tab, padding=(16, 0, 16, 0), style="Workspace.TFrame")
+        self.trigger_holder = ttk.Frame(self.script_tab, padding=pad(16, 0, 16, 0), style="Workspace.TFrame")
         self.trigger_holder.pack(fill="x")
         self.trigger_section = ttk.Frame(self.trigger_holder, style="GlobalTrigger.TFrame")
         trigger_row = ttk.Frame(self.trigger_section, style="GlobalTrigger.TFrame")
-        trigger_row.pack(fill="x", pady=(10, 6))
+        trigger_row.pack(fill="x", pady=pad(10, 6))
         ttk.Label(
             trigger_row, text="◈ 触发条件：", style="GlobalTriggerTitle.TLabel",
         ).pack(side="left")
@@ -1864,22 +2109,22 @@ class MacroFlowApp:
         ttk.Label(
             self.trigger_section, text="要执行的动作（触发后按顺序执行）：",
             style="GlobalTriggerTitle.TLabel",
-        ).pack(fill="x", pady=(0, 8))
+        ).pack(fill="x", pady=pad(0, 8))
 
-        frame = ttk.Frame(self.script_tab, padding=(16, 0, 16, 16), style="Surface.TFrame")
+        frame = ttk.Frame(self.script_tab, padding=pad(16, 0, 16, 16), style="Surface.TFrame")
         frame.pack(fill="both", expand=True)
         key_search_bar = ttk.Frame(frame, style="Surface.TFrame")
-        key_search_bar.pack(fill="x", pady=(0, 8))
+        key_search_bar.pack(fill="x", pady=pad(0, 8))
         ttk.Label(key_search_bar, text="搜索键鼠", style="SidebarMuted.TLabel").pack(side="left")
         key_search_entry = ttk.Entry(
             key_search_bar, textvariable=self.key_search_var, width=18,
         )
-        key_search_entry.pack(side="left", padx=(8, 5))
+        key_search_entry.pack(side="left", padx=pad(8, 5))
         self.input_search_capture_button = ttk.Button(
             key_search_bar, text="检测键鼠…", width=10,
             command=self.start_input_search_capture, style="Ghost.TButton",
         )
-        self.input_search_capture_button.pack(side="left", padx=(0, 5))
+        self.input_search_capture_button.pack(side="left", padx=pad(0, 5))
         key_search_entry.bind("<Return>", lambda _event: self._search_key_actions(1))
         key_search_state = ttk.Combobox(
             key_search_bar, textvariable=self.key_search_state_var,
@@ -1892,7 +2137,7 @@ class MacroFlowApp:
         ttk.Button(
             key_search_bar, text="上一个", width=7,
             command=lambda: self._search_key_actions(-1), style="Ghost.TButton",
-        ).pack(side="left", padx=(8, 3))
+        ).pack(side="left", padx=pad(8, 3))
         ttk.Button(
             key_search_bar, text="下一个", width=7,
             command=lambda: self._search_key_actions(1), style="Ghost.TButton",
@@ -1900,15 +2145,15 @@ class MacroFlowApp:
         ttk.Button(
             key_search_bar, text="清除", width=5,
             command=self._clear_key_search, style="Ghost.TButton",
-        ).pack(side="left", padx=(3, 8))
+        ).pack(side="left", padx=pad(3, 8))
         ttk.Label(key_search_bar, text="统一前延时 ms", style="SidebarMuted.TLabel").pack(side="left")
         ttk.Entry(
             key_search_bar, textvariable=self.key_search_delay_var, width=8,
-        ).pack(side="left", padx=(5, 3))
+        ).pack(side="left", padx=pad(5, 3))
         ttk.Button(
             key_search_bar, text="统一设置", width=8,
             command=self._set_matching_key_action_delays, style="Ghost.TButton",
-        ).pack(side="left", padx=(0, 8))
+        ).pack(side="left", padx=pad(0, 8))
         ttk.Label(
             key_search_bar, textvariable=self.key_search_match_var,
             style="SidebarMuted.TLabel",
@@ -1923,21 +2168,14 @@ class MacroFlowApp:
             show="headings",
             selectmode="extended",
         )
-        for column, text, width, anchor in (
-            ("index", "#", 50, "center"), ("kind", "动作", 104, "w"),
-            ("detail", "参数", 590, "w"), ("delay", "执行前延时", 106, "center"),
-        ):
-            self.action_tree.heading(column, text=text)
-            self.action_tree.column(column, width=width, anchor=anchor, stretch=column == "detail")
+        self._apply_column_widths(self.action_tree, ACTION_TREE_COLUMNS, "detail")
         self.action_tree.column("kind", minwidth=96)
         scroll = ttk.Scrollbar(action_tree_shell, orient="vertical", command=self.action_tree.yview)
         horizontal_scroll = ttk.Scrollbar(
             action_tree_shell, orient="horizontal", command=self.action_tree.xview,
         )
-        self.action_tree.configure(
-            yscrollcommand=scroll.set,
-            xscrollcommand=horizontal_scroll.set,
-        )
+        self.action_tree.configure(xscrollcommand=horizontal_scroll.set)
+        attach_autohide_scrollbar(self.action_tree, scroll)
         self.action_tree.grid(row=0, column=0, sticky="nsew")
         scroll.grid(row=0, column=1, sticky="ns")
         horizontal_scroll.grid(row=1, column=0, sticky="ew")
@@ -1953,31 +2191,32 @@ class MacroFlowApp:
         self.action_tree.bind("<Control-Shift-z>", lambda _: self._undo_redo_action_edit(True))
         self.action_tree.bind("<Control-a>", self._select_all_actions)
         self.action_tree.bind("<Button-3>", self._show_action_context_menu)
+        bind_tree_hover(self.action_tree)
 
     def _build_workflow_tab(self):
-        header = ttk.Frame(self.workflow_tab, padding=(16, 18, 16, 12), style="Workspace.TFrame")
+        header = ttk.Frame(self.workflow_tab, padding=pad(16, 18, 16, 12), style="Workspace.TFrame")
         header.pack(fill="x")
         workflow_meta_bar = ttk.Frame(header, style="Workspace.TFrame")
         workflow_meta_bar.pack(fill="x")
         ttk.Label(workflow_meta_bar, text="工作流名称", style="PageTitle.TLabel").pack(side="left")
         workflow_name_entry = ttk.Entry(workflow_meta_bar, textvariable=self.workflow_name_var, width=22)
-        workflow_name_entry.pack(side="left", padx=(8, 6))
+        workflow_name_entry.pack(side="left", padx=pad(8, 6))
         workflow_name_entry.bind("<KeyRelease>", self._schedule_workflow_draft_save)
         ttk.Button(workflow_meta_bar, text="✏️ 修改名称", command=self.rename_workflow,
                    style="CompactGhost.TButton").pack(side="left")
         ttk.Button(workflow_meta_bar, text="⧉ 复制为新工作流", command=self.duplicate_workflow,
-                   style="CompactGhost.TButton").pack(side="left", padx=(5, 15))
+                   style="CompactGhost.TButton").pack(side="left", padx=pad(5, 15))
         start_label = ttk.Frame(workflow_meta_bar, style="Workspace.TFrame")
         start_label.pack(side="left")
         ttk.Label(start_label, text="开始时间").pack(side="left")
         self._help_badge(
             start_label, "留空表示手动运行；设置后到达指定时间自动开始当前工作流。",
-        ).pack(side="left", padx=(6, 0))
-        ttk.Entry(workflow_meta_bar, textvariable=self.workflow_start_var, width=20, state="readonly").pack(side="left", padx=(8, 4))
+        ).pack(side="left", padx=pad(6, 0))
+        ttk.Entry(workflow_meta_bar, textvariable=self.workflow_start_var, width=20, state="readonly").pack(side="left", padx=pad(8, 4))
         ttk.Button(workflow_meta_bar, text="📅 选择", command=self.choose_workflow_start,
                    style="CompactGhost.TButton").pack(side="left")
         workflow_action_bar = ttk.Frame(header, style="Workspace.TFrame")
-        workflow_action_bar.pack(fill="x", pady=(8, 0))
+        workflow_action_bar.pack(fill="x", pady=pad(8, 0))
         ttk.Button(
             workflow_action_bar, text="运行工作流", command=self.run_workflow,
             bootstyle="success",
@@ -1985,11 +2224,11 @@ class MacroFlowApp:
         ttk.Checkbutton(
             workflow_action_bar, text="测试模式", variable=self.workflow_test_mode_var,
             bootstyle="round-toggle",
-        ).pack(side="right", padx=(0, 8))
+        ).pack(side="right", padx=pad(0, 8))
         ttk.Button(workflow_action_bar, text="从选中行运行", command=self.run_workflow_from_selected,
-                   style="CompactGhost.TButton").pack(side="right", padx=(0, 8))
+                   style="CompactGhost.TButton").pack(side="right", padx=pad(0, 8))
 
-        start_delay_bar = ttk.Frame(self.workflow_tab, padding=(16, 0, 16, 8), style="Workspace.TFrame")
+        start_delay_bar = ttk.Frame(self.workflow_tab, padding=pad(16, 0, 16, 8), style="Workspace.TFrame")
         start_delay_bar.pack(fill="x")
         ttk.Checkbutton(
             start_delay_bar, text="启动延时", variable=self.workflow_start_delay_enabled_var,
@@ -1998,23 +2237,23 @@ class MacroFlowApp:
         self.workflow_start_delay_entry = ttk.Entry(
             start_delay_bar, textvariable=self.workflow_start_delay_seconds_var, width=8,
         )
-        self.workflow_start_delay_entry.pack(side="left", padx=(8, 5))
+        self.workflow_start_delay_entry.pack(side="left", padx=pad(8, 5))
         self.workflow_start_delay_entry.bind("<KeyRelease>", self._schedule_workflow_draft_save)
         ttk.Combobox(
             start_delay_bar, textvariable=self.workflow_start_delay_seconds_var.unit,
             values=TIME_UNITS, state="readonly", width=4,
-        ).pack(side="left", padx=(0, 5))
+        ).pack(side="left", padx=pad(0, 5))
         ttk.Label(start_delay_bar, text="后开始（从头运行和从选中行运行均生效）",
                   style="Muted.TLabel").pack(side="left")
         self._toggle_workflow_start_delay_control(persist=False)
 
-        restart_default_bar = ttk.Frame(self.workflow_tab, padding=(16, 0, 16, 8), style="Workspace.TFrame")
+        restart_default_bar = ttk.Frame(self.workflow_tab, padding=pad(16, 0, 16, 8), style="Workspace.TFrame")
         restart_default_bar.pack(fill="x")
         ttk.Label(restart_default_bar, text="重新执行默认跳转行").pack(side="left")
         self.workflow_restart_default_combo = ttk.Combobox(
             restart_default_bar, state="readonly", width=34,
         )
-        self.workflow_restart_default_combo.pack(side="left", padx=(8, 5))
+        self.workflow_restart_default_combo.pack(side="left", padx=pad(8, 5))
         self.workflow_restart_default_combo.bind(
             "<<ComboboxSelected>>", self._apply_workflow_restart_default,
         )
@@ -2022,7 +2261,7 @@ class MacroFlowApp:
             restart_default_bar,
             text="「重新执行工作流」动作未指定行时，从这里开始（未设置则第 1 行）",
             style="Muted.TLabel",
-        ).pack(side="left", padx=(8, 0))
+        ).pack(side="left", padx=pad(8, 0))
         self._sync_workflow_restart_default_ui()
 
         # Global modules and workflow steps share a draggable vertical split.
@@ -2030,16 +2269,16 @@ class MacroFlowApp:
         self.workflow_content_pane.pack(fill="both", expand=True)
 
         # Global module box (top, independent numbering from 1)
-        global_box = ttk.Frame(self.workflow_content_pane, padding=(16, 0, 16, 6), style="Surface.TFrame")
+        global_box = ttk.Frame(self.workflow_content_pane, padding=pad(16, 0, 16, 6), style="Surface.TFrame")
         self.workflow_content_pane.add(global_box, weight=2)
         global_header = ttk.Frame(global_box, style="Surface.TFrame")
-        global_header.pack(fill="x", pady=(10, 6))
+        global_header.pack(fill="x", pady=pad(10, 6))
         ttk.Label(global_header, text="工作流全局模块", style="PageTitle.TLabel").pack(side="left")
         ttk.Label(global_header, text="独立编号 · 执行时启用全局检测", style="Muted.TLabel").pack(
-            side="left", padx=(8, 0),
+            side="left", padx=pad(8, 0),
         )
         global_toolbar = ttk.Frame(global_box, style="Surface.TFrame")
-        global_toolbar.pack(fill="x", pady=(0, 6))
+        global_toolbar.pack(fill="x", pady=pad(0, 6))
         ttk.Button(
             global_toolbar, text="添加工作流全局模块", command=self.add_workflow_global_module,
             bootstyle="primary-outline",
@@ -2047,7 +2286,7 @@ class MacroFlowApp:
         ttk.Button(
             global_toolbar, text="编辑选中", command=self.edit_selected_global_module,
             style="CompactGhost.TButton",
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=px(5))
         ttk.Button(
             global_toolbar, text="启用/禁用", command=self.toggle_selected_global_module,
             style="CompactGhost.TButton",
@@ -2055,7 +2294,7 @@ class MacroFlowApp:
         ttk.Button(
             global_toolbar, text="删除", command=self.delete_global_module,
             bootstyle="danger-outline",
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=px(5))
         self.global_delete_undo_button = ttk.Button(
             global_toolbar, text="↶ 撤销删除", command=self.undo_delete_global_module,
             style="CompactGhost.TButton", state="disabled",
@@ -2063,22 +2302,17 @@ class MacroFlowApp:
         self.global_delete_undo_button.pack(side="left")
         ttk.Label(
             global_toolbar, text="双击行更换模块", style="Muted.TLabel",
-        ).pack(side="left", padx=(10, 0))
+        ).pack(side="left", padx=pad(10, 0))
         global_tree_frame = ttk.Frame(global_box, style="Surface.TFrame")
-        global_tree_frame.pack(fill="x", pady=(0, 10))
+        # 撑满整个上窗格：原来只按 6 行高布局，窗格空着却出现滚动条。
+        global_tree_frame.pack(fill="both", expand=True, pady=pad(0, 10))
         self.global_tree = ttk.Treeview(
             global_tree_frame, columns=("index", "module", "status"),
             show="headings", selectmode="extended", style="Workflow.Treeview", height=6,
         )
-        for column, text, width, anchor in (
-            ("index", "步骤", 65, "center"),
-            ("module", "全局检测模块", 700, "w"),
-            ("status", "状态", 100, "center"),
-        ):
-            self.global_tree.heading(column, text=text)
-            self.global_tree.column(column, width=width, anchor=anchor, stretch=column == "module")
+        self._apply_column_widths(self.global_tree, GLOBAL_TREE_COLUMNS, "module")
         global_scroll = ttk.Scrollbar(global_tree_frame, orient="vertical", command=self.global_tree.yview)
-        self.global_tree.configure(yscrollcommand=global_scroll.set)
+        attach_autohide_scrollbar(self.global_tree, global_scroll)
         self.global_tree.tag_configure("disabled", foreground="#F2B84B", background="#2B2418")
         self.global_tree.tag_configure("global", foreground="#7BC96F", background="#14261B")
         self.global_tree.pack(side="left", fill="both", expand=True)
@@ -2092,32 +2326,32 @@ class MacroFlowApp:
         self.global_tree.bind("<Button-3>", self._show_global_context_menu, add="+")
 
         # Workflow box (bottom, independent numbering from 1)
-        workflow_box = ttk.Frame(self.workflow_content_pane, padding=(16, 0, 16, 12), style="Surface.TFrame")
+        workflow_box = ttk.Frame(self.workflow_content_pane, padding=pad(16, 0, 16, 12), style="Surface.TFrame")
         self.workflow_content_pane.add(workflow_box, weight=3)
         workflow_header = ttk.Frame(workflow_box, style="Surface.TFrame")
-        workflow_header.pack(fill="x", pady=(8, 0))
+        workflow_header.pack(fill="x", pady=pad(8, 0))
         ttk.Label(workflow_header, text="工作流", style="PageTitle.TLabel").pack(side="left")
         ttk.Label(workflow_header, text="独立编号 · 从 1 开始", style="Muted.TLabel").pack(
-            side="left", padx=(8, 0),
+            side="left", padx=pad(8, 0),
         )
-        toolbar = ttk.Frame(workflow_box, padding=(0, 4, 0, 8), style="Surface.TFrame")
+        toolbar = ttk.Frame(workflow_box, padding=pad(0, 4, 0, 8), style="Surface.TFrame")
         toolbar.pack(fill="x")
         file_toolbar = ttk.Frame(toolbar, style="Surface.TFrame")
         file_toolbar.pack(fill="x")
         ttk.Button(file_toolbar, text="新建", command=self.new_workflow, style="CompactGhost.TButton").pack(side="left")
-        ttk.Button(file_toolbar, text="打开", command=self.open_workflow, style="CompactGhost.TButton").pack(side="left", padx=(5, 0))
-        ttk.Button(file_toolbar, text="保存", command=self.save_current_workflow, bootstyle="primary").pack(side="left", padx=(5, 0))
+        ttk.Button(file_toolbar, text="打开", command=self.open_workflow, style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
+        ttk.Button(file_toolbar, text="保存", command=self.save_current_workflow, bootstyle="primary").pack(side="left", padx=pad(5, 0))
         ttk.Button(file_toolbar, text="打开工作流目录", command=lambda: self.open_folder(WORKFLOWS_DIR), style="CompactGhost.TButton").pack(side="right")
 
         add_toolbar = ttk.Frame(toolbar, style="Surface.TFrame")
-        add_toolbar.pack(fill="x", pady=(7, 0))
-        ttk.Label(add_toolbar, text="添加 / 插入", style="Muted.TLabel").pack(side="left", padx=(0, 8))
+        add_toolbar.pack(fill="x", pady=pad(7, 0))
+        ttk.Label(add_toolbar, text="添加 / 插入", style="Muted.TLabel").pack(side="left", padx=pad(0, 8))
         ttk.Button(add_toolbar, text="添加当前脚本", command=self.add_current_script_step, style="CompactGhost.TButton").pack(side="left")
-        ttk.Button(add_toolbar, text="选择已有脚本", command=self.add_script_step, style="CompactGhost.TButton").pack(side="left", padx=(5, 0))
+        ttk.Button(add_toolbar, text="选择已有脚本", command=self.add_script_step, style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(add_toolbar, text="添加模块", command=self.add_workflow_module_step,
-                   style="CompactGhost.TButton").pack(side="left", padx=(5, 0))
-        ttk.Separator(add_toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
-        ttk.Label(add_toolbar, text="插入位置", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+                   style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
+        ttk.Separator(add_toolbar, orient="vertical").pack(side="left", fill="y", padx=px(10))
+        ttk.Label(add_toolbar, text="插入位置", style="Muted.TLabel").pack(side="left", padx=pad(0, 6))
         self.workflow_insert_above_button = ttk.Button(
             add_toolbar, text="▲ 上方", width=6,
             command=lambda: self._set_workflow_insert_position(True),
@@ -2129,23 +2363,23 @@ class MacroFlowApp:
             command=lambda: self._set_workflow_insert_position(False),
             style="CompactGhost.TButton",
         )
-        self.workflow_insert_below_button.pack(side="left", padx=(5, 0))
+        self.workflow_insert_below_button.pack(side="left", padx=pad(5, 0))
         ttk.Button(add_toolbar, text="插入脚本", command=self.insert_workflow_step,
-                   bootstyle="primary-outline").pack(side="left", padx=(6, 0))
+                   bootstyle="primary-outline").pack(side="left", padx=pad(6, 0))
         ttk.Button(add_toolbar, text="插入模块", command=self.insert_workflow_module_step,
-                   bootstyle="primary-outline").pack(side="left", padx=(4, 0))
+                   bootstyle="primary-outline").pack(side="left", padx=pad(4, 0))
         self._set_workflow_insert_position(False)
 
         edit_toolbar = ttk.Frame(toolbar, style="Surface.TFrame")
-        edit_toolbar.pack(fill="x", pady=(5, 0))
-        ttk.Label(edit_toolbar, text="编辑 / 排序", style="Muted.TLabel").pack(side="left", padx=(0, 8))
+        edit_toolbar.pack(fill="x", pady=pad(5, 0))
+        ttk.Label(edit_toolbar, text="编辑 / 排序", style="Muted.TLabel").pack(side="left", padx=pad(0, 8))
         ttk.Button(edit_toolbar, text="统一设置参数", command=self.set_all_workflow_step_options,
                    style="CompactGhost.TButton").pack(side="left")
         ttk.Button(edit_toolbar, text="启用/禁用", command=self.toggle_selected_workflow_step,
-                   style="CompactGhost.TButton").pack(side="left", padx=(5, 0))
-        ttk.Button(edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1), style="CompactGhost.TButton").pack(side="left", padx=(5, 2))
+                   style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
+        ttk.Button(edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1), style="CompactGhost.TButton").pack(side="left", padx=pad(5, 2))
         ttk.Button(edit_toolbar, text="下移", command=lambda: self.move_workflow_step(1), style="CompactGhost.TButton").pack(side="left")
-        ttk.Button(edit_toolbar, text="删除", command=self.delete_workflow_step, bootstyle="danger-outline").pack(side="left", padx=5)
+        ttk.Button(edit_toolbar, text="删除", command=self.delete_workflow_step, bootstyle="danger-outline").pack(side="left", padx=px(5))
         self.workflow_delete_undo_button = ttk.Button(
             edit_toolbar, text="↶ 撤销删除", command=self.undo_delete_workflow_step,
             style="CompactGhost.TButton", state="disabled",
@@ -2159,21 +2393,15 @@ class MacroFlowApp:
             frame, columns=("index", "script", "repeat", "before", "interval", "enabled"),
             show="headings", selectmode="extended", style="Workflow.Treeview", height=10,
         )
-        for column, text, width, anchor in (
-            ("index", "步骤", 65, "center"), ("script", "脚本 / 模块", 500, "w"),
-            ("repeat", "执行次数", 90, "center"), ("before", "开始前等待", 115, "center"),
-            ("interval", "重复间隔", 115, "center"),
-            ("enabled", "状态", 80, "center"),
-        ):
-            self.workflow_tree.heading(column, text=text)
-            self.workflow_tree.column(column, width=width, anchor=anchor, stretch=column == "script")
+        self._apply_column_widths(self.workflow_tree, WORKFLOW_TREE_COLUMNS, "script")
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.workflow_tree.yview)
-        self.workflow_tree.configure(yscrollcommand=scroll.set)
+        attach_autohide_scrollbar(self.workflow_tree, scroll)
         self.workflow_tree.tag_configure("missing", foreground="#FF6B6B", background="#321F24")
         self.workflow_tree.tag_configure("disabled", foreground="#F2B84B", background="#2B2418")
         self.workflow_tree.tag_configure("module_disabled", foreground="#FF8A8A", background="#3A2028")
         self.workflow_tree.tag_configure("exhausted", foreground="#87939E", background="#161D23")
         self.workflow_tree.tag_configure("unlimited", foreground="#7BC96F", background="#14261B")
+        bind_tree_hover(self.workflow_tree)
         self.workflow_tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.empty_workflow_hint = ttk.Label(
@@ -2189,20 +2417,20 @@ class MacroFlowApp:
         self.workflow_tree.bind("<Button-3>", self._show_workflow_context_menu, add="+")
 
     def _build_log_tab(self):
-        frame = ttk.Frame(self.log_tab, padding=16, style="Workspace.TFrame")
+        frame = ttk.Frame(self.log_tab, padding=px(16), style="Workspace.TFrame")
         frame.pack(fill="both", expand=True)
         top = ttk.Frame(frame)
-        top.pack(fill="x", pady=(0, 8))
+        top.pack(fill="x", pady=pad(0, 8))
         ttk.Label(top, text="运行与错误记录", style="PageTitle.TLabel").pack(side="left")
         ttk.Button(top, text="清空", command=lambda: self.log_text.delete("1.0", "end"), bootstyle="secondary-outline").pack(side="right")
         ttk.Button(
             top, text="打开日志目录", command=lambda: self.open_folder(self.logs_dir),
             bootstyle="secondary-outline",
-        ).pack(side="right", padx=(0, 6))
+        ).pack(side="right", padx=pad(0, 6))
         self.log_text = tk.Text(frame, wrap="word", state="disabled", background=COLOR_SURFACE,
                                 foreground=COLOR_TEXT, insertbackground=COLOR_TEXT,
                                 selectbackground="#244D78", relief="flat", bd=0,
-                                font=("Consolas", 10), padx=16, pady=14)
+                                font=(FONT_MONO, FONT_BODY), padx=px(16), pady=px(14))
         self.log_text.pack(fill="both", expand=True)
 
     # General helpers
@@ -2242,9 +2470,43 @@ class MacroFlowApp:
         colors = {"success": "#12B76A", "warning": "#F79009", "error": "#F04438", "normal": "#667085"}
         self.status_dot.configure(foreground=colors.get(style, colors["normal"]))
 
+    @staticmethod
+    def _apply_column_widths(tree, columns, stretch_column: str) -> None:
+        for column, text, width, anchor in columns:
+            tree.heading(column, text=text)
+            tree.column(column, width=px(width), anchor=anchor,
+                        stretch=column == stretch_column)
+
+    def _resolution_monitor_hwnd(self) -> int | None:
+        """分辨率动作未设参照窗口时改哪块屏：软件自己所在显示器。"""
+        root = getattr(self, "root", None)
+        if root is None:
+            return None
+        try:
+            hwnd = int(root.winfo_id())
+        except (tk.TclError, ValueError):
+            return None
+        return hwnd if hwnd and is_window(hwnd) else None
+
+    def _playback_reference_screen(self) -> dict[str, int]:
+        """执行参考屏 = 绑定窗口所在显示器（未绑定时主显示器）。
+
+        录制与回放都以"显示器矩形"为基准，虚拟桌面（多屏拼接）只用于窗口
+        布局，不能用它做坐标/模板缩放：接上或拔掉外接屏会改变虚拟桌面宽度，
+        同屏回放的坐标就会被错误缩放。
+        """
+        bound = getattr(self, "bound_window", None)
+        hwnd = int(bound.hwnd) if bound is not None else None
+        return get_monitor_rect_for_window(hwnd) or get_primary_screen_rect()
+
     def _refresh_coordinate_scale_status(self):
-        self.coordinate_scale_var.set(coordinate_scale_summary(
-            self.script.settings.get("recorded_screen"), get_virtual_screen_rect(),
+        # 绑定/解除绑定时刷新"执行参考屏"；未完成界面初始化的测试夹具直接跳过。
+        scale_var = getattr(self, "coordinate_scale_var", None)
+        script = getattr(self, "script", None)
+        if scale_var is None or script is None:
+            return
+        scale_var.set(coordinate_scale_summary(
+            script.settings.get("recorded_screen"), self._playback_reference_screen(),
         ))
 
     def _format_log_line(self, text: str) -> str:
@@ -2312,11 +2574,130 @@ class MacroFlowApp:
         if not geometry:
             return
         try:
+            match = re.fullmatch(r"(\d+)x(\d+)[+-](-?\d+)[+-](-?\d+)", geometry)
+            if match:
+                width, height = (int(value) for value in match.group(1, 2))
+                left, top = (int(value) for value in match.group(3, 4))
+                screen = get_virtual_screen_rect()
+                screen_left = int(screen.get("left", 0))
+                screen_top = int(screen.get("top", 0))
+                screen_width = max(1, int(screen.get("width", 0)))
+                screen_height = max(1, int(screen.get("height", 0)))
+                visible_width = min(left + width, screen_left + screen_width) - max(left, screen_left)
+                visible_height = min(top + height, screen_top + screen_height) - max(top, screen_top)
+                # 显示器配置变化后，旧位置可能落在已断开的显示器上。
+                # 至少保留一小块可见区域，否则恢复到当前虚拟桌面中央。
+                if visible_width < min(64, width) or visible_height < min(64, height):
+                    width = min(width, screen_width)
+                    height = min(height, screen_height)
+                    left = screen_left + max(0, (screen_width - width) // 2)
+                    top = screen_top + max(0, (screen_height - height) // 2)
+                    geometry = f"{width}x{height}+{left}+{top}"
             self.root.geometry(geometry)
         except (AttributeError, tk.TclError, ValueError):
             # Ignore stale monitor coordinates or a malformed setting and keep
             # the safe default geometry assigned during window creation.
             return
+
+    def _watch_display_dpi(self) -> None:
+        """窗口拖到另一块屏（缩放不同）后重算缩放并重刷界面。"""
+        if getattr(self, "exiting", False):
+            return
+        try:
+            dpi = get_window_dpi(self.root.winfo_id())
+        except (AttributeError, tk.TclError, OSError, ValueError):
+            dpi = 0
+        # 与"界面当前实际用的缩放"比，而不是与上次记下的值比：启动时若取错 DPI，
+        # 上一次实现只在第二次探测才纠正，窗口开在另一块屏上时永远等不到。
+        if dpi and dpi != self._ui_scaling_dpi():
+            self._apply_display_dpi(dpi)
+        self.root.after(600, self._watch_display_dpi)
+
+    def _ui_scaling_dpi(self) -> int:
+        """Tk 当前 scaling 对应的 DPI——px() 就是按它换算的。"""
+        try:
+            return int(round(float(self.root.tk.call("tk", "scaling")) * 72))
+        except (AttributeError, tk.TclError, ValueError):
+            return 0
+
+    def _apply_display_dpi(self, dpi: int) -> None:
+        """按新显示器 DPI 重算像素缩放，并重刷样式、列宽与最小尺寸。"""
+        self.root.tk.call("tk", "scaling", max(1.0, dpi / 72.0))
+        set_ui_scale(self.root)
+        dialogs_ui.set_ui_scale(self.root)
+        self._configure_dark_theme()
+        self._apply_column_widths(self.action_tree, ACTION_TREE_COLUMNS, "detail")
+        self._apply_column_widths(self.workflow_tree, WORKFLOW_TREE_COLUMNS, "script")
+        self._apply_column_widths(self.global_tree, GLOBAL_TREE_COLUMNS, "module")
+        self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
+        self._log(f"检测到显示器缩放变化（{dpi} DPI），界面已按新缩放刷新。")
+
+    def _app_window_hwnd(self) -> int | None:
+        """MacroFlow 主窗口句柄（用于判断软件在哪块屏上）。"""
+        root = getattr(self, "root", None)
+        if root is None:
+            return None
+        try:
+            hwnd = int(root.winfo_id())
+        except (tk.TclError, ValueError):
+            return None
+        return hwnd if hwnd and is_window(hwnd) else None
+
+    def _startup_monitor_area(self) -> dict[str, int]:
+        """启动时窗口要铺满的显示器：上次的位置优先，其次鼠标所在屏。
+
+        不能用 winfo_screenwidth/height（多屏下返回的是虚拟桌面尺寸，
+        会把窗口放到屏幕外面去），必须用 Win32 的显示器可用区域。
+        """
+        saved = str(self.app_settings.get("main_window_geometry", "") or "")
+        match = re.fullmatch(r"(\d+)x(\d+)[+-](-?\d+)[+-](-?\d+)", saved)
+        if match:
+            width, height, left, top = (int(value) for value in match.groups())
+            area = get_monitor_work_area_for_point(
+                left + width // 2, top + height // 2,
+            )
+            if area is not None:
+                return area
+        try:
+            cursor = get_cursor_pos()
+        except Exception:
+            cursor = (0, 0)
+        return get_monitor_work_area_for_point(*cursor) or get_primary_screen_rect()
+
+    def _apply_startup_window_state(self) -> None:
+        """打开即铺满"窗口所在的那块屏"（视觉等同全屏，任务栏不被遮挡）。
+
+        用工作区尺寸而不是 state("zoomed")：Windows 对最大化的窗口不绘制圆角，
+        铺满工作区的普通窗口在 Windows 11 上仍保留圆角，任务栏也不会被盖住。
+        """
+        area = self._startup_monitor_area()
+        if area["width"] < 800 or area["height"] < 500:
+            return
+        self.root.geometry(
+            f"{area['width']}x{area['height']}+{area['left']}+{area['top']}"
+        )
+
+    def _sync_ui_scale_to_monitor(self) -> None:
+        """按主窗口所在显示器的 DPI 重设界面缩放，必须在建界面之前调用。
+
+        Tk 启动时的 scaling 取自主显示器。笔记本 200% + 外接屏 100% 时窗口虽然
+        铺在外接屏上，整套 px() 常量仍按 200% 换算：文字与控件放大成两倍，按钮
+        文字被裁、表格列被挤出屏幕，连 minsize 都会超过屏幕把窗口顶成满屏且缩不
+        回去。这里在铺满目标屏之后、建界面之前按真实 DPI 纠正一次。
+        """
+        self.root.update_idletasks()
+        try:
+            dpi = get_window_dpi(self.root.winfo_id())
+        except (AttributeError, tk.TclError, OSError, ValueError):
+            return
+        if dpi <= 0:
+            return
+        self.root.tk.call("tk", "scaling", max(1.0, dpi / 72.0))
+        set_ui_scale(self.root)
+        dialogs_ui.set_ui_scale(self.root)
+        # 主题里的字号、行高、内边距都按 px() 算过一遍，缩放变了必须重配。
+        self._configure_dark_theme()
+        self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
 
     def _current_main_window_geometry(self) -> str:
         root = getattr(self, "root", None)
@@ -2385,6 +2766,12 @@ class MacroFlowApp:
             "record_mode": "auto",
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
             "activate_target_enabled": bool(self.activate_target_enabled_var.get()),
+            "resolution_styles": [
+                dict(style) for style in getattr(
+                    self, "resolution_styles",
+                    resolution_styles_from_settings(getattr(self, "app_settings", {})),
+                )
+            ],
             "floating_notice_position": self.floating_notice_position_var.get(),
             "repeat": repeat,
             "bound_window": self.saved_window_signature,
@@ -2462,6 +2849,30 @@ class MacroFlowApp:
         else:
             self._set_status("游戏设置说明保存失败", "danger")
 
+    def _refresh_resolution_styles_summary(self) -> None:
+        names = [
+            f"{str(style.get('name', '')).strip()} {int(style.get('scale_percent', 100) or 100)}%"
+            for style in self.resolution_styles
+            if str(style.get("name", "")).strip()
+        ]
+        if len(names) <= 3:
+            summary = "、".join(names) or "暂无样式"
+        else:
+            summary = "、".join(names[:3]) + f" 等 {len(names)} 个"
+        self.resolution_styles_summary_var.set(summary)
+
+    def _configure_resolution_styles(self):
+        result = ResolutionStylesDialog(
+            self.root, {"resolution_styles": self.resolution_styles},
+        ).show()
+        if result is None:
+            return
+        self.resolution_styles = result
+        self._refresh_resolution_styles_summary()
+        if self._persist_sidebar_settings(show_feedback=True):
+            self._set_status("分辨率样式已保存", "success")
+            self._log(f"已保存 {len(result)} 个分辨率样式。")
+
     def _settings_changed(self, _event=None):
         self._persist_sidebar_settings()
         if self.recorder.running:
@@ -2538,6 +2949,14 @@ class MacroFlowApp:
         self.backup_running = True
 
         def backup_worker():
+            try:
+                _backup_once()
+            except Exception as exc:  # 备份线程异常不能让定时备份永久停摆
+                self._ui(self._log, f"定时备份异常：{exc}")
+            finally:
+                self.backup_running = False
+
+        def _backup_once():
             backed_up = 0
             errors: list[str] = []
             files: dict[str, Path] = {}
@@ -2559,7 +2978,6 @@ class MacroFlowApp:
                     backed_up += 1
                 except (OSError, ValueError, TypeError) as exc:
                     errors.append(f"{path}: {exc}")
-            self.backup_running = False
             if self.exiting:
                 return
             self._ui(self._log, f"定时备份完成：已覆盖 {backed_up} 个脚本的单份备份。")
@@ -2686,7 +3104,10 @@ class MacroFlowApp:
                 hit for hit in pending
                 if str(hit.get("guard_key", "")) not in key_set
             ]
-        self._invalidate_detection_config()
+        if key_set:
+            # 只有真的移除了守卫才需要让在途检测结果失效；否则每次脚本作用域
+            # 退出都无谓地丢弃一次已经算好的命中（见 _evaluate_global_guards）。
+            self._invalidate_detection_config()
 
     def _activate_global_detect_from_config(self, config: dict, module: dict | None = None,
                                             standalone_replay: dict | None = None):
@@ -2992,6 +3413,10 @@ class MacroFlowApp:
             self._detection_request = None
             if (result.run_id != getattr(self, "_detection_run_id", 0)
                     or result.config_version != getattr(self, "_guard_config_version", 0)):
+                # 守卫状态已在检测线程里推进（triggered/awaiting_clear/重臂锁），
+                # 结果却不能交付：必须回滚，否则目标一直可见时该守卫在本次执行
+                # 剩余时间里静默失效（命中被丢掉，日志里也没有任何痕迹）。
+                self._rollback_detection_hit(result.hit)
                 result = None
             elif result.error is not None:
                 self._ui(self._log, f"全局检测失败：{result.error}")
@@ -3011,6 +3436,26 @@ class MacroFlowApp:
             worker.submit(run_id, config_version)
             self._detection_request = (run_id, config_version)
         return None
+
+    def _rollback_detection_hit(self, hit) -> None:
+        """Undo the guard state advanced by one detection result we cannot deliver."""
+        if not isinstance(hit, dict):
+            return
+        key = str(hit.get("guard_key", "")).strip()
+        guards = getattr(self, "global_guards", None)
+        if not key or guards is None:
+            return
+        with self.guards_lock:
+            guard = guards.get(key)
+            if guard is None:
+                return
+            guard["triggered"] = False
+            guard["timeout_triggered"] = False
+            guard["awaiting_clear"] = False
+            guard["awaiting_clear_logged"] = False
+            locks = getattr(self, "global_detect_rearm_locks", None)
+            if locks is not None:
+                locks.discard(key)
 
     @staticmethod
     def _defer_detection_event(events: list[dict], kind: str, **payload) -> None:
@@ -3831,7 +4276,7 @@ class MacroFlowApp:
             pass
         # Keep the panel compact so it does not cover the game. The denser log
         # below carries the useful detail instead of spending space on chrome.
-        width, height = (420, 272) if mode == "recording" else (420, 316)
+        width, height = (px(420), px(248)) if mode == "recording" else (px(420), px(292))
         # 录制小窗和执行小窗共用同一个用户调节的位置。
         x, y = self._execution_mini_position(width, height)
         mini.geometry(f"{width}x{height}+{x}+{y}")
@@ -3841,33 +4286,33 @@ class MacroFlowApp:
         # 新顶层窗口时会先激活它，小窗弹出的瞬间就会抢走激活窗口。
         make_window_no_activate(mini.winfo_id())
 
-        body = ttk.Frame(mini, padding=10, style="Surface.TFrame")
+        body = ttk.Frame(mini, padding=px(8), style="Surface.TFrame")
         body.pack(fill="both", expand=True)
         top = ttk.Frame(body, style="Surface.TFrame")
         top.pack(fill="x")
         ttk.Label(top, textvariable=self.mini_context_var, style="MiniTitle.TLabel").pack(side="left")
         ttk.Label(top, textvariable=self.mini_elapsed_var, style="MiniTime.TLabel").pack(side="right")
         ttk.Label(body, textvariable=self.mini_count_var, style="MiniText.TLabel",
-                  wraplength=390, justify="left").pack(anchor="w", pady=(7, 2))
+                  wraplength=px(390), justify="left").pack(anchor="w", pady=pad(5, 2))
         if mode == "execution":
             self.mini_ocr_progressbar = ttk.Progressbar(
                 body, maximum=100, variable=self.mini_ocr_progress_var,
                 mode="determinate", length=390,
             )
-            self.mini_ocr_progressbar.pack(fill="x", pady=(0, 5))
+            self.mini_ocr_progressbar.pack(fill="x", pady=pad(0, 5))
         else:
             self.mini_ocr_progressbar = None
         self.mini_binding_label = ttk.Label(body, textvariable=self.mini_window_var,
-                                            style="MiniText.TLabel", wraplength=390)
-        self.mini_binding_label.pack(anchor="w", pady=(0, 5))
+                                            style="MiniText.TLabel", wraplength=px(390))
+        self.mini_binding_label.pack(anchor="w", pady=pad(0, 5))
         steps_frame = ttk.Frame(body, style="Surface.TFrame")
-        steps_frame.pack(fill="both", expand=True, pady=(0, 7))
+        steps_frame.pack(fill="both", expand=True, pady=pad(0, 7))
         self.mini_steps_text = tk.Text(
-            steps_frame, height=6, state="disabled", wrap="word",
+            steps_frame, height=5, state="disabled", wrap="word",
             background=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
             insertbackground=COLOR_TEXT, selectbackground="#244D78",
-            relief="flat", bd=0, font=("Microsoft YaHei UI", 9),
-            padx=7, pady=5, takefocus=False,
+            relief="flat", bd=0, font=(FONT_FAMILY, FONT_BODY),
+            padx=px(6), pady=px(4), takefocus=False,
         )
         self.mini_steps_text.pack(side="left", fill="both", expand=True)
         mini_scroll = ttk.Scrollbar(steps_frame, orient="vertical",
@@ -3879,6 +4324,8 @@ class MacroFlowApp:
         # window was first mapped, so it never takes activation.
         mini.update_idletasks()
         set_dark_titlebar(mini.winfo_id())
+        # 无边框悬浮小窗的圆角只能靠窗口区域（DWM 只处理标准边框窗口）。
+        set_rounded_window(mini.winfo_id(), px(10))
         buttons = ttk.Frame(body, style="Surface.TFrame")
         buttons.pack(fill="x")
         if mode == "recording":
@@ -3888,7 +4335,7 @@ class MacroFlowApp:
             ttk.Button(buttons, text="停止录制  F8", command=lambda: self.toggle_record(from_ui=True),
                        bootstyle="danger", takefocus=False).grid(row=0, column=0, sticky="ew")
             ttk.Button(buttons, text="紧急停止  F12", command=lambda: self.stop_all(from_ui=True),
-                       bootstyle="danger-outline", takefocus=False).grid(row=0, column=1, sticky="ew", padx=6)
+                       bootstyle="danger-outline", takefocus=False).grid(row=0, column=1, sticky="ew", padx=px(6))
             ttk.Button(buttons, text="隐藏", command=self._hide_operation_mini,
                        bootstyle="secondary-outline", takefocus=False).grid(row=0, column=2, sticky="ew")
             self._append_mini_step("实时记录已打开，不会切换或恢复游戏窗口。")
@@ -3898,8 +4345,8 @@ class MacroFlowApp:
                 ttk.Label(
                     body,
                     text="紧急恢复：先按 F12；若无响应，按 Ctrl + Alt + Del",
-                    style="MiniWarning.TLabel", wraplength=390, justify="center",
-                ).pack(fill="x", pady=(0, 7), before=buttons)
+                    style="MiniWarning.TLabel", wraplength=px(390), justify="center",
+                ).pack(fill="x", pady=pad(0, 7), before=buttons)
                 ttk.Button(buttons, text="强制专注中 · 按 F12 停止并解除",
                            command=lambda: None, bootstyle="danger",
                            takefocus=False).grid(row=0, column=0, sticky="ew")
@@ -3911,27 +4358,33 @@ class MacroFlowApp:
                 self._append_mini_step("普通执行模式：未锁定实体键鼠，点击正常发送。")
         self._update_operation_mini()
 
-    def _execution_mini_position(self, width: int = 420, height: int = 316) -> tuple[int, int]:
-        screen_w = self.root.winfo_screenwidth()
-        screen_h = self.root.winfo_screenheight()
+    def _execution_mini_position(self, width: int | None = None,
+                                 height: int | None = None) -> tuple[int, int]:
+        width = px(420) if width is None else int(width)
+        height = px(292) if height is None else int(height)
+        # 用"软件所在显示器的可用区域"，不能用 winfo_screenwidth/height：
+        # 多屏下后者返回虚拟桌面尺寸，小窗会被推到屏幕外面（右下角外）。
+        area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
+            or get_primary_screen_rect()
+        default_x = area["left"] + area["width"] - width - px(24)
+        default_y = area["top"] + area["height"] - height - px(72)
+        x, y = default_x, default_y
         saved = getattr(self, "execution_mini_position", None)
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
             try:
                 x, y = int(saved[0]), int(saved[1])
             except (TypeError, ValueError):
-                x, y = screen_w - width - 24, screen_h - height - 72
-        else:
-            x, y = screen_w - width - 24, screen_h - height - 72
+                x, y = default_x, default_y
         return (
-            max(0, min(x, max(0, screen_w - width))),
-            max(0, min(y, max(0, screen_h - height))),
+            max(area["left"], min(x, area["left"] + max(0, area["width"] - width))),
+            max(area["top"], min(y, area["top"] + max(0, area["height"] - height))),
         )
 
     def _adjust_execution_mini_position(self):
         """Show a draggable, bordered preview and persist its top-left position."""
         if getattr(self, "execution_mini_position_editor", None):
             return
-        width, height = 420, 316
+        width, height = px(420), px(316)
         preview = tk.Toplevel(self.root)
         self.execution_mini_position_editor = preview
         preview.title("调节执行小窗位置")
@@ -3942,22 +4395,22 @@ class MacroFlowApp:
         preview.resizable(False, False)
         preview.attributes("-topmost", True)
         preview.configure(background="#E04444", highlightthickness=3, highlightbackground="#FF6B6B")
-        body = ttk.Frame(preview, padding=12, style="Surface.TFrame")
-        body.pack(fill="both", expand=True, padx=3, pady=3)
+        body = ttk.Frame(preview, padding=px(12), style="Surface.TFrame")
+        body.pack(fill="both", expand=True, padx=px(3), pady=px(3))
         ttk.Label(
             body, text="执行小窗边界（拖动标题区域调整位置）",
-            style="MiniWarning.TLabel", wraplength=380, justify="center",
-        ).pack(fill="x", pady=(4, 12))
+            style="MiniWarning.TLabel", wraplength=px(380), justify="center",
+        ).pack(fill="x", pady=pad(4, 12))
         ttk.Label(
             body, text="红色边框就是执行小窗的完整占用范围\n确认后执行小窗会固定在此位置。",
             style="MiniText.TLabel", justify="center",
         ).pack(expand=True)
         buttons = ttk.Frame(body, style="Surface.TFrame")
-        buttons.pack(fill="x", pady=(10, 0))
+        buttons.pack(fill="x", pady=pad(10, 0))
         ttk.Button(buttons, text="确认并保存", command=lambda: self._confirm_execution_mini_position(preview),
                    bootstyle="success").pack(side="left", fill="x", expand=True)
         ttk.Button(buttons, text="取消", command=lambda: self._close_execution_mini_position_editor(preview),
-                   bootstyle="secondary").pack(side="left", fill="x", expand=True, padx=(8, 0))
+                   bootstyle="secondary").pack(side="left", fill="x", expand=True, padx=pad(8, 0))
         drag = {"x": 0, "y": 0}
         def begin(event):
             drag["x"], drag["y"] = event.x_root, event.y_root
@@ -4181,6 +4634,12 @@ class MacroFlowApp:
         if self.exiting:
             return
         prewarm_alert("run_start")
+        # 托盘图标推到首屏绘制之后创建：启动瞬间不抢资源，窗口先可交互。
+        self.root.after(800, self._start_tray_warmup)
+
+    def _start_tray_warmup(self):
+        if self.exiting:
+            return
 
         def prepare_tray():
             if not self.exiting:
@@ -4195,11 +4654,13 @@ class MacroFlowApp:
         self.tray_warmup_thread.start()
 
         # OCR 引擎首次导入 paddle 全家可能耗时数十秒（杀软扫描外置目录时更久）。
-        # 启动后立即后台预加载，否则第一次执行到文字识别时会在播放线程里卡住，
-        # 期间 F12 也无法中断（import 不可取消）。失败静默，首次使用时再报错。
+        # 线程立刻创建（OCR 就绪等待要看到它，才能被 F12 中断），但先睡 5 秒，
+        # 让窗口先把首屏绘制完，避免启动瞬间的 CPU/磁盘争抢。
         def prepare_ocr():
+            time.sleep(5)
             if self.exiting:
                 return
+            self._ui(self._set_status, "OCR 引擎正在后台加载 · 可在执行小窗查看进度...", "warning")
             try:
                 _get_engine()
             except Exception as exc:
@@ -4216,7 +4677,6 @@ class MacroFlowApp:
             target=prepare_ocr, name="MacroFlowOcrWarmup", daemon=True,
         )
         self.ocr_warmup_thread.start()
-        self._ui(self._set_status, "OCR 引擎正在后台加载 · 可在执行小窗查看进度...", "warning")
 
     def _wait_ocr_ready(self) -> bool:
         """等待 OCR 引擎就绪（可中断轮询）；返回 False 表示用户已请求停止。
@@ -4313,10 +4773,13 @@ class MacroFlowApp:
                 for side in ("left", "right")
             ):
                 return True
-            if kind == "grid_row_condition_click":
-                return True
             # 任意动作/配置携带 recognize == "text" 都走 OCR 识别。
             if str(action.get("recognize", "")).strip() == "text":
+                return True
+            segment = action.get("failure_actions")
+            if isinstance(segment, list) and self._script_needs_ocr(
+                segment, seen, seen_modules, module_cache, depth + 1,
+            ):
                 return True
             for field in ("module_key", "fallback_module_key"):
                 module_key = str(action.get(field, "")).strip()
@@ -4526,6 +4989,7 @@ class MacroFlowApp:
         if getattr(self, "execution_should_remain_in_tray", False):
             self.execution_should_remain_in_tray = False
             if self._tray_visible():
+                self._log_tray_still_running()
                 return
             self._restore_main_window()
             return
@@ -4533,8 +4997,16 @@ class MacroFlowApp:
         # 托盘，需要时用户通过托盘图标手动恢复；托盘图标不可用时必须
         # 恢复主窗口，避免出现既无窗口又无托盘图标的隐藏进程。
         if self.main_hidden_to_tray and self._tray_visible():
+            self._log_tray_still_running()
             return
         self._restore_main_window()
+
+    def _log_tray_still_running(self) -> None:
+        """窗口留在托盘时明确告诉用户：软件没关，快捷键也还在生效。"""
+        self._log(
+            "主窗口已留在系统托盘，软件仍在运行：全局快捷键照旧生效；"
+            "要显示界面请右键托盘图标选“显示窗口”，要彻底关闭请选“退出”。"
+        )
 
     def open_folder(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
@@ -4554,6 +5026,7 @@ class MacroFlowApp:
             }
             self.bind_label_var.set(selected.title)
             self._persist_sidebar_settings()
+            self._refresh_coordinate_scale_status()
             self._log(f"已绑定并保存目标窗口：{selected.label}；下次启动会自动恢复。")
             self._log("智能录制会在目标窗口激活时记录原始相对轨迹，离开目标窗口后记录普通坐标。")
 
@@ -4562,6 +5035,7 @@ class MacroFlowApp:
         self.saved_window_signature = None
         self.bind_label_var.set("未绑定窗口")
         self._persist_sidebar_settings()
+        self._refresh_coordinate_scale_status()
         self._log("已解除窗口绑定。")
 
     def _activation_settings_from_script(self) -> tuple[bool, dict[str, str] | None]:
@@ -4760,10 +5234,13 @@ class MacroFlowApp:
         mini.overrideredirect(True)
         mini.attributes("-topmost", True)
         mini.configure(background=COLOR_SURFACE)
-        width, height = 280, 62
-        x = max(8, mini.winfo_screenwidth() - width - 18)
-        mini.geometry(f"{width}x{height}+{x}+18")
-        body = ttk.Frame(mini, padding=(12, 9), style="Surface.TFrame")
+        width, height = px(280), px(62)
+        area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
+            or get_primary_screen_rect()
+        x = area["left"] + area["width"] - width - px(18)
+        y = area["top"] + px(18)
+        mini.geometry(f"{width}x{height}+{max(area['left'], x)}+{y}")
+        body = ttk.Frame(mini, padding=pad(12, 9), style="Surface.TFrame")
         body.pack(fill="both", expand=True)
         ttk.Label(
             body, textvariable=self.cursor_tracking_mini_var,
@@ -4775,6 +5252,7 @@ class MacroFlowApp:
         ).pack(side="right")
         mini.update_idletasks()
         make_window_no_activate(mini.winfo_id())
+        set_rounded_window(mini.winfo_id(), px(8))
 
     def _hide_cursor_tracking_mini(self):
         if self.cursor_tracking_mini and self.cursor_tracking_mini.winfo_exists():
@@ -4858,10 +5336,12 @@ class MacroFlowApp:
             self.bound_window = selected
             if update_display:
                 self.bind_label_var.set(selected.title)
+                self._refresh_coordinate_scale_status()
             return True
         self.bound_window = None
         if update_display:
             self.bind_label_var.set(f"已保存，等待窗口：{title}")
+            self._refresh_coordinate_scale_status()
         return False
 
     def _bound_hwnd(self, update_display: bool = True) -> int | None:
@@ -4906,6 +5386,11 @@ class MacroFlowApp:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "请先停止当前脚本或工作流。")
             return
+        if getattr(self, "dirty", False):
+            # 重新录制会清空编辑器动作并覆盖当前文档：未保存的修改必须先拦截，
+            # 否则录制一开始就被静默丢弃（与新建/打开脚本的 dirty 拦截一致）。
+            self._notify("当前修改尚未保存", "请先保存脚本或撤销修改后再录制。")
+            return
         hwnd = self._bound_hwnd()
         # A bound window may be either a game or an ordinary desktop program.
         # Center-lock detection is what makes the single recording mode choose
@@ -4935,7 +5420,9 @@ class MacroFlowApp:
             self._notify("无法录制", str(exc))
             self._log(f"启动录制失败：{exc}")
             return
-        self.recording_screen = get_virtual_screen_rect()
+        # 记录"目标窗口所在显示器"的物理矩形：回放时用同一块屏的矩形做基准，
+        # 同屏执行坐标 1:1，换屏执行按比例映射。
+        self.recording_screen = get_monitor_rect_for_window(hwnd) or get_primary_screen_rect()
         # 重新录制直接覆盖当前文档：保留原脚本名称与保存路径，保存时再提示
         # 是否覆盖（覆盖前自动归档旧版本到 backups/overwritten/）。
         self.script.actions = []
@@ -4986,6 +5473,13 @@ class MacroFlowApp:
             if removed:
                 self._log(f"已清理悬浮窗操作产生的 {removed} 条末尾事件。")
         actions = self.recorder.stop()
+        unsupported_buttons = sorted(getattr(self.recorder, "unsupported_buttons", ()))
+        if unsupported_buttons:
+            self._log(
+                "已跳过无法回放的鼠标按键："
+                + "、".join(unsupported_buttons)
+                + "（侧键暂不支持录制回放，请改用左/右/中键）"
+            )
         ensure_action_ids(actions)
         self.script.actions = actions
         self.script.settings = self._current_script_settings(self.recording_screen)
@@ -5027,6 +5521,8 @@ class MacroFlowApp:
         detail_texts = []
         for index, action in enumerate(self.script.actions[:MAX_TREE_ROWS]):
             kind, detail, delay = action_summary(action, action_rows)
+            if action.get("failure_segment_enabled"):
+                detail += f" · 失败后执行代码段 {len(action.get('failure_actions') or [])} 项"
             detail_texts.append(detail)
             self.action_tree.insert("", "end", iid=str(index), values=(index + 1, kind, detail, delay))
         self._autosize_tree_column(self.action_tree, "detail", 590, detail_texts)
@@ -5063,7 +5559,7 @@ class MacroFlowApp:
                 foreground=COLOR_RED if not trigger.get("template") else COLOR_TEXT,
             )
             if trigger.get("template"):
-                self.clear_trigger_button.pack(side="right", padx=(6, 0))
+                self.clear_trigger_button.pack(side="right", padx=pad(6, 0))
             else:
                 self.clear_trigger_button.pack_forget()
         else:
@@ -5404,11 +5900,11 @@ class MacroFlowApp:
         except (TypeError, ValueError):
             interval = DEFAULT_MOUSE_MOVE_INTERVAL_MS
         self.interval_var.set(interval)
-        category_key = str(script.settings.get("category", "level"))
-        self.script_category_var.set({
-            "level": "关卡", "level_pack": "关卡封装",
-            "switch": "切换", "direction": "方向",
-        }.get(category_key, "关卡"))
+        self.script_category_var.set(script_category_label(
+            script_category_for_path(
+                self.script_path, getattr(self, "app_settings", None), script,
+            )
+        ))
         self.dirty = bool(draft.get("dirty", False))
         self._clear_action_undo()
         self.undo_open_stack = []
@@ -5584,11 +6080,13 @@ class MacroFlowApp:
             self.interval_var.set(int(self.script.settings.get(
                 "move_interval_ms", DEFAULT_MOUSE_MOVE_INTERVAL_MS,
             )))
-            category_key = str(self.script.settings.get("category", "level"))
-            self.script_category_var.set({
-                "level": "关卡", "level_pack": "关卡封装",
-                "switch": "切换",
-            }.get(category_key, "关卡"))
+            # 类别显示脚本自己的类别：以所在目录为准（保存时按类别进目录），
+            # 文件不在任何脚本目录内才用脚本里保存的类别。
+            self.script_category_var.set(script_category_label(
+                script_category_for_path(
+                    path, getattr(self, "app_settings", None), self.script,
+                )
+            ))
             self.dirty = False
             self._clear_action_undo()
             self.undo_open_stack = []
@@ -5823,9 +6321,11 @@ class MacroFlowApp:
         self._mark_dirty()
         self.rebuild_action_tree()
         self.key_search_match_var.set(f"已统一 {len(changed)} 项为 {delay} ms")
-        self.action_tree.selection_set(str(changed[0]))
-        self.action_tree.focus(str(changed[0]))
-        self.action_tree.see(str(changed[0]))
+        # 动作树只插入前 MAX_TREE_ROWS 行，超出的行没有 iid，选中会抛 TclError。
+        if changed[0] < MAX_TREE_ROWS:
+            self.action_tree.selection_set(str(changed[0]))
+            self.action_tree.focus(str(changed[0]))
+            self.action_tree.see(str(changed[0]))
         return "break"
 
     def _select_all_actions(self, _event=None):
@@ -5979,8 +6479,12 @@ class MacroFlowApp:
             self._insert_action(action)
 
     def test_row_list_condition_click(self, action: dict, on_complete=None,
-                                      cancel_event=None):
-        """Run a one-shot, non-clicking diagnostic scan for a row-list action."""
+                                      cancel_event=None, source="screen"):
+        """Run a one-shot, non-clicking diagnostic scan for a row-list action.
+
+        ``source`` selects the frame under test: ``"screen"`` captures the
+        current screen, ``"image"`` reads the action's chosen test image.
+        """
         def reject(message: str) -> None:
             if on_complete is not None:
                 on_complete(None, message, 0, False)
@@ -5990,26 +6494,27 @@ class MacroFlowApp:
             reject("当前已有脚本正在执行")
             return
         if getattr(self, "_row_list_diagnostic_running", False):
-            kind = getattr(self, "_row_list_diagnostic_kind", "")
-            label = "网格逐行识别诊断" if kind == "grid" else "列表逐行识别诊断"
-            self._notify("无法测试识别", f"当前已有{label}正在执行，请稍候。")
-            reject(f"当前已有{label}正在执行")
+            self._notify("无法测试识别", "当前已有列表逐行识别诊断正在执行，请稍候。")
+            reject("当前已有列表逐行识别诊断正在执行")
             return
-        diagnostic_kind = (
-            "grid" if action.get("type") == "grid_row_condition_click" else "row_list"
-        )
+        image_source = str(source) == "image"
+        image_path = str(action.get("screenshot_path", "")).strip() if image_source else ""
+        if image_source and not image_path:
+            self._notify("无法测试识别", "请先点「选择图片…」选一张整屏截图。")
+            reject("未选择测试图片")
+            return
         cancel_event = cancel_event or threading.Event()
         started_at = time.perf_counter()
         self._row_list_diagnostic_running = True
-        self._row_list_diagnostic_kind = diagnostic_kind
-        hwnd = None if diagnostic_kind == "grid" else self._bound_hwnd()
-        diagnostic_label = "网格逐行识别诊断" if diagnostic_kind == "grid" else "列表逐行识别诊断"
-        self._log(f"{diagnostic_label}：开始识别全部行（不会点击）。")
+        # 选图测试不截当前屏幕，无需隐藏窗口或绑定游戏窗口。
+        need_screen = not image_source
+        hwnd = self._bound_hwnd() if need_screen else None
+        source_label = "当前屏幕" if need_screen else "选择的图片"
+        self._log(f"列表逐行识别诊断：开始识别全部行（{source_label}，不会点击）。")
         result_lines: list[str] = []
         try:
             hidden_states = (
-                None if diagnostic_kind == "grid"
-                else self._hide_macroflow_windows_for_diagnostic()
+                self._hide_macroflow_windows_for_diagnostic() if need_screen else None
             )
         except Exception as exc:
             self._row_list_diagnostic_running = False
@@ -6027,14 +6532,10 @@ class MacroFlowApp:
                 and (original_wait() if original_wait else True)
             )
             try:
-                if action.get("type") == "grid_row_condition_click":
-                    diagnostic_result = self.player._diagnose_grid_row_condition_click(
-                        action, hwnd, result_sink=result_lines.append,
-                    )
-                else:
-                    self.player._diagnose_row_list_condition_click(
-                        action, hwnd, result_sink=result_lines.append,
-                    )
+                diagnostic_result = self.player._diagnose_row_list_condition_click(
+                    action, hwnd, result_sink=result_lines.append,
+                    image_path=image_path or None,
+                )
             except Exception as exc:
                 error = exc
             finally:
@@ -6146,7 +6647,6 @@ class MacroFlowApp:
         if hidden_states is not None:
             self._restore_macroflow_windows_after_diagnostic(hidden_states)
         self._row_list_diagnostic_running = False
-        self._row_list_diagnostic_kind = ""
         if on_complete is not None:
             matched_rows = 0
             if isinstance(diagnostic_result, dict):
@@ -6169,7 +6669,7 @@ class MacroFlowApp:
         if cancelled:
             return
         if isinstance(diagnostic_result, dict):
-            GridRowDiagnosticResultDialog(
+            RowRecognitionResultDialog(
                 self.root, diagnostic_result, error,
             ).show()
         else:
@@ -6185,13 +6685,6 @@ class MacroFlowApp:
         if action:
             self._insert_action(action)
 
-    def add_grid_row_condition_click(self):
-        action = GridRowConditionClickDialog(
-            self.root, on_test=self.test_row_list_condition_click,
-        ).show()
-        if action:
-            self._insert_action(action)
-
     def add_open_app(self):
         action = OpenAppDialog(self.root).show()
         if action:
@@ -6199,6 +6692,13 @@ class MacroFlowApp:
 
     def add_close_app(self):
         action = CloseAppDialog(self.root).show()
+        if action:
+            self._insert_action(action)
+
+    def add_set_resolution(self):
+        action = SetResolutionActionDialog(
+            self.root, settings={"resolution_styles": self.resolution_styles},
+        ).show()
         if action:
             self._insert_action(action)
 
@@ -6282,6 +6782,7 @@ class MacroFlowApp:
         updated = edit_action(
             self.root, self.script.actions[index], self.script.actions,
             on_row_list_test=self.test_row_list_condition_click,
+            settings={"resolution_styles": self.resolution_styles},
         )
         if updated:
             self._checkpoint_action_edit()
@@ -6410,7 +6911,7 @@ class MacroFlowApp:
             old_id = str(action.get(ACTION_ID_KEY, "")).strip()
             if old_id:
                 action[ACTION_ID_KEY] = id_map[old_id]
-            for field in ("jump_action_id", "timeout_jump_action_id", "found_jump_action_id"):
+            for field in JUMP_TARGET_KEYS:
                 target = str(action.get(field, "")).strip()
                 if target in id_map:
                     action[field] = id_map[target]
@@ -6573,9 +7074,9 @@ class MacroFlowApp:
         if not self.script.actions and not trigger.get("template"):
             self._notify("没有动作", "请先录制或添加动作。")
             return
+        start_index = max(0, min(int(start_index), len(self.script.actions) - 1))
         self._begin_detection_run()
         self._ensure_detection_worker()
-        start_index = max(0, min(int(start_index), len(self.script.actions) - 1))
         repeats = max(1, int(self.repeat_var.get()))
         hwnd = self._bound_hwnd()
         activation_enabled, activation_signature = self._activation_settings_from_script()
@@ -6690,6 +7191,9 @@ class MacroFlowApp:
                                 break
                             continue
                         self.player.stop_event.wait(0.1)
+                    # 这段守卫循环不经过 play()，处理段里按下的键/鼠标键没有
+                    # 收尾路径，退出前统一释放。
+                    self.player._release_all(None)
                 else:
                     self._ui(self._append_mini_step, "脚本执行完成。")
                     self._ui(self._set_status, "脚本执行完成", "success")
@@ -6723,13 +7227,18 @@ class MacroFlowApp:
             position = self.floating_notice_position_var.get()
         except (AttributeError, tk.TclError):
             position = "顶部居中"
+        area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
+            or get_primary_screen_rect()
         existing = self.execution_notice_window
         if existing is not None and existing.winfo_exists():
             self.execution_notice_label.configure(text=text)
             x, y = floating_notice_xy(
-                position, existing.winfo_screenwidth(), existing.winfo_screenheight(),
+                position, area["width"], area["height"],
+                px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT),
             )
-            existing.geometry(f"{FLOATING_NOTICE_WIDTH}x{FLOATING_NOTICE_HEIGHT}+{x}+{y}")
+            x += area["left"]
+            y += area["top"]
+            existing.geometry(f"{px(FLOATING_NOTICE_WIDTH)}x{px(FLOATING_NOTICE_HEIGHT)}+{x}+{y}")
             if self.execution_notice_after_id is not None:
                 existing.after_cancel(self.execution_notice_after_id)
             existing.deiconify()
@@ -6746,15 +7255,14 @@ class MacroFlowApp:
         notice.overrideredirect(True)
         notice.attributes("-topmost", True)
         notice.configure(background="#263541")
-        width, height = FLOATING_NOTICE_WIDTH, FLOATING_NOTICE_HEIGHT
-        x, y = floating_notice_xy(
-            position, notice.winfo_screenwidth(), notice.winfo_screenheight(), width, height,
-        )
-        notice.geometry(f"{width}x{height}+{x}+{y}")
-        frame = ttk.Frame(notice, padding=(12, 10), style="Surface.TFrame")
+        width, height = px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT)
+        x, y = floating_notice_xy(position, area["width"], area["height"], width, height)
+        notice.geometry(f"{width}x{height}+{x + area['left']}+{y + area['top']}")
+        set_rounded_window(notice.winfo_id(), px(10))
+        frame = ttk.Frame(notice, padding=pad(12, 10), style="Surface.TFrame")
         frame.pack(fill="both", expand=True)
         self.execution_notice_label = ttk.Label(
-            frame, text=text, style="MiniText.TLabel", wraplength=330, justify="left",
+            frame, text=text, style="MiniText.TLabel", wraplength=px(330), justify="left",
         )
         self.execution_notice_label.pack(anchor="w", fill="both", expand=True)
         notice.update_idletasks()
@@ -8424,6 +8932,8 @@ class MacroFlowApp:
                             self._ui(self._log, "全局检测：处理段请求已忽略，继续检测。")
                         continue
                     self.player.stop_event.wait(0.1)
+                # 这段守卫循环不经过 play()，处理段里按下的键/鼠标键没有收尾路径。
+                self.player._release_all(None)
             if not self.workflow_stop.is_set() and not self.player.stop_event.is_set():
                 self._ui(self._set_status, "工作流执行完成", "success")
                 self._ui(self._append_mini_step, "工作流执行完成。")
@@ -8545,6 +9055,10 @@ class MacroFlowApp:
         guard = getattr(self, "input_guard", None)
         if guard is not None:
             guard.set_hotkeys(set(vk_map))
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            # 录制中改绑定也要立刻生效：recorder 持有的是 start() 时的拷贝。
+            recorder.set_filter_vks(self._hotkey_recorder_filter_vks)
 
     def _refresh_hotkey_summary(self):
         var = getattr(self, "hotkey_summary_var", None)
@@ -8633,10 +9147,7 @@ class MacroFlowApp:
             # 回放若游戏不在前台（MacroFlow 窗口挡住游戏等），游戏不锁定光标，
             # 转向位移只会把桌面光标推到屏幕边缘，游戏不会转向。
             target_hwnd = None
-            if any(
-                str(action.get("type")) in {"turn", "mouse_move"}
-                for action in script.actions
-            ):
+            if self._actions_need_bound_window(script.actions):
                 target_hwnd = self._bound_hwnd(update_display=False)
                 if not target_hwnd:
                     self._ui(

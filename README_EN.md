@@ -94,6 +94,7 @@ Editing: undo / redo, duplicate down (multi-select supported), run from here (tr
 - Drag-select a region (empty = full screen), or bind a target window
 - Expected text matched by "contains / equals"; empty = any recognized text hits
 - Polling with timeout, then continue / jump / stop; results shown in the status bar and the execution mini window
+- **Run a code segment on failure** (per script line): image match, OCR text, OCR number compare, multi-condition image click and list row-by-row click can each opt in; on a miss / timeout / blocking timeout the segment runs first (add / edit / remove / move, supporting delay, keys, text, clicks, repeated clicks, moves, module references, script references, open-close app, notice, foreground window, jump to script end, end current script), then the failure branch is taken
 
 ## 🗂️ Module Objects
 
@@ -141,10 +142,10 @@ During workflow execution, enabled global modules keep scanning (sharing one scr
 ## 🛠️ Execution & Settings
 
 - **Focus lock mode** (off by default): switches to the English input method + system-level mouse/keyboard lock (`BlockInput`) to block misoperation; `F12` remains the emergency stop
-- **Foreground guard**: while executing, the bound window's foreground is checked every ~500 ms (including during waits and detection polls); when an external window (popups, mis-clicks, third-party programs) steals focus, it is brought back within a few hundred ms, and the run log records the stealing window's title and process name (rate-limited) to help you find the culprit
+- **Foreground restore**: with "activate before execution" enabled the target window is activated once when playback starts (never when it is already foreground, which would make games show the "click to continue" overlay); after every global-detection screenshot the bound window's foreground is verified once and taken back only if it was lost (zero cost otherwise). Click/move coordinates outside the target window are clamped inside it so clicks cannot steal focus
 - **Foreground window**: independent toggle, brings the target window to the front before execution
 - **Mini windows**: always-on-top mini window for execution / recording (independent toggles) showing progress and the action log
-- **System tray**: closing to tray keeps it running; the tray menu restores the window or quits
+- **System tray**: with "start to tray" enabled the app stays in the tray on boot and a double-click restores the window; the close button saves the draft and quits (minimize to tray first if it must keep running), and the tray menu can restore the window or quit
 - **Hotkey sounds**: distinct tones for record start/end, run, complete, and emergency stop; testable
 - **Hotkey scripts**: bind a script to a single key (letters, digits, F1–F12, arrows, etc.; F8/F9/F12 and bare modifiers excluded) in the sidebar "Hotkey Scripts → Settings…". During **recording**, pressing the hotkey runs the bound script and its injected keys/mouse get recorded (the hotkey key itself is not); during **execution**, the bound script runs in parallel in its own player without interrupting the current script/workflow; `F12` stops all hotkey scripts too. Bindings persist in `app_settings.json`
 - **Read current coordinates**: shows the live cursor position and the window under it for manual coordinate entry

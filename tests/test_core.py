@@ -19,13 +19,17 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import unittest
 from unittest.mock import Mock, call, patch
 
 import cv2
 import numpy as np
+import ttkbootstrap
+import ttkbootstrap.publisher
 import macroflow.core.image_match as image_match_module
 import macroflow.input.input_guard as input_guard_module
+import macroflow.input.wininput as wininput_module
 import macroflow.ui.dialogs as dialog_module
 
 from macroflow.core.alerts import play_alert
@@ -45,10 +49,11 @@ from macroflow.ui.dialogs import (
     ModulePickerDialog, ModuleReferenceDelayDialog, MultiConditionClickDialog,
     MouseMoveDialog, OcrActionDialog, OcrCompareActionDialog, OpenAppDialog, RepeatClickDialog, RestartWorkflowTargetDialog,
     ScreenPointPicker, ScriptRefDialog,
-    ScreenOffsetPicker, ScreenRegionPicker, ScriptDirectoriesDialog, TemplateRegionFormDialog,
+    ScreenOffsetPicker, ScreenRegionPicker, ScriptDirectoriesDialog, SetResolutionActionDialog, TemplateRegionFormDialog,
     TemplateRegionManagerDialog, TextActionDialog, activate_main_after_modal, ancestor_windows,
     drag_selection_region, edit_action,
     configure_module_tree_styles,
+    FONT_FAMILY, FONT_SUBTITLE, px,
     fallback_template_options, fit_window_to_content,
     image_action_option_defaults, image_click_target_defaults,
     image_found_jump_target_options, image_jump_target_options,
@@ -85,7 +90,11 @@ from macroflow.core.models import (
 from macroflow.execution.player import (
     AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MacroPlayer, PlaybackStopped,
-    scale_screen_point, screen_template_scale,
+    get_playback_screen_rect, scale_screen_point, screen_template_scale,
+)
+from macroflow.core.resolution import (
+    DEFAULT_RESOLUTION_STYLES, normalize_resolution_styles,
+    build_resolution_action, resolve_resolution_style,
 )
 from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult, DetectionWorker
 from macroflow.execution.timeline import PlaybackTimeline
@@ -105,7 +114,8 @@ from macroflow.core.storage import (
 from macroflow.input.wininput import (
     DWMWA_WINDOW_CORNER_PREFERENCE, MACROFLOW_INPUT_TAG, WindowInfo, activate_window,
     force_english_input, is_cursor_near_window_center, resolve_window_signature,
-    send_move_relative, set_dark_titlebar, set_input_dispatcher, show_window,
+    send_move_relative, set_dark_titlebar, set_display_scaling_for_window,
+    set_input_dispatcher, show_window,
     show_window_no_activate,
 )
 
@@ -888,30 +898,20 @@ class ScriptRecordingSafetyTests(unittest.TestCase):
         app.start_recording()
         app._notify.assert_called_once()
 
-    def test_recording_detaches_open_script_before_save(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(name="战斗脚本")
-        app.script_path = Path("scripts/战斗脚本.json")
-        app.script_requires_new_file = False
-        app.script_name_var = Mock()
-        app.script_name_var.get.return_value = "战斗脚本"
-        app._log = Mock()
-
-        app._detach_open_script_for_recording()
-
-        self.assertIsNone(app.script_path)
-        self.assertTrue(app.script_requires_new_file)
-        app.script_name_var.set.assert_called_once_with("战斗脚本_新录制")
-
 
 class StartupVisibilityTests(unittest.TestCase):
-    def test_execution_mini_position_is_clamped_to_screen(self):
+    def test_execution_mini_position_is_clamped_to_the_app_monitor(self):
+        # 多屏下必须按"软件所在显示器"的可用区域收敛，不能用虚拟桌面尺寸，
+        # 否则小窗会被推到屏幕外面。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
-        app.root.winfo_screenwidth.return_value = 1000
-        app.root.winfo_screenheight.return_value = 800
+        app.root.winfo_id.return_value = 123
         app.execution_mini_position = [900, 700]
-        self.assertEqual(app._execution_mini_position(420, 316), (580, 484))
+        with patch(
+            "macroflow.ui.app.get_monitor_work_area_for_window",
+            return_value={"left": -1920, "top": 0, "width": 1000, "height": 800},
+        ), patch("macroflow.ui.app.is_window", return_value=True):
+            self.assertEqual(app._execution_mini_position(420, 316), (-1340, 484))
 
     def test_spawn_new_instance_resets_pyinstaller_extraction_environment(self):
         inherited = {
@@ -4244,6 +4244,66 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             move.assert_called_once_with(60, 70)
             self.assertEqual(button.call_count, 2)
 
+    def test_module_object_start_delay_waits_before_detection(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main_path = Path(folder) / "main.png"
+            main_path.write_bytes(b"main")
+            main_obj = {
+                "name": "娱乐模式", "template": str(main_path), "region": [1, 2, 30, 40],
+                "threshold": 0.85, "interval_ms": 50, "start_delay_ms": 2500,
+                "after_action": "continue",
+            }
+            main_match = {"x": 10, "y": 20, "width": 30, "height": 40,
+                          "center_x": 25, "center_y": 40, "score": 0.9}
+            player = MacroPlayer()
+            player._wait = Mock()
+            logs: list[str] = []
+            player.on_log = logs.append
+            with patch("macroflow.execution.player.registered_module_object",
+                       return_value=main_obj), \
+                    patch("macroflow.execution.player.find_template",
+                          return_value=main_match) as find, \
+                    patch("macroflow.execution.player.show_overlay"):
+                player._execute_image({
+                    "type": "image_match", "module_ref": True,
+                    "module_key": "module:entertain", "template": str(main_path),
+                    "region_mode": "template",
+                }, None)
+            # 进入模块前延时先等（识别前的第一件事），识别成功后动作前的
+            # 「延时」是另一码事（此处 delay_ms=0，仍会走一次 0 ms 等待）。
+            self.assertEqual(player._wait.call_args_list[0].args, (2500,))
+            self.assertEqual(find.call_count, 1)
+            self.assertTrue(
+                any("模块 娱乐模式 进入前延时 2500 ms" in line for line in logs),
+                logs,
+            )
+
+    def test_module_object_without_start_delay_waits_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            main_path = Path(folder) / "main.png"
+            main_path.write_bytes(b"main")
+            main_obj = {
+                "name": "游戏大厅", "template": str(main_path), "region": [1, 2, 30, 40],
+                "threshold": 0.85, "interval_ms": 50, "after_action": "continue",
+            }
+            main_match = {"x": 10, "y": 20, "width": 30, "height": 40,
+                          "center_x": 25, "center_y": 40, "score": 0.9}
+            player = MacroPlayer()
+            player._wait = Mock()
+            logs: list[str] = []
+            player.on_log = logs.append
+            with patch("macroflow.execution.player.registered_module_object",
+                       return_value=main_obj), \
+                    patch("macroflow.execution.player.find_template",
+                          return_value=main_match), \
+                    patch("macroflow.execution.player.show_overlay"):
+                player._execute_image({
+                    "type": "image_match", "module_ref": True,
+                    "module_key": "module:lobby", "template": str(main_path),
+                    "region_mode": "template",
+                }, None)
+            self.assertFalse(any("进入前延时" in line for line in logs), logs)
+
     def test_switch_module_continuous_fallback_is_clicked_only_once(self):
         with tempfile.TemporaryDirectory() as folder:
             main_path = Path(folder) / "main.png"
@@ -4495,6 +4555,16 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertTrue(app._script_needs_ocr(
             [{"type": "ocr_compare", "region": [0, 0, 10, 10]}],
         ))
+
+    def test_row_failure_segment_with_ocr_needs_ocr(self):
+        # 行级失败代码段里用 OCR：播放前必须等 OCR 引擎，不能中途才导入。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        actions = [{
+            "type": "image_match", "module_ref": True,
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "text_ocr", "region": [0, 0, 10, 10]}],
+        }]
+        self.assertTrue(app._script_needs_ocr(actions))
 
     def test_multi_condition_click_needs_ocr_only_for_enabled_ocr_conditions(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -6628,12 +6698,15 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.level_pack_dir.get.return_value = "scripts/关卡封装"
         dialog.switch_dir = Mock()
         dialog.switch_dir.get.return_value = "D:/switch"
+        dialog.direction_dir = Mock()
+        dialog.direction_dir.get.return_value = "D:/direction"
         dialog.destroy = Mock()
         dialog.save()
         self.assertEqual(dialog.result, {
             "level_dir": "scripts/关卡",
             "level_pack_dir": "scripts/关卡封装",
             "switch_dir": "D:/switch",
+            "direction_dir": "D:/direction",
         })
         dialog.destroy.assert_called_once()
 
@@ -6650,23 +6723,32 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app._switch_scripts_dir(), BASE_DIR / "my_switch")
 
     def test_script_category_key_and_dir_routing(self):
-        from macroflow.ui.app import SCRIPT_CATEGORY_VALUES, script_category_key
-        self.assertEqual(SCRIPT_CATEGORY_VALUES, ("关卡", "关卡封装", "切换"))
+        from macroflow.ui.app import (
+            SCRIPT_CATEGORY_VALUES, script_category_key, script_category_label,
+        )
+        self.assertEqual(SCRIPT_CATEGORY_VALUES, ("关卡", "关卡封装", "切换", "方向"))
         self.assertEqual(script_category_key("关卡"), "level")
         self.assertEqual(script_category_key("关卡封装"), "level_pack")
         self.assertEqual(script_category_key("切换"), "switch")
+        self.assertEqual(script_category_key("方向"), "direction")
         self.assertEqual(script_category_key("工作流全局"), "level")
         self.assertEqual(script_category_key("脚本全局"), "level")
+        self.assertEqual(script_category_label("direction"), "方向")
+        self.assertEqual(script_category_label("level"), "关卡")
+        self.assertEqual(script_category_label("已废弃的旧键"), "关卡")
 
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.script_category_var = Mock()
         app._level_pack_scripts_dir = Mock(return_value=Path("lp"))
         app._switch_scripts_dir = Mock(return_value=Path("s"))
+        app._direction_scripts_dir = Mock(return_value=Path("d"))
         app._level_scripts_dir = Mock(return_value=Path("l"))
         app.script_category_var.get.return_value = "切换"
         self.assertEqual(app._script_category_dir(), Path("s"))
         app.script_category_var.get.return_value = "关卡封装"
         self.assertEqual(app._script_category_dir(), Path("lp"))
+        app.script_category_var.get.return_value = "方向"
+        self.assertEqual(app._script_category_dir(), Path("d"))
         app.script_category_var.get.return_value = "关卡"
         self.assertEqual(app._script_category_dir(), Path("l"))
 
@@ -6690,32 +6772,6 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
 
 class RecordingDisplayTests(unittest.TestCase):
-    def test_grid_image_diagnostic_does_not_hide_or_restore_windows(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.worker = None
-        app.root = Mock()
-        app._bound_hwnd = Mock()
-        app._hide_macroflow_windows_for_diagnostic = Mock(
-            side_effect=AttributeError("'Menu' object has no attribute 'state'"),
-        )
-        app._restore_macroflow_windows_after_diagnostic = Mock()
-        app._log = Mock()
-        app._ui = lambda callback, *args: callback(*args)
-        app.player = Mock()
-        result = {"image_path": "selected.png", "cells": []}
-        app.player._diagnose_grid_row_condition_click.return_value = result
-        action = {"type": "grid_row_condition_click", "screenshot_path": "selected.png"}
-        with patch("macroflow.ui.app.threading.Thread") as thread_class, \
-             patch("macroflow.ui.app.GridRowDiagnosticResultDialog") as dialog:
-            app.test_row_list_condition_click(action)
-            thread_class.call_args.kwargs["target"]()
-        app._bound_hwnd.assert_not_called()
-        app._hide_macroflow_windows_for_diagnostic.assert_not_called()
-        app._restore_macroflow_windows_after_diagnostic.assert_not_called()
-        dialog.assert_called_once_with(app.root, result, None)
-        dialog.return_value.show.assert_called_once()
-        self.assertFalse(app._row_list_diagnostic_running)
-
     def test_row_list_diagnostic_completion_restores_windows_before_showing_results(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
@@ -6771,12 +6827,34 @@ class RecordingDisplayTests(unittest.TestCase):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.execution_progress_text = "running"
         app.main_hidden_for_execution = True
+        app.main_hidden_to_tray = False
         app.root = Mock()
         app._hide_execution_mini = Mock()
         app._restore_main_window = Mock()
         app._finish_execution_visibility()
         app._restore_main_window.assert_called_once()
         self.assertFalse(app.main_hidden_for_execution)
+
+    def test_tray_leftover_after_execution_logs_how_to_quit(self):
+        # 执行结束后窗口按设计留在托盘，很容易被当成"软件已经关了"——
+        # 必须留下一条日志说明软件仍在运行、快捷键仍生效、怎么彻底退出。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.execution_progress_text = "running"
+        app.main_hidden_for_execution = True
+        app.main_hidden_to_tray = True
+        app.root = Mock()
+        app._hide_execution_mini = Mock()
+        app._restore_main_window = Mock()
+        app._tray_visible = Mock(return_value=True)
+        logs: list[str] = []
+        app._log = Mock(side_effect=logs.append)
+
+        app._finish_execution_visibility()
+
+        app._restore_main_window.assert_not_called()
+        self.assertEqual(len(logs), 1)
+        self.assertIn("系统托盘", logs[0])
+        self.assertIn("退出", logs[0])
 
     def test_worker_error_logs_mini_cleanup_before_hiding_it(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -6876,6 +6954,69 @@ class RecordingDisplayTests(unittest.TestCase):
             {"width": 1920, "height": 1080},
             {"width": 2560, "height": 1440},
         ))
+
+    def _dpi_watch_app(self, tk_scaling):
+        """只够跑 DPI 监视逻辑的 MacroFlowApp 夹具（不建界面）。"""
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        root = Mock()
+        root.winfo_id.return_value = 4242
+        root.tk.call.return_value = tk_scaling
+        app.root = root
+        return app, root
+
+    def test_watch_display_dpi_corrects_a_wrong_startup_scale(self):
+        # 笔记本 200% + 外接屏 100%：窗口铺在 96 DPI 的屏上，但 Tk 启动 scaling
+        # 取自主屏（192 DPI）。第一次探测就必须纠正，不能只记录不应用——旧实现
+        # 只在"第二次探测"才应用，于是这套配置下界面永远按两倍放大。
+        app, root = self._dpi_watch_app(192 / 72.0)
+        app._apply_display_dpi = Mock()
+        with patch("macroflow.ui.app.get_window_dpi", return_value=96):
+            app._watch_display_dpi()
+        app._apply_display_dpi.assert_called_once_with(96)
+        root.after.assert_called_once_with(600, app._watch_display_dpi)
+
+    def test_watch_display_dpi_is_quiet_when_scaling_already_matches(self):
+        app, _root = self._dpi_watch_app(96 / 72.0)
+        app._apply_display_dpi = Mock()
+        with patch("macroflow.ui.app.get_window_dpi", return_value=96):
+            app._watch_display_dpi()
+        app._apply_display_dpi.assert_not_called()
+
+    def test_sync_ui_scale_uses_the_window_monitor_dpi(self):
+        app, root = self._dpi_watch_app(192 / 72.0)
+        with patch("macroflow.ui.app.get_window_dpi", return_value=96), \
+             patch("macroflow.ui.app.set_ui_scale") as app_scale, \
+             patch("macroflow.ui.app.dialogs_ui.set_ui_scale") as dialog_scale, \
+             patch.object(MacroFlowApp, "_configure_dark_theme") as theme:
+            app._sync_ui_scale_to_monitor()
+        self.assertEqual(root.tk.call.call_args.args, ("tk", "scaling", 96 / 72.0))
+        app_scale.assert_called_once_with(root)
+        dialog_scale.assert_called_once_with(root)
+        theme.assert_called_once()
+
+    def test_dark_theme_survives_reapply_after_startup_dpi_sync(self):
+        # 启动时先按系统 DPI 配一次主题，窗口铺到目标屏后再按该屏 DPI 配一次
+        # （_sync_ui_scale_to_monitor）。ttkbootstrap 会把 "TSeparator" 当新样式派生
+        # （内部 element_create 一个全局元素），第二次 configure 抛
+        # "Duplicate element Horizontal.Separator.separator"——表现为启动即写
+        # crash.log、界面全黑。这里真实重建一次根窗口复现那条路径。
+        previous_style = ttkbootstrap.style.Style.instance
+        ttkbootstrap.style.Style.instance = None
+        ttkbootstrap.publisher.Publisher.clear_subscribers()
+        root = ttkbootstrap.Window(themename="darkly")
+        root.withdraw()
+        try:
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.root = root
+            app._configure_dark_theme()
+            with patch("macroflow.ui.app.get_window_dpi", return_value=96):
+                app._sync_ui_scale_to_monitor()
+            # 分隔线样式确实配过（守卫没有把这一行整个跳掉）
+            self.assertTrue(root.style.lookup("TSeparator", "background"))
+        finally:
+            root.destroy()
+            ttkbootstrap.style.Style.instance = previous_style
+            ttkbootstrap.publisher.Publisher.clear_subscribers()
 
     def test_action_column_uses_compact_icons(self):
         cases = (
@@ -7070,7 +7211,8 @@ class WinInputTests(unittest.TestCase):
              patch("macroflow.input.wininput.user32.ActivateKeyboardLayout") as activate, \
              patch("macroflow.input.wininput.user32.PostMessageW", return_value=True) as post, \
              patch("macroflow.input.wininput.user32.GetWindowThreadProcessId", return_value=77), \
-             patch("macroflow.input.wininput.user32.GetKeyboardLayout", return_value=layout), \
+             patch("macroflow.input.wininput.user32.GetKeyboardLayout",
+                   side_effect=[0x08040804, layout]), \
              patch("macroflow.input.wininput.imm32.ImmGetContext", return_value=88), \
              patch("macroflow.input.wininput.imm32.ImmSetOpenStatus") as close_ime, \
              patch("macroflow.input.wininput.imm32.ImmReleaseContext"), \
@@ -7081,11 +7223,295 @@ class WinInputTests(unittest.TestCase):
         post.assert_called_once()
         close_ime.assert_called_once()
 
+    def test_force_english_input_skips_switch_when_already_english(self):
+        with patch("macroflow.input.wininput.user32.LoadKeyboardLayoutW") as load, \
+             patch("macroflow.input.wininput.user32.GetWindowThreadProcessId", return_value=77), \
+             patch("macroflow.input.wininput.user32.GetKeyboardLayout", return_value=0x04090409):
+            self.assertTrue(force_english_input(123))
+        load.assert_not_called()
+
     def test_center_lock_uses_window_position_plus_size(self):
         with patch("macroflow.input.wininput.user32.GetForegroundWindow", return_value=0), \
              patch("macroflow.input.wininput.get_window_rect", return_value=(100, 50, 800, 600)), \
              patch("macroflow.input.wininput.get_cursor_pos", return_value=(500, 350)):
             self.assertTrue(is_cursor_near_window_center(123))
+
+
+class ResolutionActionTests(unittest.TestCase):
+    def test_normalize_resolution_styles_keeps_valid_named_presets(self):
+        styles = normalize_resolution_styles([
+            {"name": "游戏 1080p", "width": "1920", "height": 1080},
+            {"name": "游戏 1080p", "width": 1280, "height": 720},
+            {"name": "坏配置", "width": 0, "height": 720},
+        ])
+
+        self.assertEqual(styles, [
+            {
+                "name": "游戏 1080p", "width": 1920, "height": 1080,
+                "refresh_rate": 0, "scale_percent": 100,
+            },
+        ])
+
+    def test_resolve_resolution_style_returns_a_copy_from_settings(self):
+        settings = {"resolution_styles": DEFAULT_RESOLUTION_STYLES}
+
+        style = resolve_resolution_style(settings, DEFAULT_RESOLUTION_STYLES[0]["name"])
+
+        self.assertEqual(style, DEFAULT_RESOLUTION_STYLES[0])
+        self.assertIsNot(style, DEFAULT_RESOLUTION_STYLES[0])
+        with self.assertRaises(KeyError):
+            resolve_resolution_style(settings, "不存在的样式")
+
+    def test_player_changes_resolution_on_selected_window_monitor_and_refreshes_screen(self):
+        before = {"left": 0, "top": 0, "width": 2560, "height": 1440}
+        after = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        player = MacroPlayer()
+        player._target_screen = before
+        player._wait = Mock()
+        action = {
+            "type": "set_resolution",
+            "name": "游戏 1080p",
+            "width": 1920,
+            "height": 1080,
+            "refresh_rate": 0,
+            "scale_percent": 125,
+            "window": {
+                "title": "扩展屏应用",
+                "class_name": "ExternalWindow",
+                "process_path": "C:/Apps/external.exe",
+            },
+        }
+        selected_window = WindowInfo(456, "扩展屏应用", "ExternalWindow", "C:/Apps/external.exe")
+
+        with patch("macroflow.execution.player.resolve_window_signature", return_value=selected_window) as resolve, \
+             patch("macroflow.execution.player.get_display_resolution_for_window",
+                   return_value=(2560, 1440, 60)), \
+             patch("macroflow.execution.player.get_display_scaling_for_window", return_value=100), \
+             patch("macroflow.execution.player.set_display_resolution_for_window", return_value=True) as set_mode, \
+             patch("macroflow.execution.player.set_display_scaling_for_window", return_value=True) as set_scale, \
+             patch("macroflow.execution.player.get_playback_screen_rect", return_value=after) as get_screen:
+            player._execute_action(action, None)
+
+        resolve.assert_called_once_with(action["window"])
+        set_mode.assert_called_once_with(456, 1920, 1080, 0)
+        set_scale.assert_called_once_with(456, 125)
+        player._wait.assert_called_once()
+        get_screen.assert_called_once_with(456)
+        self.assertEqual(player._target_screen, after)
+
+    def test_player_rejects_resolution_action_without_reference_or_monitor(self):
+        player = MacroPlayer()
+
+        with self.assertRaisesRegex(RuntimeError, "无法确定要修改的显示器"):
+            player._execute_action({
+                "type": "set_resolution", "width": 1920, "height": 1080,
+            }, None)
+
+    def test_player_changes_resolution_of_app_monitor_without_reference_window(self):
+        # 没有参照窗口时直接改"软件所在显示器"，不需要游戏窗口打开。
+        player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        player._wait = Mock()
+        after = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        with patch("macroflow.execution.player.is_window", return_value=True), \
+             patch("macroflow.execution.player.get_display_resolution_for_window",
+                   return_value=(1280, 720, 60)), \
+             patch("macroflow.execution.player.get_display_scaling_for_window", return_value=125), \
+             patch("macroflow.execution.player.set_display_resolution_for_window", return_value=True) as set_mode, \
+             patch("macroflow.execution.player.set_display_scaling_for_window", return_value=True) as set_scale, \
+             patch("macroflow.execution.player.get_playback_screen_rect", return_value=after) as get_screen:
+            player._execute_action({
+                "type": "set_resolution", "name": "1080p",
+                "width": 1920, "height": 1080, "refresh_rate": 60, "scale_percent": 100,
+            }, None)
+
+        set_mode.assert_called_once_with(999, 1920, 1080, 60)
+        set_scale.assert_called_once_with(999, 100)
+        get_screen.assert_called_once_with(999)
+        self.assertEqual(player._target_screen, after)
+
+    def test_player_falls_back_to_app_monitor_when_reference_window_is_closed(self):
+        # 参照窗口没打开时不再中断工作流：改为修改软件所在显示器并记一条提示。
+        player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        player._wait = Mock()
+        logs = []
+        player.on_log = logs.append
+        after = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        with patch("macroflow.execution.player.resolve_window_signature", return_value=None), \
+             patch("macroflow.execution.player.is_window", return_value=True), \
+             patch("macroflow.execution.player.get_display_resolution_for_window",
+                   return_value=(1280, 720, 60)), \
+             patch("macroflow.execution.player.get_display_scaling_for_window", return_value=100), \
+             patch("macroflow.execution.player.set_display_resolution_for_window", return_value=True) as set_mode, \
+             patch("macroflow.execution.player.set_display_scaling_for_window", return_value=True), \
+             patch("macroflow.execution.player.get_playback_screen_rect", return_value=after):
+            player._execute_action({
+                "type": "set_resolution",
+                "width": 1920,
+                "height": 1080,
+                "window": {"title": "已关闭窗口"},
+            }, None)
+
+        set_mode.assert_called_once_with(999, 1920, 1080, 0)
+        self.assertTrue(any("参照窗口未找到" in text for text in logs))
+
+    def test_player_skips_resolution_change_when_already_at_target(self):
+        # 已经是目标分辨率/缩放：不重复切换，也不因为"缩放改不了"而中断工作流。
+        player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        player._wait = Mock()
+        logs = []
+        player.on_log = logs.append
+        with patch("macroflow.execution.player.is_window", return_value=True), \
+             patch("macroflow.execution.player.get_display_resolution_for_window",
+                   return_value=(1920, 1080, 60)), \
+             patch("macroflow.execution.player.get_display_scaling_for_window", return_value=200), \
+             patch("macroflow.execution.player.set_display_resolution_for_window") as set_mode, \
+             patch("macroflow.execution.player.set_display_scaling_for_window",
+                   return_value=False) as set_scale, \
+             patch("macroflow.execution.player.get_playback_screen_rect",
+                   return_value={"left": 0, "top": 0, "width": 1920, "height": 1080}):
+            player._execute_action({
+                "type": "set_resolution",
+                "width": 1920, "height": 1080, "refresh_rate": 60, "scale_percent": 100,
+            }, None)
+
+        set_mode.assert_not_called()
+        set_scale.assert_called_once_with(999, 100)
+        self.assertTrue(any("无需切换分辨率" in text for text in logs))
+        self.assertTrue(any("不支持程序化修改缩放" in text for text in logs))
+
+    def test_player_rejects_resolution_action_without_any_resolvable_monitor(self):
+        player = MacroPlayer()
+
+        with patch("macroflow.execution.player.resolve_window_signature", return_value=None), \
+             self.assertRaisesRegex(RuntimeError, "无法确定要修改的显示器"):
+            player._execute_action({
+                "type": "set_resolution",
+                "width": 1920,
+                "height": 1080,
+                "window": {"title": "已关闭窗口"},
+            }, None)
+
+    def test_display_scaling_uses_relative_value_from_recommended_scale(self):
+        adapter_id = wininput_module._LUID()
+        adapter_id.LowPart = 1
+        adapter_id.HighPart = 2
+        with patch(
+                "macroflow.input.wininput.get_display_device_name_for_window",
+                return_value="\\\\.\\DISPLAY2",
+        ), patch(
+                "macroflow.input.wininput._display_config_source_for_device",
+                return_value=(adapter_id, 7),
+        ), patch(
+                "macroflow.input.wininput._display_scale_info",
+                return_value=(150, 100, 150, 500),
+        ), patch.object(
+                wininput_module.user32, "DisplayConfigSetDeviceInfo", return_value=0,
+        ) as set_info:
+            self.assertTrue(set_display_scaling_for_window(456, 175))
+
+        packet = ctypes.cast(
+            set_info.call_args.args[0],
+            ctypes.POINTER(wininput_module._DISPLAYCONFIG_SOURCE_DPI_SCALE_SET),
+        ).contents
+        self.assertEqual(packet.header.type, -4)
+        self.assertEqual(packet.header.id, 7)
+        self.assertEqual(packet.scaleRel, 1)
+
+    def test_build_resolution_action_snapshots_selected_style(self):
+        action = build_resolution_action(
+            {"resolution_styles": [
+            {"name": "扩展屏 1080p", "width": 1920, "height": 1080, "refresh_rate": 60},
+            ]},
+            "扩展屏 1080p",
+        )
+
+        self.assertEqual(action, {
+            "type": "set_resolution",
+            "name": "扩展屏 1080p",
+            "width": 1920,
+            "height": 1080,
+            "refresh_rate": 60,
+            "scale_percent": 100,
+            "delay_ms": 0,
+            "after_delay_ms": 0,
+        })
+
+    def test_action_summary_describes_resolution_style(self):
+        kind, detail, delay = action_summary({
+            "type": "set_resolution", "name": "扩展屏 1080p",
+            "width": 1920, "height": 1080, "refresh_rate": 60,
+        })
+
+        self.assertIn("分辨率", kind)
+        self.assertIn("扩展屏 1080p", detail)
+        self.assertIn("1920×1080", detail)
+        self.assertIn("缩放 100%", detail)
+        self.assertEqual(delay, "0 ms")
+
+    def test_resolution_action_does_not_require_the_game_target_window(self):
+        self.assertFalse(MacroFlowApp._actions_need_bound_window([
+            {"type": "set_resolution"},
+        ]))
+
+    def test_resolution_action_saves_its_selected_window_signature(self):
+        dialog = SetResolutionActionDialog.__new__(SetResolutionActionDialog)
+        dialog.settings = {
+            "resolution_styles": [
+                {"name": "扩展屏 1080p", "width": 1920, "height": 1080, "refresh_rate": 60},
+            ],
+        }
+        dialog.name = Mock()
+        dialog.name.get.return_value = "扩展屏 1080p"
+        dialog.window_signature = {
+            "title": "扩展屏应用",
+            "class_name": "ExternalWindow",
+            "process_path": "C:/Apps/external.exe",
+        }
+        dialog.delay = Mock()
+        dialog.delay.get.return_value = 0
+        dialog.after_delay = Mock()
+        dialog.after_delay.get.return_value = 0
+        dialog.destroy = Mock()
+
+        dialog.save()
+
+        self.assertEqual(dialog.result["window"], dialog.window_signature)
+        self.assertEqual(dialog.result["type"], "set_resolution")
+        dialog.destroy.assert_called_once()
+
+    def test_resolution_dialog_saves_action_without_reference_window(self):
+        dialog = SetResolutionActionDialog.__new__(SetResolutionActionDialog)
+        dialog.settings = {
+            "resolution_styles": [
+                {"name": "本机 1080p", "width": 1920, "height": 1080, "refresh_rate": 60},
+            ],
+        }
+        dialog.name = Mock()
+        dialog.name.get.return_value = "本机 1080p"
+        dialog.window_signature = {}
+        dialog.delay = Mock()
+        dialog.delay.get.return_value = 0
+        dialog.after_delay = Mock()
+        dialog.after_delay.get.return_value = 0
+        dialog.destroy = Mock()
+
+        dialog.save()
+
+        self.assertNotIn("window", dialog.result)
+        self.assertEqual(dialog.result["width"], 1920)
+        dialog.destroy.assert_called_once()
+
+    def test_resolution_dialog_uses_content_fit_for_long_window_details(self):
+        source = inspect.getsource(dialog_module.SetResolutionActionDialog)
+
+        self.assertIn("fit_window_to_content(", source)
+
+    def test_app_settings_provide_default_resolution_styles(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with patch("macroflow.core.storage.SETTINGS_PATH", Path(folder) / "settings.json"):
+                settings = load_app_settings()
+
+        self.assertEqual(settings["resolution_styles"], DEFAULT_RESOLUTION_STYLES)
 
 
 class ImageTests(unittest.TestCase):
@@ -7652,6 +8078,39 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(screen_template_scale(None, {"width": 3840}), 1.0)
         self.assertEqual(screen_template_scale({"width": 0}, {"width": 3840}), 1.0)
 
+    def test_playback_screen_uses_target_window_monitor(self):
+        monitor = {"left": -1920, "top": 181, "width": 1920, "height": 1080}
+        primary = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        with patch("macroflow.execution.player.get_monitor_rect_for_window",
+                   side_effect=lambda hwnd: monitor if hwnd else None), \
+             patch("macroflow.execution.player.get_primary_screen_rect", return_value=primary):
+            self.assertEqual(get_playback_screen_rect(123), monitor)
+            self.assertEqual(get_playback_screen_rect(None), primary)
+
+    def test_image_match_captures_target_monitor_instead_of_virtual_desktop(self):
+        with tempfile.TemporaryDirectory() as folder:
+            template_path = Path(folder) / "target.png"
+            template_path.write_bytes(b"template")
+            monitor = {"left": -1920, "top": 181, "width": 1920, "height": 1080}
+            match = {
+                "x": -100, "y": 200, "width": 52, "height": 14,
+                "center_x": -74, "center_y": 207, "score": 0.95,
+            }
+            player = MacroPlayer()
+            with patch("macroflow.execution.player.get_playback_screen_rect", return_value=monitor), \
+                 patch("macroflow.execution.player.is_window", return_value=True), \
+                 patch("macroflow.execution.player.is_window_process_foreground", return_value=True), \
+                 patch("macroflow.execution.player.find_template", return_value=match) as find, \
+                 patch("macroflow.execution.player.show_overlay"):
+                player.play(
+                    [{"type": "image_match", "template": str(template_path),
+                      "on_found": "continue"}],
+                    hwnd=123,
+                    source_screen={"left": 0, "top": 0, "width": 1920, "height": 1080},
+                )
+            self.assertEqual(find.call_args.args[2], monitor)
+            self.assertEqual(find.call_args.kwargs["scale"], 1.0)
+
     def test_template_match_reuses_existing_full_screenshot_with_region(self):
         with tempfile.TemporaryDirectory() as folder:
             template_path = Path(folder) / "shared.png"
@@ -8145,30 +8604,6 @@ class ImageTests(unittest.TestCase):
 
 class OcrTests(unittest.TestCase):
 
-    def test_grid_lines_build_complete_row_and_column_cells(self):
-        build_grid = getattr(image_match_module, "build_grid_cells", None)
-        self.assertIsNotNone(build_grid, "缺少网格分隔线单元格计算函数")
-        self.assertEqual(
-            build_grid((100, 200, 300, 200), [50, 120], [80, 210]),
-            [
-                [
-                    (100, 200, 80, 50),
-                    (180, 200, 130, 50),
-                    (310, 200, 90, 50),
-                ],
-                [
-                    (100, 250, 80, 70),
-                    (180, 250, 130, 70),
-                    (310, 250, 90, 70),
-                ],
-                [
-                    (100, 320, 80, 80),
-                    (180, 320, 130, 80),
-                    (310, 320, 90, 80),
-                ],
-            ],
-        )
-
     def test_row_offsets_are_locally_corrected_without_accumulating_drift(self):
         stabilize = getattr(image_match_module, "stabilize_row_offsets", None)
         self.assertIsNotNone(stabilize, "缺少逐行局部分隔线校正算法")
@@ -8283,6 +8718,8 @@ class OcrTests(unittest.TestCase):
         form.interval = Mock(); form.interval.get.return_value = "500"
         form.on_timeout = Mock(); form.on_timeout.get.return_value = "continue"
         form.show_result_notice = Mock(); form.show_result_notice.get.return_value = True
+        form.failure_segment_enabled = Mock(); form.failure_segment_enabled.get.return_value = True
+        form.failure_segment = [{"type": "notice", "text": "多条件没命中"}]
         form.destroy = Mock()
         with patch("macroflow.ui.dialogs.registered_module_object", return_value={
             "category": "switch", "template": "images/shared.png",
@@ -8304,6 +8741,8 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.result["conditions"][2]["separator"], "/")
         self.assertEqual(form.result["conditions"][2]["relation"], "not_equal")
         self.assertEqual(form.result["click_region"], [600, 200, 50, 40])
+        self.assertTrue(form.result["failure_segment_enabled"])
+        self.assertEqual(form.result["failure_actions"][0]["text"], "多条件没命中")
 
     def test_multi_condition_fields_follow_type_and_ocr_mode(self):
         states = getattr(dialog_module, "multi_condition_field_states", None)
@@ -8375,6 +8814,7 @@ class OcrTests(unittest.TestCase):
         form.right_region = Mock(); form.right_region.get.return_value = "180,200,80,26"
         form.click_region = Mock(); form.click_region.get.return_value = "190,200,60,26"
         form.row_height = Mock(); form.row_height.get.return_value = "26"
+        form.source_image = Mock(); form.source_image.get.return_value = ""
         form.left_condition_type = Mock(); form.left_condition_type.get.return_value = "number"
         form.right_condition_type = Mock(); form.right_condition_type.get.return_value = "text"
         form.left_module_key = Mock(); form.left_module_key.get.return_value = ""
@@ -8413,6 +8853,7 @@ class OcrTests(unittest.TestCase):
             "right_region": [80, 0, 80, 26],
             "click_region": [90, 0, 60, 26],
             "row_height": 26,
+            "screenshot_path": "",
             "left_condition": {
                 "type": "number", "separator": "/", "relation": "not_equal",
             },
@@ -8427,7 +8868,159 @@ class OcrTests(unittest.TestCase):
             "found_jump_action_id": "",
             "on_timeout": "continue",
             "timeout_jump_action_id": "",
+            "failure_segment_enabled": False,
+            "failure_actions": [],
         })
+
+    def test_row_list_test_buttons_route_screen_and_image_sources(self):
+        form = self._row_list_dialog_form()
+        form.on_test = Mock()
+
+        form.test_recognition("screen")
+        form.on_test.assert_called_once()
+        self.assertEqual(form.on_test.call_args.kwargs["source"], "screen")
+
+        form.on_test.reset_mock()
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.test_recognition("image")
+        form.on_test.assert_not_called()
+        notice.assert_called_once()
+        self.assertIn("测试图片", notice.call_args.args[1])
+
+        form.source_image.get.return_value = "C:/images/list.png"
+        form.test_recognition("image")
+        self.assertEqual(form.on_test.call_args.kwargs["source"], "image")
+        self.assertEqual(
+            form.on_test.call_args.args[0]["screenshot_path"], "C:/images/list.png",
+        )
+
+    def test_row_list_dialog_saves_failure_segment(self):
+        form = self._row_list_dialog_form()
+        form.failure_segment_enabled = Mock(**{"get.return_value": True})
+        form.failure_segment = [{"type": "notice", "text": "列表没找到"}]
+        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+            form.save()
+        notice.assert_not_called()
+        self.assertTrue(form.result["failure_segment_enabled"])
+        self.assertEqual(
+            form.result["failure_actions"], [{"type": "notice", "text": "列表没找到"}],
+        )
+
+    def test_recognition_dialogs_build_failure_segment_controls(self):
+        # 真实构建一次（窗口保持隐藏）：失败代码段开关/入口必须存在。
+        root = tk.Tk()
+        root.withdraw()
+        # ttkbootstrap 的 Style 单例绑定在第一个 Tk 根窗口上；前一个用例销毁根
+        # 窗口后单例仍指向已销毁的 root，这里重建一次以绑定到当前根窗口。
+        previous_style = ttkbootstrap.style.Style.instance
+        ttkbootstrap.style.Style.instance = None
+        ttkbootstrap.publisher.Publisher.clear_subscribers()
+        ttkbootstrap.style.Style()
+        try:
+            for dialog_class, kwargs in (
+                (dialog_module.RowListConditionClickDialog, {"action": {}, "actions": []}),
+                (dialog_module.ImageActionDialog, {"action": {}, "actions": []}),
+                (dialog_module.OcrActionDialog, {"action": {}, "actions": []}),
+                (dialog_module.OcrCompareActionDialog, {"action": {}, "actions": []}),
+                (dialog_module.MultiConditionClickDialog, {"action": {}}),
+            ):
+                dialog = dialog_class(root, **kwargs)
+                try:
+                    self.assertTrue(
+                        hasattr(dialog, "failure_segment_enabled"),
+                        f"{dialog_class.__name__} 未初始化失败代码段",
+                    )
+                    self.assertTrue(
+                        hasattr(dialog, "failure_segment_listbox"),
+                        f"{dialog_class.__name__} 缺少失败代码段列表",
+                    )
+                finally:
+                    dialog.destroy()
+        finally:
+            root.destroy()
+            ttkbootstrap.publisher.Publisher.clear_subscribers()
+            ttkbootstrap.style.Style.instance = previous_style
+
+    @staticmethod
+    def _dialog_descendants(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from OcrTests._dialog_descendants(child)
+
+    def test_module_editor_dialogs_scroll_instead_of_clipping(self):
+        # 编辑模块引用 / 全局检测行数多，必须整表可滚动，按钮不能被挤出窗口。
+        root = tk.Tk()
+        root.withdraw()
+        previous_style = ttkbootstrap.style.Style.instance
+        ttkbootstrap.style.Style.instance = None
+        ttkbootstrap.publisher.Publisher.clear_subscribers()
+        ttkbootstrap.style.Style()
+        module_obj = {"name": "示例模块", "template": "images/demo.png", "blocking": True}
+        cases = (
+            (
+                dialog_module.ModuleReferenceDelayDialog,
+                {"action": {
+                    "type": "image_match", "module_ref": True,
+                    "module_key": "module:demo", "template": "images/demo.png",
+                    "on_found": "continue", "on_timeout": "continue",
+                }, "actions": []},
+            ),
+            (dialog_module.GlobalDetectDialog, {"action": None, "jump": True}),
+        )
+        try:
+            for dialog_class, kwargs in cases:
+                with patch("macroflow.ui.dialogs.registered_module_object",
+                           return_value=module_obj):
+                    dialog = dialog_class(root, **kwargs)
+                try:
+                    dialog.update_idletasks()
+                    self.assertIsNotNone(
+                        getattr(dialog, "_form_canvas", None),
+                        f"{dialog_class.__name__} 未使用可滚动表单",
+                    )
+                    descendants = list(self._dialog_descendants(dialog))
+                    ttk_module = dialog_module.ttk
+                    self.assertTrue(
+                        any(isinstance(widget, ttk_module.Scrollbar) for widget in descendants),
+                        f"{dialog_class.__name__} 缺少滚动条",
+                    )
+                    self.assertTrue(
+                        any(
+                            isinstance(widget, ttk_module.Button)
+                            and widget.cget("text") == "确定"
+                            for widget in descendants
+                        ),
+                        f"{dialog_class.__name__} 缺少确定按钮",
+                    )
+                finally:
+                    dialog.destroy()
+        finally:
+            root.destroy()
+            ttkbootstrap.publisher.Publisher.clear_subscribers()
+            ttkbootstrap.style.Style.instance = previous_style
+
+    def test_recognition_dialogs_expose_row_failure_segment(self):        # 行级失败代码段不能只给“引用模块”用：识别类动作行都要有入口并写盘。
+        for name in (
+            "ImageActionDialog", "OcrActionDialog", "OcrCompareActionDialog",
+            "MultiConditionClickDialog", "RowListConditionClickDialog",
+        ):
+            dialog_class = getattr(dialog_module, name)
+            self.assertTrue(
+                hasattr(dialog_class, "_build_failure_segment_controls"),
+                f"{name} 缺少“失败后执行代码段”入口",
+            )
+            source = inspect.getsource(dialog_class.save)
+            if "_failure_segment_fields" not in source:
+                source = inspect.getsource(dialog_class._build_action)
+            self.assertIn(
+                "_failure_segment_fields", source, f"{name} 保存时未写入失败代码段",
+            )
+            form = dialog_class.__new__(dialog_class)
+            result = {}
+            form._failure_segment_fields(result)
+            self.assertEqual(result, {
+                "failure_segment_enabled": False, "failure_actions": [],
+            })
 
     def test_row_list_dialog_saves_success_and_failure_result_routes(self):
         form = self._row_list_dialog_form()
@@ -8766,6 +9359,35 @@ class DetectOverlayTests(unittest.TestCase):
         show_overlay(0, 0, 0, 0)
         show_overlay(10, 10, -5, 5)
         hide_overlay()
+
+    def test_highlight_is_a_hollow_frame_not_a_white_block(self):
+        # 回归：Rectangle 会用 DC 当前画刷填充框内。不选空画刷时 GDI 拿默认的白色
+        # 画刷把识别到的目标整个填成白块（键色只抠洋红，白块不会被抠掉），表现就是
+        # "识别到之后白块挡住目标"。这里断言：画框前先选入空画刷，画完按原样还原。
+        import macroflow.ui.detect_overlay as overlay_module
+
+        fake_user32 = Mock()
+        fake_user32.GetDpiForSystem.return_value = 96
+        fake_gdi = Mock()
+        old_pen, old_brush = object(), object()
+        fake_gdi.SelectObject.side_effect = [old_pen, old_brush, None, None]
+        with patch.object(overlay_module, "_user32", fake_user32), \
+             patch.object(overlay_module, "_gdi32", fake_gdi):
+            overlay_module._wnd_proc(1, overlay_module.WM_PAINT, 0, 0)
+
+        names = [name for name, _args, _kwargs in fake_gdi.mock_calls]
+        self.assertIn("Rectangle", names)
+        self.assertLess(names.index("GetStockObject"), names.index("Rectangle"))
+        self.assertEqual(
+            fake_gdi.GetStockObject.call_args.args[0], overlay_module.NULL_BRUSH,
+        )
+        # 背景仍先填键色（透明）；选入顺序 = 画笔、空画刷，还原顺序 = 原画刷、原画笔。
+        self.assertEqual(fake_user32.FillRect.call_count, 1)
+        selected = [call.args[1] for call in fake_gdi.SelectObject.call_args_list]
+        self.assertEqual(len(selected), 4)
+        self.assertIs(selected[1], fake_gdi.GetStockObject.return_value)
+        self.assertIs(selected[2], old_brush)
+        self.assertIs(selected[3], old_pen)
 
 
 class AlertTests(unittest.TestCase):
@@ -9274,6 +9896,33 @@ class PlayerTests(unittest.TestCase):
             logs,
         )
 
+    def test_wait_until_absent_module_log_does_not_claim_waiting_to_appear(self):
+        # 勾了「等待目标消失」的模块语义相反：看到目标才执行动作，检测不到即完成。
+        # 日志不能再说"开始阻塞等待 X 出现"，否则用户会以为它在等图片出现，
+        # 而实际它第一帧就判定"已消失"并直接成功（用户就是这么被绕进去的）。
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
+        module = {
+            "name": "资讯叉叉", "template": "资讯叉叉.png", "region": [1, 2, 30, 40],
+            "blocking": True, "interval_ms": 50, "threshold": 0.85,
+            "after_action": "click_match", "wait_text_absent": True,
+        }
+
+        def miss_then_stop(*_args, **_kwargs):
+            player.stop_event.set()
+            return None
+
+        with patch("macroflow.execution.player.registered_module_object", return_value=module), \
+             patch("macroflow.execution.player.find_template", side_effect=miss_then_stop):
+            player.play([{
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:news", "region_mode": "template", "delay_ms": 0,
+            }], script_name="资讯_精彩活动叉叉")
+
+        joined = "\n".join(logs)
+        self.assertIn("等待目标消失", joined)
+        self.assertNotIn("开始阻塞等待", joined)
+
     def test_missing_module_reference_does_not_run_stale_template(self):
         player = MacroPlayer()
         with patch(
@@ -9417,6 +10066,38 @@ class PlayerTests(unittest.TestCase):
             [100, 200],
         )
 
+    def test_playback_speed_scales_recorded_timeline(self):
+        # 录制脚本的节奏由 recorded_at_ms 的绝对时间轴决定：倍速必须作用在
+        # 时间轴上，否则侧栏「Playback speed」对真实录制脚本毫无影响。
+        player = MacroPlayer()
+        player.set_playback_speed(2.0)
+        waits = []
+        player._wait = waits.append
+        player._execute_action = Mock(return_value=None)
+
+        player.play([
+            {"type": "delay", "ms": 0, "recorded_at_ms": 0.0},
+            {"type": "delay", "ms": 0, "recorded_at_ms": 1000.0},
+        ])
+
+        self.assertEqual(len(waits), 1)
+        self.assertAlmostEqual(waits[0], 500, delta=5)
+
+    def test_clone_actions_remaps_ocr_compare_jump_targets(self):
+        # 数字比较动作的跳转字段名与识图不同，复制时漏映射会让目标脚本
+        # 指向源脚本的行 ID，运行到该分支时报“跳转目标动作已被删除”。
+        source = [
+            {"type": "ocr_compare", ACTION_ID_KEY: "a",
+             "equal_jump_action_id": "b", "not_equal_jump_action_id": "a"},
+            {"type": "delay", ACTION_ID_KEY: "b"},
+        ]
+
+        clones = clone_actions_with_new_ids(source)
+
+        self.assertEqual(clones[0]["equal_jump_action_id"], clones[1][ACTION_ID_KEY])
+        self.assertEqual(clones[0]["not_equal_jump_action_id"], clones[0][ACTION_ID_KEY])
+        self.assertTrue({action[ACTION_ID_KEY] for action in clones}.isdisjoint({"a", "b"}))
+
     def test_execute_action_does_not_recheck_foreground_for_each_action(self):
         player = MacroPlayer()
         player._ensure_foreground_for_input = Mock()
@@ -9476,6 +10157,148 @@ class PlayerTests(unittest.TestCase):
         player._ensure_foreground_for_input = Mock()
         player._wait(100)
         player._ensure_foreground_for_input.assert_not_called()
+
+    def test_module_failure_runs_row_level_failure_segment(self):
+        # 插入的模块失败后先跑脚本行自己的失败代码段，再走失败分支。
+        player = MacroPlayer()
+        segments = []
+        player._run_action_sequence = Mock(
+            side_effect=lambda actions, hwnd, **kwargs: segments.append(list(actions)),
+        )
+        module = {"name": "测试模块", "template": "x.png"}
+        action = {
+            "type": "image_match", "module_ref": True,
+            "on_timeout": "continue",
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "notice", "text": "识别失败"}],
+        }
+
+        result = player._module_result_route(action, module, succeeded=False, hwnd=None)
+
+        self.assertIsNone(result)
+        player._run_action_sequence.assert_called_once()
+        self.assertEqual(segments[0][0]["type"], "notice")
+
+    def test_module_failure_segment_runs_before_failure_jump(self):
+        player = MacroPlayer()
+        player._run_action_sequence = Mock()
+        module = {"name": "测试模块", "template": "x.png"}
+        action = {
+            "type": "image_match", "module_ref": True,
+            "on_timeout": "jump", "timeout_jump_action_id": "fallback-row",
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "delay", "ms": 10}],
+        }
+
+        result = player._module_result_route(action, module, succeeded=False, hwnd=None)
+
+        self.assertEqual(result, ("action_id", "fallback-row"))
+        player._run_action_sequence.assert_called_once()
+
+    def test_module_success_does_not_run_failure_segment(self):
+        player = MacroPlayer()
+        player._run_action_sequence = Mock()
+        module = {"name": "测试模块", "template": "x.png"}
+        action = {
+            "type": "image_match", "module_ref": True,
+            "on_found": "continue",
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "notice", "text": "识别失败"}],
+        }
+
+        result = player._module_result_route(action, module, succeeded=True, hwnd=None)
+
+        self.assertIsNone(result)
+        player._run_action_sequence.assert_not_called()
+
+    def test_module_reference_dialog_saves_failure_segment(self):
+        dialog_class = dialog_module.ModuleReferenceDelayDialog
+        dialog = dialog_class.__new__(dialog_class)
+        dialog.action = {"type": "image_match", "module_ref": True}
+        dialog.delay = Mock(**{"get.return_value": "0"})
+        dialog.after_delay = Mock(**{"get.return_value": "0"})
+        dialog.blocking_module = False
+        dialog.result_routes_enabled = True
+        dialog.number_routes_enabled = False
+        dialog.failure_segment_enabled = Mock()
+        dialog.failure_segment_enabled.get.return_value = True
+        dialog.failure_segment = [{"type": "notice", "text": "识别失败"}]
+        dialog.on_success = Mock(**{"get.return_value": "继续下一行"})
+        dialog.on_failure = Mock(**{"get.return_value": "继续下一行"})
+        dialog.success_target = Mock(**{"get.return_value": ""})
+        dialog.failure_target = Mock(**{"get.return_value": ""})
+        dialog.jump_target_ids = {}
+        dialog.destroy = Mock()
+
+        dialog.save()
+
+        self.assertTrue(dialog.result["failure_segment_enabled"])
+        self.assertEqual(dialog.result["failure_actions"][0]["type"], "notice")
+        dialog.destroy.assert_called_once()
+
+    def test_row_list_failure_runs_failure_segment_before_branch(self):
+        # 列表逐行点击失败：先跑本行失败代码段，再走“失败后”分支。
+        player = MacroPlayer()
+        segments = []
+        player._run_action_sequence = Mock(
+            side_effect=lambda actions, hwnd, **kwargs: segments.append(list(actions)),
+        )
+        action = {
+            "type": "row_list_condition_click",
+            "on_timeout": "continue",
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "notice", "text": "列表没找到"}],
+        }
+
+        result = player._row_list_result_route(action, succeeded=False)
+
+        self.assertIsNone(result)
+        player._run_action_sequence.assert_called_once()
+        self.assertEqual(segments[0][0]["text"], "列表没找到")
+
+    def test_row_list_executor_forwards_script_stack_to_result_route(self):
+        # 行级失败代码段要沿用调用方的脚本栈与嵌套深度，避免段内再引用
+        # 脚本时无限递归。
+        player = MacroPlayer()
+        player._row_list_condition_matches = Mock(return_value=False)
+        player._row_list_result_route = Mock(return_value=None)
+        stack = {"scripts/self.json"}
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 26], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number"}, "right_condition": {"type": "number"},
+            "no_match_action": "finish",
+        }
+        screen = np.zeros((26, 160, 3), dtype=np.uint8)
+
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(screen, (100, 200)), create=True,
+        ):
+            player._execute_row_list_condition_click(action, None, stack, 2)
+
+        kwargs = player._row_list_result_route.call_args.kwargs
+        self.assertEqual(kwargs["script_stack"], stack)
+        self.assertEqual(kwargs["depth"], 2)
+
+    def test_row_list_success_does_not_run_failure_segment(self):
+        player = MacroPlayer()
+        player._run_action_sequence = Mock()
+        action = {
+            "type": "row_list_condition_click",
+            "on_found": "continue",
+            "failure_segment_enabled": True,
+            "failure_actions": [{"type": "notice", "text": "列表没找到"}],
+        }
+
+        result = player._row_list_result_route(
+            action, succeeded=True, subject="列表逐行点击",
+        )
+
+        self.assertIsNone(result)
+        player._run_action_sequence.assert_not_called()
 
     def test_no_recognition_module_executes_directly_without_image_matching(self):
         player = MacroPlayer()
@@ -9646,6 +10469,34 @@ class PlayerTests(unittest.TestCase):
         player.play([{"type": "delay", "ms": 0, "delay_ms": 0}], repeats=1)
         self.assertEqual(len(entered), 1)
         self.assertEqual(len(exited), 1)
+
+    def test_script_scope_exits_before_repeat_completion_and_interval(self):
+        events = []
+        player = MacroPlayer(
+            on_script_scope_enter=lambda _actions: events.append("enter") or "scope",
+            on_script_scope_exit=lambda token: events.append(("exit", token)),
+        )
+        player._status = lambda _text: None
+        player._wait = lambda milliseconds: (
+            events.append(("interval", milliseconds)) if milliseconds else None
+        )
+
+        player.play(
+            [{"type": "delay", "ms": 0, "delay_ms": 0}],
+            repeats=2,
+            repeat_interval_ms=25,
+            on_repeat_complete=lambda current, total: events.append(
+                ("complete", current, total),
+            ),
+        )
+
+        self.assertEqual(
+            events,
+            [
+                "enter", ("exit", "scope"), ("complete", 1, 2), ("interval", 25),
+                "enter", ("exit", "scope"), ("complete", 2, 2),
+            ],
+        )
 
     def test_image_timeout_jump_follows_target_action_after_row_insert(self):
         notices = []
@@ -10175,62 +11026,160 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(results, logs)
         self.assertTrue(any("第1行结果" in text for text in results), results)
 
-    def test_grid_diagnostic_uses_selected_image_and_reports_every_cell_text(self):
+    def test_row_list_diagnostic_returns_screen_snapshot_and_cells_for_result_window(self):
         player = MacroPlayer()
-        player._row_list_condition_matches = Mock(side_effect=[True, False, False, True])
-        image = np.zeros((20, 40, 3), dtype=np.uint8)
-        temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(temp_dir.cleanup)
-        image_path = str(Path(temp_dir.name) / "grid-test.png")
-        Path(image_path).touch()
+        player._row_list_condition_matches = Mock(return_value=True)
         action = {
-            "type": "grid_row_condition_click",
-            "grid_region": [0, 0, 40, 20],
-            "horizontal_lines": [10], "vertical_lines": [20],
-            "left_column": 0, "right_column": 1, "click_column": 0,
-            "left_condition": {"type": "text", "expected_text": "左"},
-            "right_condition": {"type": "text", "expected_text": "右"},
-            "screenshot_path": image_path,
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "number", "separator": "/", "relation": "not_equal"},
+            "right_condition": {"type": "text", "expected_text": "游戏中"},
         }
-        with patch(
-            "macroflow.execution.player.load_image", return_value=image, create=True,
-        ) as load_image, patch(
-            "macroflow.execution.player.capture_bgr",
-            side_effect=AssertionError("网格诊断不得重新截图"),
-        ), patch(
-            "macroflow.execution.player.recognize_image_with_boxes",
-            side_effect=[("左上", []), ("右上", []), ("左下", []), ("右下", [])],
-        ):
-            result = player._diagnose_grid_row_condition_click(action, None)
+        snapshot = np.zeros((78, 160, 3), dtype=np.uint8)
 
-        load_image.assert_called_once_with(Path(image_path))
-        self.assertEqual(
-            [cell["text"] for cell in result["cells"]],
-            ["左上", "右上", "左下", "右下"],
-        )
+        with patch(
+            "macroflow.execution.player.capture_bgr",
+            return_value=(snapshot, (100, 200)),
+        ):
+            result = player._diagnose_row_list_condition_click(action, None)
+
+        self.assertEqual(result["subject"], "列表逐行")
+        self.assertIs(result["image_array"], snapshot)
+        self.assertEqual(result["image_origin"], [100, 200])
+        self.assertEqual((result["left_column"], result["right_column"], result["click_column"]),
+                         (0, 1, 2))
+        self.assertEqual(len(result["cells"]), 6)
         self.assertEqual(
             [(cell["row"], cell["column"]) for cell in result["cells"]],
-            [(1, 1), (1, 2), (2, 1), (2, 2)],
+            [(1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2)],
         )
-        self.assertEqual(result["image_path"], image_path)
-        self.assertEqual(result["left_column"], 0)
-        self.assertEqual(result["right_column"], 1)
-        self.assertEqual(result["click_column"], 0)
+        self.assertTrue(all(cell["matched"] for cell in result["cells"]))
+        self.assertEqual(result["cells"][0]["region"], [100, 200, 70, 26])
 
-    def test_grid_diagnostic_busy_notice_names_grid_task(self):
+    def test_row_list_diagnostic_reads_chosen_image_without_capturing_screen(self):
+        player = MacroPlayer()
+        image = np.zeros((300, 300, 3), dtype=np.uint8)
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        image_path = str(Path(temp_dir.name) / "list-test.png")
+        Path(image_path).touch()
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "text", "expected_text": "10/10"},
+            "right_condition": {"type": "text", "expected_text": "游戏中"},
+        }
+        with patch(
+            "macroflow.execution.player.load_image", return_value=image,
+        ) as load_image, patch(
+            "macroflow.execution.player.capture_bgr",
+            side_effect=AssertionError("选图测试不得重新截屏"),
+        ), patch(
+            "macroflow.execution.player.recognize_image_with_boxes",
+            side_effect=[
+                ("10/10", []), ("游戏中", []),
+                ("3/12", []), ("游戏中", []),
+                ("1/1", []), ("", []), ("", []),
+            ],
+        ):
+            result = player._diagnose_row_list_condition_click(
+                action, None, image_path=image_path,
+            )
+
+        load_image.assert_called_once_with(Path(image_path))
+        self.assertEqual(result["subject"], "列表逐行")
+        self.assertEqual(result["image_origin"], [0, 0])
+        self.assertEqual(
+            [cell["text"] for cell in result["cells"]],
+            ["10/10", "游戏中", "3/12", "游戏中", "1/1", "未识别到文字"],
+        )
+        self.assertEqual(
+            [cell["matched"] for cell in result["cells"]],
+            [True, True, False, True, False, False],
+        )
+
+    def test_row_list_diagnostic_rejects_image_too_small_for_list_region(self):
+        player = MacroPlayer()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        image_path = str(Path(temp_dir.name) / "small.png")
+        Path(image_path).touch()
+        action = {
+            "type": "row_list_condition_click",
+            "list_region": [100, 200, 160, 78], "row_height": 26,
+            "left_region": [0, 0, 70, 26], "right_region": [80, 0, 80, 26],
+            "click_region": [90, 0, 60, 26],
+            "left_condition": {"type": "text", "expected_text": "10/10"},
+            "right_condition": {"type": "text", "expected_text": "游戏中"},
+        }
+        with patch(
+            "macroflow.execution.player.load_image",
+            return_value=np.zeros((78, 160, 3), dtype=np.uint8),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                player._diagnose_row_list_condition_click(
+                    action, None, image_path=image_path,
+                )
+        self.assertIn("覆盖不到列表区域", str(raised.exception))
+
+    def test_row_list_image_test_skips_screen_capture_and_window_hiding(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app._bound_hwnd = Mock()
+        app._hide_macroflow_windows_for_diagnostic = Mock()
+        app._log = Mock()
+        app._ui = lambda callback, *args: callback(*args)
+        app._finish_row_list_diagnostic = Mock()
+        app.player = Mock()
+        action = {
+            "type": "row_list_condition_click",
+            "screenshot_path": "C:/images/list.png",
+        }
+
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app.test_row_list_condition_click(action, source="image")
+            thread_class.call_args.kwargs["target"]()
+
+        app._bound_hwnd.assert_not_called()
+        app._hide_macroflow_windows_for_diagnostic.assert_not_called()
+        diagnose_kwargs = app.player._diagnose_row_list_condition_click.call_args.kwargs
+        self.assertEqual(diagnose_kwargs["image_path"], "C:/images/list.png")
+
+    def test_row_list_image_test_requires_a_chosen_image(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app._notify = Mock()
+        app.player = Mock()
+        completed = []
+
+        app.test_row_list_condition_click(
+            {"type": "row_list_condition_click"},
+            on_complete=lambda *args: completed.append(args),
+            source="image",
+        )
+
+        app.player._diagnose_row_list_condition_click.assert_not_called()
+        app._notify.assert_called_once()
+        self.assertIn("选择图片", app._notify.call_args.args[1])
+        self.assertEqual(completed[0][1], "未选择测试图片")
+
+    def test_row_list_diagnostic_busy_notice_names_row_list_task(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.worker = None
         app._row_list_diagnostic_running = True
-        app._row_list_diagnostic_kind = "grid"
         app._notify = Mock()
 
-        app.test_row_list_condition_click({"type": "grid_row_condition_click"})
+        app.test_row_list_condition_click({"type": "row_list_condition_click"})
 
         app._notify.assert_called_once()
-        self.assertIn("网格逐行识别诊断", app._notify.call_args.args[1])
+        self.assertIn("列表逐行识别诊断", app._notify.call_args.args[1])
 
-    def test_grid_diagnostic_cell_label_includes_row_column_and_recognized_text(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+    def test_row_recognition_result_cell_label_includes_row_column_and_text(self):
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         label_builder = getattr(dialog_class, "cell_label", None)
         actual = label_builder({
             "row": 2, "column": 3, "text": "奖励可领取",
@@ -10241,25 +11190,25 @@ class PlayerTests(unittest.TestCase):
         )
 
     def test_grid_result_scale_fits_selected_image_to_viewport(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         scale_builder = getattr(dialog_class, "display_scale", None)
         actual = scale_builder((1920, 1080), (1150, 700)) if scale_builder else None
         self.assertAlmostEqual(actual, 1150 / 1920)
 
     def test_grid_result_viewport_falls_back_when_canvas_is_not_laid_out(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         viewport_builder = getattr(dialog_class, "resolve_viewport_size", None)
         actual = viewport_builder((1, 1), (1180, 780)) if viewport_builder else None
         self.assertEqual(actual, (1100, 630))
 
     def test_grid_result_scale_applies_wheel_zoom_without_changing_aspect_ratio(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         scale_builder = getattr(dialog_class, "display_scale", None)
         actual = scale_builder((1920, 1080), (1150, 700), 2.0) if scale_builder else None
         self.assertAlmostEqual(actual, (1150 / 1920) * 2.0)
 
     def test_grid_result_wheel_zoom_is_bounded(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         zoom_builder = getattr(dialog_class, "next_zoom", None)
         zoom_in = zoom_builder(1.0, 120) if zoom_builder else None
         zoom_out = zoom_builder(0.25, -120) if zoom_builder else None
@@ -10267,7 +11216,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(zoom_out, 0.25)
 
     def test_grid_result_cell_text_does_not_add_row_header_inside_cell(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         text_builder = getattr(dialog_class, "cell_text", None)
         actual = text_builder({
             "row": 2, "column": 3, "text": "奖励可领取",
@@ -10275,7 +11224,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(actual, "奖励可领取")
 
     def test_grid_result_visible_columns_exclude_clicked_column(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         column_builder = getattr(dialog_class, "visible_result_columns", None)
         actual = column_builder({
             "left_column": 0, "right_column": 2, "click_column": 2,
@@ -10283,7 +11232,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(actual, [0])
 
     def test_grid_result_toggle_switches_between_overlay_and_original_image(self):
-        dialog_class = getattr(dialog_module, "GridRowDiagnosticResultDialog", None)
+        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
         dialog = dialog_class.__new__(dialog_class)
         dialog.overlay_visible = True
         dialog.canvas = Mock()
@@ -10302,54 +11251,6 @@ class PlayerTests(unittest.TestCase):
         self.assertTrue(dialog.overlay_visible)
         dialog.canvas.itemconfigure.assert_called_once_with("grid-result", state="normal")
         dialog.toggle_button.configure.assert_called_once_with(text="显示原图")
-
-    def test_grid_dialog_builds_test_action_with_existing_source_image(self):
-        form_class = dialog_module.GridRowConditionClickDialog
-        form = form_class.__new__(form_class)
-        form.grid_region = Mock(**{"get.return_value": "0,0,40,20"})
-        form.source_image = Mock(**{"get.return_value": "C:/images/grid.png"})
-        form.state = {
-            "horizontal_lines": [10], "vertical_lines": [20],
-            "left_column": 0, "right_column": 1, "click_column": 0,
-        }
-        form.click_count = Mock(**{"get.return_value": "1"})
-        form.button = Mock(**{"get.return_value": "left"})
-        form._condition_value = Mock(side_effect=[
-            {"type": "text", "expected_text": "左"},
-            {"type": "text", "expected_text": "右"},
-        ])
-
-        action = form._build_action()
-
-        self.assertEqual(action["screenshot_path"], "C:/images/grid.png")
-
-    def test_grid_row_click_uses_selected_columns_and_clicks_matching_row(self):
-        player = MacroPlayer()
-        player._row_list_condition_matches = Mock(side_effect=[True, False, True, True])
-        player._click_module_point = Mock()
-        action = {
-            "type": "grid_row_condition_click",
-            "grid_region": [100, 200, 300, 100],
-            "horizontal_lines": [50], "vertical_lines": [80, 210],
-            "left_column": 1, "right_column": 2, "click_column": 0,
-            "left_condition": {"type": "number"},
-            "right_condition": {"type": "image"},
-            "button": "left", "click_count": 1,
-        }
-
-        with patch(
-            "macroflow.execution.player.capture_bgr",
-            return_value=(np.zeros((100, 300, 3), dtype=np.uint8), (100, 200)),
-        ):
-            player._execute_grid_row_condition_click(action, None)
-
-        self.assertEqual(player._row_list_condition_matches.call_args_list, [
-            call({"type": "number"}, (180, 200, 130, 50), "第1行左侧"),
-            call({"type": "image"}, (310, 200, 90, 50), "第1行右侧"),
-            call({"type": "number"}, (180, 250, 130, 50), "第2行左侧"),
-            call({"type": "image"}, (310, 250, 90, 50), "第2行右侧"),
-        ])
-        player._click_module_point.assert_called_once_with(140, 275, "left", 1, None)
 
     def test_row_list_success_can_end_current_inner_script(self):
         player = MacroPlayer()
@@ -11898,7 +12799,7 @@ class PlayerTests(unittest.TestCase):
                     "process_path": target.process_path,
                 },
             }, None, False)
-        activate.assert_not_called()
+        activate.assert_called_once_with(456)
         self.assertEqual(player._relative_target_hwnd, 456)
 
     def test_end_current_script_action_skips_remaining_actions(self):
@@ -12572,7 +13473,7 @@ class PlayerTests(unittest.TestCase):
         target = {"left": 0, "top": 0, "width": 1280, "height": 720}
         self.assertEqual(scale_screen_point(960, 540, source, target), (640, 360))
         player = MacroPlayer()
-        with patch("macroflow.execution.player.get_virtual_screen_rect", return_value=target), \
+        with patch("macroflow.execution.player.get_playback_screen_rect", return_value=target), \
              patch("macroflow.execution.player.send_move_absolute") as move:
             player.play(
                 [{"type": "mouse_move", "mode": "absolute", "x": 960, "y": 540}],
@@ -13148,6 +14049,19 @@ class PlayerTests(unittest.TestCase):
         self.assertIn("强制", detail)
 
 
+class _EditorCategoryVar:
+    """set()/get() 桩，模拟类别下拉框的 Tk StringVar（不依赖 Tk 根窗口）。"""
+
+    def __init__(self, value=""):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
 class CloseScriptTests(unittest.TestCase):
     def _app(self) -> MacroFlowApp:
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -13256,6 +14170,64 @@ class CloseScriptTests(unittest.TestCase):
                            encoding="utf-8")
             app.load_script_into_editor(ref)
         app._notify.assert_called_once()
+
+    def test_opening_script_shows_script_category(self):
+        # 打开脚本后“类别”下拉框必须显示这个脚本的类别：以脚本所在目录为准
+        # （保存时按类别进目录），JSON 里旧的/缺失的 category 不能把它顶掉。
+        app = self._app()
+        app.undo_open_stack = []
+        app.undo_open_button = Mock()
+        app.script_category_var = _EditorCategoryVar("关卡")
+        with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
+            switch_dir = Path(folder) / "切换"
+            switch_dir.mkdir()
+            # 类别由脚本所在目录决定：把“切换”目录指向临时目录。
+            app.app_settings = {"switch_scripts_dir": str(switch_dir)}
+            for name, settings in (
+                ("无类别.json", {}),
+                ("类别过期.json", {"category": "level"}),
+            ):
+                path = switch_dir / name
+                path.write_text(
+                    json.dumps(
+                        {"name": name, "actions": [], "settings": settings},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                app.dirty = False
+                app.script_category_var.set("关卡")
+                app.load_script_into_editor(path)
+                self.assertEqual(app.script_category_var.get(), "切换")
+            # 不在任何脚本目录里的脚本仍按自己保存的类别显示。
+            outside = Path(folder) / "外部.json"
+            outside.write_text(
+                json.dumps(
+                    {"name": "外部", "actions": [], "settings": {"category": "direction"}},
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            app.dirty = False
+            app.script_category_var.set("关卡")
+            app.load_script_into_editor(outside)
+            self.assertEqual(app.script_category_var.get(), "方向")
+
+    def test_restore_editor_draft_shows_script_category_from_directory(self):
+        app = self._app()
+        app.app_settings = {}
+        app.dirty = False
+        app.undo_open_stack = []
+        app.undo_open_button = Mock()
+        app.script_category_var = _EditorCategoryVar("关卡")
+        draft = {
+            "script": MacroScript(name="切换脚本").to_dict(),
+            "script_path": str(BASE_DIR / "scripts" / "切换" / "切换脚本.json"),
+            "script_requires_new_file": False,
+            "dirty": False,
+        }
+        self.assertTrue(app._restore_editor_draft(draft))
+        self.assertEqual(app.script_category_var.get(), "切换")
 
     def test_opening_script_uses_current_filename_when_json_name_is_stale(self):
         app = self._app()
@@ -13744,6 +14716,18 @@ class LastScriptRestoreTests(unittest.TestCase):
         app._restore_main_window_geometry()
 
         app.root.geometry.assert_called_once_with("1600x900+40+50")
+
+    def test_restore_main_window_geometry_rehomes_offscreen_saved_value(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.app_settings = {"main_window_geometry": "1902x1039+-1919+182"}
+        app.root = Mock()
+
+        with patch("macroflow.ui.app.get_virtual_screen_rect", return_value={
+            "left": 0, "top": 0, "width": 1920, "height": 1080,
+        }):
+            app._restore_main_window_geometry()
+
+        app.root.geometry.assert_called_once_with("1902x1039+9+20")
 
 
 class ActivationWindowToggleTests(unittest.TestCase):
@@ -14266,6 +15250,7 @@ class FocusModeTests(unittest.TestCase):
     def test_focus_mode_switches_english_before_locking_input(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         order = []
+        app.hotkey_scripts = []
         app.input_guard = Mock()
         app.input_guard.start.side_effect = lambda: order.append("guard") or True
         app.input_guard.block.side_effect = lambda: order.append("block") or True
@@ -14277,6 +15262,7 @@ class FocusModeTests(unittest.TestCase):
 
     def test_focus_mode_failure_stops_hook(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app.hotkey_scripts = []
         app.input_guard = Mock()
         app.input_guard.start.return_value = True
         app.input_guard.block.return_value = False
@@ -14799,26 +15785,36 @@ class TemplateRegionTests(unittest.TestCase):
         tree.configure.assert_called_once_with(style="ModuleManagerSpecial.Treeview")
 
     def test_module_manager_styles_copy_layout_and_keep_dark_readable_colors(self):
-        style = Mock()
-        style.layout.return_value = [("Treeview.treearea", {"sticky": "nswe"})]
+        # 行高现在按字体行高算，取字体度量需要一个真实（隐藏的）Tk root。
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            style = Mock()
+            style.layout.return_value = [("Treeview.treearea", {"sticky": "nswe"})]
 
-        configure_module_tree_styles(style)
+            configure_module_tree_styles(style)
 
-        self.assertEqual(style.layout.call_count, 5)
-        configured = {item.args[0]: item.kwargs for item in style.configure.call_args_list}
-        self.assertEqual(
-            set(configured),
-            {
-                "ModuleManagerNeutral.Treeview",
-                "ModuleManagerEnabled.Treeview",
-                "ModuleManagerSpecial.Treeview",
-                "ModuleManagerDisabled.Treeview",
-            },
-        )
-        for options in configured.values():
-            self.assertEqual(options["background"], "#182129")
-            self.assertEqual(options["fieldbackground"], "#182129")
-            self.assertEqual(options["foreground"], "#E8EDF2")
+            self.assertEqual(style.layout.call_count, 5)
+            configured = {item.args[0]: item.kwargs for item in style.configure.call_args_list}
+            self.assertEqual(
+                set(configured),
+                {
+                    "ModuleManagerNeutral.Treeview",
+                    "ModuleManagerEnabled.Treeview",
+                    "ModuleManagerSpecial.Treeview",
+                    "ModuleManagerDisabled.Treeview",
+                },
+            )
+            linespace = tkfont.Font(family=FONT_FAMILY, size=FONT_SUBTITLE).metrics("linespace")
+            for options in configured.values():
+                self.assertEqual(options["background"], "#182129")
+                self.assertEqual(options["fieldbackground"], "#182129")
+                self.assertEqual(options["foreground"], "#E8EDF2")
+                # 行高必须贴着字体行高：写死 42 时每行比文字高出一倍多，
+                # 10 行表格凭空多出两百多像素空白，窗口也被一并撑大。
+                self.assertEqual(options["rowheight"], linespace + px(8))
+        finally:
+            root.destroy()
 
     def test_manager_tree_tags_blocking_modules_in_all_and_category_tabs(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
@@ -15519,14 +16515,50 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(form.result[2]["hold_ms"], 1000)
         notice.assert_not_called()
 
-    def test_form_saves_start_delay_only_for_script_global_module(self):
-        form = self._form(image="images/g.png", region="10,20,300,400")
-        form.category_var.get.return_value = "脚本全局模块"
-        form.start_delay_var.get.return_value = "125000"
-        with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
-            form.save()
-        self.assertEqual(form.result[2]["start_delay_ms"], 125000)
-        notice.assert_not_called()
+    def test_form_saves_start_delay_for_any_module_category(self):
+        for label in ("切换模块", "工作流全局模块", "脚本全局模块"):
+            form = self._form(image="images/g.png", region="10,20,300,400")
+            form.category_var.get.return_value = label
+            form.start_delay_var.get.return_value = "125000"
+            with patch("macroflow.ui.dialogs.show_floating_notice") as notice:
+                form.save()
+            self.assertEqual(form.result[2]["start_delay_ms"], 125000, label)
+            notice.assert_not_called()
+
+    def test_toggle_sections_shows_start_delay_for_switch_module(self):
+        form = self._form(recognize="模板图片")
+        form.pure = False
+        for attr in (
+            "row_name", "row_image", "row_region", "detect_section_heading",
+            "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
+            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_start_delay",
+            "row_fallback_module", "row_fallback_click",
+            "row_blocking", "row_delay", "action_section_heading", "row_after",
+            "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
+            "row_second_template", "row_second_timeout", "row_second_click_target",
+            "row_second_click_region", "segment_section_heading",
+            "row_run_code_after_action", "segment_frame", "timeout_section_heading",
+            "row_run_code_on_timeout", "row_not_found_timeout", "timeout_segment_frame",
+        ):
+            setattr(form, attr, Mock())
+        form.category_var.get.return_value = "切换模块"
+        form.after_action_var.get.return_value = "点击识别区域"
+        form.second_click_target_var = Mock()
+        form.second_click_target_var.get.return_value = "第二次识别位置"
+        form.run_code_after_action_var.get.return_value = False
+        form.run_code_on_timeout_var.get.return_value = False
+        form._set_row = Mock()
+        form._resize_for_content = Mock()
+        form._toggle_sections = TemplateRegionFormDialog._toggle_sections.__get__(
+            form, TemplateRegionFormDialog,
+        )
+
+        form._toggle_sections()
+
+        visible = {
+            item.args[0] for item in form._set_row.call_args_list if item.args[1]
+        }
+        self.assertIn(form.row_start_delay, visible)
 
     def test_restart_target_dialog_save_picks_row_object(self):
         dialog = RestartWorkflowTargetDialog.__new__(RestartWorkflowTargetDialog)
@@ -16707,6 +17739,12 @@ class TemplateRegionTests(unittest.TestCase):
         widgets = ("Frame", "Button", "Spinbox", "Checkbutton")
         label_mock = Mock(return_value=Mock())
         with patch("macroflow.ui.dialogs.ModalDialog.__init__", return_value=None), \
+             patch("macroflow.ui.dialogs.fit_scrollable_window_to_content"), \
+             patch("macroflow.ui.dialogs.scrollable_dialog_body",
+                   return_value=(Mock(**{"winfo_reqwidth.return_value": 1,
+                                         "winfo_reqheight.return_value": 1}),
+                                 Mock(),
+                                 Mock(**{"winfo_reqwidth.return_value": 1}))), \
              patch("macroflow.ui.dialogs.registered_module_object", return_value={
                  "name": "阻塞模块", "blocking": True,
              }), \
@@ -16876,16 +17914,26 @@ class TemplateRegionTests(unittest.TestCase):
             "重新执行工作流（跳转第 4 行）",
         )
 
-    def _fit_dialog(self, reqw, reqh, screen_w, screen_h, parent=None):
+    @staticmethod
+    def _work_area(width=1920, height=1080, left=0, top=0):
+        return {"left": left, "top": top, "width": width, "height": height}
+
+    def _patch_work_area(self, area):
+        """把弹窗定位用的显示器可用区域固定成给定值（不打桩就走真实 Win32）。"""
+        patcher = patch.object(dialog_module, "monitor_work_area_for", return_value=area)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return area
+
+    def _fit_dialog(self, reqw, reqh, area=None, parent=None):
         """构造一个用于 _fit_window_to_content 的 Mock 对话框。"""
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
         dialog.update_idletasks = Mock()
         dialog.winfo_reqwidth = Mock(return_value=reqw)
         dialog.winfo_reqheight = Mock(return_value=reqh)
-        dialog.winfo_screenwidth = Mock(return_value=screen_w)
-        dialog.winfo_screenheight = Mock(return_value=screen_h)
         dialog.geometry = Mock()
         dialog.resizable = Mock()
+        self._patch_work_area(self._work_area() if area is None else area)
         if parent is None:
             parent = Mock()
             parent.winfo_rootx.return_value = 100
@@ -16897,26 +17945,29 @@ class TemplateRegionTests(unittest.TestCase):
     def test_manager_fit_sizes_window_to_content_request(self):
         # 高 DPI（打包版）下内容需求高度超过固定 470，窗口必须按需求尺寸
         # 自适应，否则底部按钮行被挤出窗口（按钮完全看不见）。
-        dialog, parent = self._fit_dialog(700, 620, 1920, 1080)
+        dialog, parent = self._fit_dialog(700, 620)
         dialog._fit_window_to_content(parent)
         size_call, pos_call = dialog.geometry.call_args_list
-        self.assertEqual(size_call.args[0], "1000x620")
-        # 居中：x = 100 + (1700 - 1000)//2 = 450；y = 100 + (920 - 620)//2 = 250
-        self.assertEqual(pos_call.args[0], "+450+250")
+        self.assertEqual(size_call.args[0], "700x620")
+        # 居中：x = 100 + (1700 - 700)//2 = 600；y = 100 + (920 - 620)//2 = 250
+        self.assertEqual(pos_call.args[0], "+600+250")
         dialog.resizable.assert_called_once_with(True, True)
 
-    def test_manager_fit_enforces_minimum_size(self):
-        dialog, parent = self._fit_dialog(620, 120, 1920, 1080)
+    def test_manager_fit_never_inflates_window_past_content(self):
+        # 早先这里有个 1000x500 的兜底最小尺寸：内容只要 620x120 也会被撑到
+        # 500 高，多出来的高度被 expand 的表格吃掉，看起来就是一大片空白。
+        dialog, parent = self._fit_dialog(620, 120)
         dialog._fit_window_to_content(parent)
         size_call = dialog.geometry.call_args_list[0]
-        self.assertEqual(size_call.args[0], "1000x500")
+        self.assertEqual(size_call.args[0], "620x120")
 
-    def test_manager_fit_clamps_height_to_screen(self):
-        # 屏幕放不下时不越过屏幕底部；可拉伸兜底保证按钮行可达。
-        dialog, parent = self._fit_dialog(640, 900, 640, 600)
+    def test_manager_fit_clamps_size_to_monitor_work_area(self):
+        # 显示器放不下时不越过可用区域（并给标题栏留余量）；可拉伸兜底保证按钮行可达。
+        dialog, parent = self._fit_dialog(640, 900, self._work_area(640, 600))
         dialog._fit_window_to_content(parent)
         size_call = dialog.geometry.call_args_list[0]
-        self.assertEqual(size_call.args[0], "1000x520")  # 600 - 80（宽度取最小 1000）
+        # 宽度 640 - 40 = 600；高度 600 - 40 = 560（px(40) 在 100% 缩放下就是 40）
+        self.assertEqual(size_call.args[0], "600x560")
         dialog.resizable.assert_called_once_with(True, True)
 
     def test_manager_fit_clamps_position_inside_screen(self):
@@ -16926,34 +17977,253 @@ class TemplateRegionTests(unittest.TestCase):
         parent.winfo_rooty.return_value = 1000
         parent.winfo_width.return_value = 800
         parent.winfo_height.return_value = 600
-        dialog, _ = self._fit_dialog(700, 620, 1920, 1080)
+        dialog, _ = self._fit_dialog(700, 620)
         dialog._fit_window_to_content(parent)
         pos_call = dialog.geometry.call_args_list[1]
-        # x = 1800 + (800-1000)//2 = 1700 → 限制到 1920-1000 = 920
-        # y = 1000 + (600-620)//2 = 990 → 限制到 1080-620 = 460
-        self.assertEqual(pos_call.args[0], "+920+460")
+        # x = 1800 + (800-700)//2 = 1850 → 限制到 1920-700-40 = 1180
+        # y = 1000 + (600-620)//2 = 990 → 限制到 1080-620-40 = 420
+        self.assertEqual(pos_call.args[0], "+1180+420")
 
-    def test_fit_window_to_content_uses_custom_minimums(self):
-        # 表单类（新增模板）用较小的最小尺寸；模块级函数按调用方参数执行。
-        dialog, parent = self._fit_dialog(500, 180, 1920, 1080)
-        fit_window_to_content(dialog, parent, minimum_width=560, minimum_height=220)
+    def test_fit_window_to_content_uses_requested_content_size(self):
+        # 窗口尺寸只跟内容需求走，调用方不再传最小尺寸。
+        dialog, parent = self._fit_dialog(500, 180)
+        fit_window_to_content(dialog, parent)
         size_call = dialog.geometry.call_args_list[0]
-        self.assertEqual(size_call.args[0], "560x220")
+        self.assertEqual(size_call.args[0], "500x180")
         dialog.resizable.assert_called_once_with(True, True)
 
     def test_fit_window_to_content_can_align_module_form_to_screen_top(self):
-        dialog, parent = self._fit_dialog(680, 900, 1920, 1080)
-        fit_window_to_content(
-            dialog, parent, minimum_width=680, minimum_height=600,
-            align_top=True,
-        )
+        dialog, parent = self._fit_dialog(680, 900)
+        fit_window_to_content(dialog, parent, align_top=True)
         size_call, pos_call = dialog.geometry.call_args_list
         self.assertEqual(size_call.args[0], "680x900")
         self.assertEqual(pos_call.args[0], "+610+0")
 
+    def _declared_dialog(self, declared, reqw, reqh, fitted=False):
+        """构造一个用于 ModalDialog._shrink_to_content 的 Mock 对话框。"""
+        dialog = ModalDialog.__new__(ModalDialog)
+        dialog._declared_size = declared
+        if fitted:
+            dialog._macroflow_fitted_to_content = True
+        dialog.update_idletasks = Mock()
+        dialog.winfo_reqwidth = Mock(return_value=reqw)
+        dialog.winfo_reqheight = Mock(return_value=reqh)
+        dialog.geometry = Mock()
+        self._patch_work_area(self._work_area())
+        master = Mock()
+        master.winfo_rootx.return_value = 100
+        master.winfo_rooty.return_value = 100
+        master.winfo_width.return_value = 1700
+        master.winfo_height.return_value = 920
+        dialog.master = master
+        return dialog
+
+    def test_modal_dialog_shrinks_declared_size_down_to_content(self):
+        # 声明 560x400 但内容只要 540x260：缩到内容尺寸，去掉底部那片空白。
+        dialog = self._declared_dialog((560, 400), 540, 260)
+        dialog._shrink_to_content()
+        size_call, pos_call = dialog.geometry.call_args_list
+        self.assertEqual(size_call.args[0], "540x260")
+        # 居中：x = 100 + (1700 - 540)//2 = 680；y = 100 + (920 - 260)//2 = 430
+        self.assertEqual(pos_call.args[0], "+680+430")
+
+    def test_modal_dialog_never_grows_past_declared_size(self):
+        # 内容比声明尺寸大时只缩不放：既有布局不动，高 DPI 下窗口也不会变大。
+        dialog = self._declared_dialog((480, 300), 520, 380)
+        dialog._shrink_to_content()
+        self.assertEqual(dialog.geometry.call_args_list[0].args[0], "480x300")
+
+    def test_modal_dialog_skips_shrink_when_window_was_already_fitted(self):
+        # 可滚动表单的尺寸来自 content_*，不是自身 reqsize，不能再缩一次。
+        dialog = self._declared_dialog((560, 400), 200, 120, fitted=True)
+        dialog._shrink_to_content()
+        dialog.geometry.assert_not_called()
+        dialog.update_idletasks.assert_not_called()
+
+    def test_fit_window_to_content_marks_window_as_fitted(self):
+        dialog, parent = self._fit_dialog(500, 180)
+        fit_window_to_content(dialog, parent)
+        self.assertTrue(dialog._macroflow_fitted_to_content)
+
+    def test_dialog_placement_keeps_negative_coordinate_monitor(self):
+        # 左侧副屏（x 为负）上的弹窗必须留在那块屏上：早先用
+        # max(0, min(x, screen_w - width)) 收敛，x 会被顶回 0，模块窗口就
+        # 跑到另一块屏（笔记本屏）上去了。
+        parent = Mock()
+        parent.winfo_rootx.return_value = -1800
+        parent.winfo_rooty.return_value = 200
+        parent.winfo_width.return_value = 1600
+        parent.winfo_height.return_value = 900
+        area = self._work_area(1920, 1080, left=-1920, top=181)
+        dialog, _ = self._fit_dialog(600, 400, area, parent)
+        fit_window_to_content(dialog, parent)
+        pos_call = dialog.geometry.call_args_list[1]
+        # x = -1800 + (1600-600)//2 = -1300（可用区域内）；y = 200 + (900-400)//2 = 450
+        self.assertEqual(pos_call.args[0], "+-1300+450")
+
+    def test_clamp_to_work_area_keeps_window_inside_secondary_monitor(self):
+        area = self._work_area(1920, 1080, left=-1920, top=181)
+        # 右下越界 → 收回到可用区域内（含标题栏余量 40）
+        self.assertEqual(
+            dialog_module.clamp_to_work_area(area, 600, 400, 500, 900), (-640, 821),
+        )
+        # 左上越界 → 贴到该显示器左上角，而不是主屏的 (0, 0)
+        self.assertEqual(
+            dialog_module.clamp_to_work_area(area, 600, 400, -4000, -50), (-1920, 181),
+        )
+
+    def test_monitor_work_area_uses_the_parent_window_center(self):
+        widget = Mock()
+        widget.winfo_rootx.return_value = 10
+        widget.winfo_rooty.return_value = 20
+        widget.winfo_width.return_value = 100
+        widget.winfo_height.return_value = 80
+        area = self._work_area(1260, 840)
+        with patch.object(
+            dialog_module, "get_monitor_work_area_for_point", return_value=area,
+        ) as probe:
+            self.assertEqual(dialog_module.monitor_work_area_for(widget), area)
+        probe.assert_called_once_with(60, 60)
+
+    def test_monitor_work_area_falls_back_to_primary_when_lookup_fails(self):
+        widget = Mock()
+        widget.winfo_rootx.return_value = 10
+        widget.winfo_rooty.return_value = 20
+        widget.winfo_width.return_value = 100
+        widget.winfo_height.return_value = 80
+        widget.winfo_id.return_value = 0
+        primary = self._work_area(1260, 840)
+        with patch.object(
+            dialog_module, "get_monitor_work_area_for_point", return_value=None,
+        ), patch.object(
+            dialog_module, "get_monitor_work_area_for_window", return_value=None,
+        ), patch.object(dialog_module, "get_primary_screen_rect", return_value=primary):
+            self.assertEqual(dialog_module.monitor_work_area_for(widget), primary)
+
+    def test_dialog_placement_never_uses_screen_metrics(self):
+        # 回归护栏：弹窗定位只看显示器可用区域，winfo_screenwidth/height 在多屏
+        # 下是主屏尺寸，用一次就会把窗口锁在主屏。
+        for target in (
+            dialog_module.ModalDialog.__init__,
+            dialog_module.ModalDialog._shrink_to_content,
+            dialog_module.place_window_on_parent,
+            dialog_module.fit_window_to_content,
+            dialog_module.monitor_work_area_for,
+        ):
+            self.assertNotIn("winfo_screen", inspect.getsource(target))
+
+    def test_module_form_resize_keeps_raw_pixels(self):
+        # winfo_* 返回的已经是当前 DPI 下的像素，再乘一次 px() 会在 200% 缩放下
+        # 把窗口放大一倍并顶出屏幕（切换识别方式时窗口突然跳大）。
+        dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
+        dialog.master = Mock()
+        dialog.update_idletasks = Mock()
+        dialog.winfo_width = Mock(return_value=620)
+        dialog.winfo_height = Mock(return_value=400)
+        dialog.winfo_x = Mock(return_value=50)
+        dialog.winfo_y = Mock(return_value=60)
+        dialog.geometry = Mock()
+        dialog.body = Mock()
+        dialog.body.winfo_reqwidth.return_value = 640
+        dialog.body.winfo_reqheight.return_value = 300
+        dialog._scrollbar = Mock()
+        dialog._scrollbar.winfo_reqwidth.return_value = 20
+        self._patch_work_area(self._work_area())
+        dialog._resize_for_content()
+        self.assertEqual(dialog.geometry.call_args.args[0], "660x400+50+60")
+
+    def test_module_dialog_button_rows_are_packed_before_lists(self):
+        # pack 按顺序分配空间：屏幕放不下时最后挂的控件先被裁。按钮行必须排在
+        # 列表/页签之前（side="bottom"），否则窗口一被压扁就看不到按钮。
+        for dialog_class, later in (
+            (dialog_module.TemplateRegionManagerDialog, "self.notebook.pack("),
+            (dialog_module.ModuleImageInventoryDialog, "list_frame.pack("),
+            (dialog_module.ModuleReferenceDialog, "list_frame.pack("),
+            (dialog_module.BatchModuleScriptDialog, "frame.pack("),
+            (dialog_module.ModulePickerDialog, "notebook.pack("),
+        ):
+            source = inspect.getsource(dialog_class.__init__)
+            self.assertLess(
+                source.index('buttons.pack(side="bottom"'), source.index(later),
+                f"{dialog_class.__name__} 的按钮行排在列表之后，会被挤出窗口",
+            )
+
+    def test_module_picker_tab_buttons_survive_shrinking(self):
+        source = inspect.getsource(dialog_module.ModulePickerDialog._build_category_tab)
+        self.assertLess(
+            source.index('buttons.pack(side="bottom"'), source.index("list_frame.pack("),
+        )
+
+    def test_scrollable_window_sizes_after_a_layout_pass(self):
+        # 表单挂在 Canvas 里，grid 的需求尺寸要等一次空闲布局才算出来：布局前
+        # 读 body.winfo_reqwidth/reqheight 只会拿到 1×1，窗口会被设成一条缝
+        # （用户报告「打开只显示一点点内容」）。
+        state = {"laid_out": False}
+        window = Mock()
+
+        def mark_laid_out():
+            state["laid_out"] = True
+
+        window.update_idletasks.side_effect = mark_laid_out
+        window.winfo_reqwidth.return_value = 1
+        window.winfo_reqheight.return_value = 1
+        window.geometry = Mock()
+        window.resizable = Mock()
+        body = Mock()
+        body.winfo_reqwidth.side_effect = lambda: 620 if state["laid_out"] else 1
+        body.winfo_reqheight.side_effect = lambda: 900 if state["laid_out"] else 1
+        scrollbar = Mock()
+        scrollbar.winfo_reqwidth.return_value = 17
+        parent = Mock()
+        parent.winfo_rootx.return_value = 100
+        parent.winfo_rooty.return_value = 100
+        parent.winfo_width.return_value = 1700
+        parent.winfo_height.return_value = 920
+        self._patch_work_area(self._work_area())
+
+        dialog_module.fit_scrollable_window_to_content(window, parent, body, scrollbar)
+
+        self.assertTrue(state["laid_out"], "读内容尺寸前必须先跑一次布局")
+        self.assertEqual(window.geometry.call_args_list[0].args[0], "637x904")
+
+    def test_scrollable_form_dialogs_size_from_live_content(self):
+        # 这 6 个可滚动表单都必须走"先布局再定尺寸"的封装，不能再自己提前读
+        # winfo_req*（读到 1×1 会让窗口缩成一条缝）。
+        for dialog_class in (
+            dialog_module.GlobalDetectDialog,
+            dialog_module.TemplateRegionFormDialog,
+            dialog_module.ModuleReferenceDelayDialog,
+            dialog_module.ImageActionDialog,
+            dialog_module.OcrActionDialog,
+            dialog_module.OcrCompareActionDialog,
+        ):
+            source = inspect.getsource(dialog_class.__init__)
+            self.assertIn(
+                "fit_scrollable_window_to_content", source,
+                f"{dialog_class.__name__} 未按布局后的内容尺寸定窗口",
+            )
+            self.assertNotIn(
+                "content_width=body.winfo_reqwidth", source,
+                f"{dialog_class.__name__} 提前读了尚未布局的内容尺寸",
+            )
+
+    def test_module_reference_dialog_keeps_a_scrollbar_for_long_lists(self):
+        # 引用位置可能有几十处，列表必须能滚动。
+        self.assertIn("ttk.Scrollbar", inspect.getsource(
+            dialog_module.ModuleReferenceDialog.__init__,
+        ))
+
+    def test_row_recognition_result_covers_parent_monitor_without_fullscreen(self):
+        # Tk 的 -fullscreen 在多屏下按主屏铺满，识别结果窗口会跑到另一块屏。
+        source = inspect.getsource(dialog_module.RowRecognitionResultDialog.show)
+        self.assertNotIn('"-fullscreen"', source)
+        self.assertIn("monitor_work_area_for", source)
+
     def test_deferred_module_form_is_shown_once_after_layout(self):
         dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         dialog._deferred_show = True
+        # 该表单在 __init__ 里已按 content_* 定过尺寸，show() 不再走收缩分支。
+        dialog._macroflow_fitted_to_content = True
         dialog.deiconify = Mock()
         dialog.update_idletasks = Mock()
         dialog.lift = Mock()
@@ -17032,6 +18302,45 @@ class RecorderTests(unittest.TestCase):
         recorder._on_raw_move(9, -2)
         self.assertEqual(recorder.actions[-1]["mode"], "relative")
         self.assertEqual((recorder.actions[-1]["dx"], recorder.actions[-1]["dy"]), (9, -2))
+
+
+class DpiScaleTests(unittest.TestCase):
+    def test_dpi_scale_helpers_convert_design_pixels(self):
+        # 打包版进程是 DPI 感知的：Tk 的字体按真实 DPI 放大，像素常量必须同步
+        # 换算，否则高 DPI 下文字会撑破行高/列宽（被裁切或上下行重叠）。
+        from macroflow.ui import app as app_module
+
+        class _FakeRoot:
+            class tk:
+                @staticmethod
+                def call(*_args):
+                    return 192 / 72  # 200% 缩放
+
+        previous = app_module._UI_SCALE
+        try:
+            self.assertAlmostEqual(app_module.set_ui_scale(_FakeRoot()), 2.0)
+            self.assertEqual(app_module.px(25), 50)
+            self.assertEqual(app_module.px(0), 0)
+            self.assertEqual(app_module.pad(14, 10, 14, 8), (28, 20, 28, 16))
+        finally:
+            app_module._UI_SCALE = previous
+
+    def test_dpi_scale_is_identity_at_96_dpi(self):
+        from macroflow.ui import app as app_module
+
+        class _FakeRoot:
+            class tk:
+                @staticmethod
+                def call(*_args):
+                    return 96 / 72
+
+        previous = app_module._UI_SCALE
+        try:
+            self.assertAlmostEqual(app_module.set_ui_scale(_FakeRoot()), 1.0)
+            self.assertEqual(app_module.px(25), 25)
+            self.assertEqual(app_module.pad(8, 3), (8, 3))
+        finally:
+            app_module._UI_SCALE = previous
 
 
 if __name__ == "__main__":

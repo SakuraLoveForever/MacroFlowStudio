@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TypeVar
 
 from macroflow.core.models import END_CURRENT_SCRIPT_LABEL, MacroScript, Workflow
+from macroflow.core.resolution import DEFAULT_RESOLUTION_STYLES
 
 
 T = TypeVar("T", MacroScript, Workflow)
@@ -212,6 +213,51 @@ def resolve_path(path: str | Path) -> Path:
     return resolved
 
 
+# 脚本类别 ↔ 脚本目录。脚本的类别就是它所在的目录（保存时按类别写入对应
+# 目录），因此判定类别时以目录为准，文件不在任何脚本目录内才用脚本里保存的
+# 类别。编辑器、批量加/删脚本的“分类”列共用这份表，避免两处规则不一致。
+SCRIPT_CATEGORY_DIRS = (
+    ("level_pack", "level_pack_scripts_dir", "scripts/关卡封装"),
+    ("switch", "switch_scripts_dir", "scripts/切换"),
+    ("direction", "direction_scripts_dir", DIRECTION_SCRIPTS_DIR),
+    ("level", "level_scripts_dir", "scripts/关卡"),
+)
+
+
+def script_category_from_dir(path: str | Path | None, settings: dict | None = None) -> str:
+    """脚本所在目录 → 类别键；不在任何脚本目录内时返回空字符串。"""
+    if path is None:
+        return ""
+    try:
+        resolved = resolve_path(path).resolve()
+    except (OSError, ValueError):
+        return ""
+    for category, setting_key, default in SCRIPT_CATEGORY_DIRS:
+        root = resolve_path(str((settings or {}).get(setting_key, default))).resolve()
+        if resolved == root or root in resolved.parents:
+            return category
+    return ""
+
+
+def script_category_for_path(path: str | Path | None, settings: dict | None = None,
+                             script: MacroScript | None = None) -> str:
+    """脚本文件 → 类别键：先按所在目录，再按脚本里保存的类别。
+
+    调用方没给 script 时会去读这个文件；读不出来（文件损坏/已删除）直接抛错，
+    交给调用方处理——把损坏的脚本静默当成“关卡”只会掩盖真正的问题。
+    """
+    category = script_category_from_dir(path, settings)
+    if category:
+        return category
+    if script is None and path is not None:
+        script = load_script(path)
+    if script is not None:
+        saved = str(script.settings.get("category", "")).strip()
+        if saved in {key for key, _, _ in SCRIPT_CATEGORY_DIRS}:
+            return saved
+    return "level"
+
+
 def remap_hotkey_script_bindings(
     bindings: list[dict], old_path: str | Path, new_path: str | Path,
 ) -> int:
@@ -257,6 +303,7 @@ def load_app_settings() -> dict:
         "main_window_geometry": "",
         # 快捷键脚本绑定：[{"key": "J", "vk": 74, "script": "scripts/关卡/xx.json"}, ...]
         "hotkey_scripts": [],
+        "resolution_styles": [dict(style) for style in DEFAULT_RESOLUTION_STYLES],
     }
     if not SETTINGS_PATH.exists():
         return defaults
@@ -372,7 +419,7 @@ DEFAULT_MODULE_OBJECT: dict = {
     "region": [0, 0, 0, 0],            # [0,0,0,0] = 尚未设置区域 → 全屏识别
     "threshold": 0.85,
     "interval_ms": 250,
-    "start_delay_ms": 0,                # 脚本全局模块进入脚本后多久开始识别
+    "start_delay_ms": 0,                # 进入模块后、开始识别前的延时（脚本全局模块 = 脚本开始后的等待）
     "fallback_module_key": "",         # 主模块等待期间同时识别的备用图片/文字模块
     "fallback_on_match": "continue",   # 备用命中后继续识别主模块或直接退出
     "fallback_click": False,            # 备用首次出现时点击备用命中位置

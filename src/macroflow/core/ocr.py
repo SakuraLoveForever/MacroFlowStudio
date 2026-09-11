@@ -67,11 +67,16 @@ def _ocr_component_root() -> Path | None:
 
 
 def _models_root() -> Path:
-    """模型目录：打包后位于 paddle_ocr/paddle_models，开发时位于项目目录。"""
+    """模型目录：打包后位于 paddle_ocr/paddle_models，源码运行位于项目根目录。
+
+    源码结构为 src/macroflow/core/ocr.py，向上三级即项目根——与 storage.app_dir()
+    的“源码版数据在项目根”语义一致；模型不随包一起移动，不能按 __file__ 的
+    同级目录查找（那会得到 src/macroflow/core/paddle_models，永远不存在）。
+    """
     ocr_root = _ocr_component_root()
     if ocr_root is not None:
         return ocr_root / "paddle_models"
-    return Path(__file__).resolve().parent / "paddle_models"
+    return Path(__file__).resolve().parents[3] / "paddle_models"
 
 
 def _get_engine():
