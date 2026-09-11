@@ -888,15 +888,56 @@ class BindingTests(unittest.TestCase):
 
 
 class ScriptRecordingSafetyTests(unittest.TestCase):
-    def test_start_recording_blocks_when_script_is_dirty(self):
-        # 录制会清空编辑器动作并分离当前脚本：未保存的修改必须拦截，
-        # 否则被静默丢弃（与新建脚本的 dirty 拦截一致）。
+    def _recording_app(self) -> MacroFlowApp:
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.worker = None
-        app.dirty = True
+        app.recorder = Mock()
+        app.recorder.running = False
+        app.recorder.limit_reached = False
+        app.recorder.current_mode.return_value = "absolute"
+        app.script = MacroScript(name="录制脚本", actions=[{"type": "delay", "ms": 1}])
+        app.interval_var = Mock()
+        app.interval_var.get.return_value = 20
+        app.record_button = Mock()
         app._notify = Mock()
+        app._log = Mock()
+        app._clear_action_undo = Mock()
+        app.rebuild_action_tree = Mock()
+        app._set_status = Mock()
+        app._sound = Mock()
+        app._show_recording_mini = Mock()
+        app._poll_recording_mode = Mock()
+        app._bound_hwnd = Mock(return_value=100)
+        app.saved_window_signature = None
+        app._refresh_coordinate_scale_status = Mock()
+        return app
+
+    def test_start_recording_ignores_unsaved_changes(self):
+        # 录制结束后编辑器是 dirty 的（刚录的动作还没保存）。此时再按 F8 必须
+        # 直接开始新录制并清空动作列表——被 dirty 拦住就等于“录完一次后再也
+        # 录不了，F8 没反应”。
+        app = self._recording_app()
+        app.dirty = True
+        with patch("macroflow.ui.app.force_english_input", return_value=True), \
+             patch("macroflow.ui.app.get_monitor_rect_for_window", return_value=None), \
+             patch("macroflow.ui.app.get_primary_screen_rect",
+                   return_value={"left": 0, "top": 0, "width": 1920, "height": 1080}):
+            app.start_recording()
+        app._notify.assert_not_called()
+        app.recorder.start.assert_called_once()
+        self.assertEqual(app.script.actions, [])
+        self.assertEqual(app.recording_capture_mode, "absolute")
+        app.record_button.configure.assert_called_once_with(
+            text="停止录制    F8", bootstyle="danger",
+        )
+
+    def test_start_recording_still_blocks_while_script_runs(self):
+        app = self._recording_app()
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
         app.start_recording()
         app._notify.assert_called_once()
+        app.recorder.start.assert_not_called()
 
 
 class StartupVisibilityTests(unittest.TestCase):
@@ -4075,6 +4116,9 @@ class GuardTestHelpers:
         app._restore_workflow_scan_foreground = Mock()
         app._ui = lambda callback, *args: callback(*args)
         app._log = Mock()
+        # 执行期细节（逐次识别结果/启用摘要等）走执行明细通道。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         app._append_mini_step = Mock()
         app.player = MacroPlayer()
         return app
@@ -4945,7 +4989,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(hit["kind"], "timeout")
         self.assertTrue(guard["timeout_triggered"])
         observation = "体力不足 OCR：识别到「其他文字」；期望「体力不足」· 未命中"
-        app._log.assert_any_call(observation)
+        # 逐次识别结果属于执行明细，不再写事件日志。
+        app._trace_event.assert_any_call(observation)
         app._append_mini_step.assert_any_call(observation)
 
     def test_module_ref_activation_uses_resolved_object_and_preserves_rearm_lock(self):
@@ -4956,6 +5001,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         logs = []
         app._log = Mock(side_effect=logs.append)
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         module = {"kind": "global_module", "step_id": "m1"}
         resolved = Path("C:/Macro/images/点击游戏画面.png")
         obj = {
@@ -4975,7 +5023,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["hold_ms"], 100)
         # 重新武装锁跨执行保留：同 key 守卫注册后仍处于 awaiting_clear。
         self.assertTrue(guard["awaiting_clear"])
-        self.assertTrue(any("持续超过 100 ms" in text for text in logs))
+        self.assertTrue(any("持续超过 100 ms" in text for text in app._trace_logs))
         self.assertEqual(lookup.call_count, 2)
         self.assertTrue(all(
             item.args == ("images/点击游戏画面.png",) for item in lookup.call_args_list
@@ -4988,6 +5036,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
 
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/disabled.png")), \
              patch("macroflow.ui.app.registered_module_object", return_value={
@@ -5010,6 +5061,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         logs = []
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
@@ -5022,7 +5076,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         guard = app.global_guards["script:global-a"]
         self.assertEqual(guard["jump_row"], 4)
         self.assertEqual(guard["jump_action_id"], "target-a")
-        self.assertTrue(any("跳转到目标行执行，播放到末尾后结束" in text for text in logs))
+        self.assertTrue(any("跳转到目标行执行，播放到末尾后结束" in text
+                            for text in app._trace_logs))
 
     def test_activate_global_detect_jump_disabled_does_not_jump(self):
         # 未勾选“启用触发后跳转”：守卫保留目标配置（避免落入旧版“无跳转则
@@ -5034,6 +5089,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         logs = []
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
@@ -5047,7 +5105,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["jump_row"], 4)
         self.assertEqual(guard["jump_action_id"], "target-a")
         self.assertTrue(guard["jump_disabled"])
-        self.assertTrue(any("不跳转，继续执行脚本" in text for text in logs))
+        self.assertTrue(any("不跳转，继续执行脚本" in text for text in app._trace_logs))
         # 命中打包：不写跳转字段，也不触发旧版“点击识别处”兜底。
         app._bound_hwnd = Mock(return_value=None)
         hit = app._build_guard_hit(dict(guard, match_data={"center_x": 16, "center_y": 22}))
@@ -5064,6 +5122,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         module_obj = {
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "click_match",
@@ -5092,6 +5153,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         module_obj = {
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "click_custom",
@@ -5458,6 +5522,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         logs = []
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")), \
              patch("macroflow.ui.app.registered_template_region", return_value=[100, 50, 300, 200]):
             app._activate_global_detect_from_config({
@@ -5467,7 +5534,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         guard = app.global_guards["script:global-a"]
         self.assertEqual(guard["region_mode"], "template")
         self.assertEqual(guard["region"], (100, 50, 300, 200))
-        self.assertTrue(any("区域 模板区域" in text for text in logs))
+        self.assertTrue(any("区域 模板区域" in text for text in app._trace_logs))
 
     def test_activate_global_detect_template_without_region_uses_fullscreen(self):
         # 模板未登记 / 未设置区域：按全屏检测并在日志中告警。
@@ -5478,6 +5545,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         logs = []
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")), \
              patch("macroflow.ui.app.registered_template_region", return_value=None):
             app._activate_global_detect_from_config({
@@ -5486,7 +5556,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             })
         guard = app.global_guards["script:global-a"]
         self.assertIsNone(guard["region"])
-        self.assertTrue(any("模板未设置区域，按全屏检测" in text for text in logs))
+        self.assertTrue(any("模板未设置区域，按全屏检测" in text for text in app._trace_logs))
 
     def test_trigger_summary_template_mode_shows_template_region(self):
         # v1.78：引用模板的触发条件摘要显示"区域：模板"，不展开坐标。
@@ -5526,6 +5596,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
+        # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
+        app._trace_logs = []
+        app._trace_event = Mock(side_effect=app._trace_logs.append)
         module = {"kind": "global_module", "script": "m.json", "step_id": "m1"}
         with patch("macroflow.ui.app.resolve_path", return_value=Path("images/g.png")):
             app._activate_global_detect_from_config({
@@ -5636,7 +5709,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 hit = app._evaluate_global_guards()
             self.assertIsNotNone(hit)
             self.assertTrue(guard["awaiting_clear"])
-            self.assertTrue(any("立即触发" in text for text in logs))
+            self.assertTrue(any("立即触发" in text for text in app._trace_logs))
 
     def test_guard_module_ref_reads_object_each_round(self):
         # 引用模块守卫：每轮评估实时重读对象（阈值/区域/持续时长），
@@ -8317,6 +8390,11 @@ class ImageTests(unittest.TestCase):
         # _update_pos_mode 误设只读（曾因 _y_entry 槽位被延时框覆盖而只读）。
         root = tk.Tk()
         root.withdraw()
+        # 前面的用例可能已经销毁过自己的 ttkbootstrap 根窗口，而 Style 是模块级
+        # 单例——它仍指向那个死掉的解释器，弹窗一建 ttk 控件就会报“application
+        # has been destroyed”。这里按同一套写法重建 Style 并绑定本用例的根窗口。
+        previous_style = ttkbootstrap.style.Style.instance
+        ttkbootstrap.style.Style.instance = None
         try:
             dialog = ClickDialog(root, {"type": "click"})
             entries: dict[str, tk.Widget] = {}
@@ -8341,6 +8419,7 @@ class ImageTests(unittest.TestCase):
             self.assertEqual(str(entries[str(dialog.delay)].cget("state")), "normal")
             dialog.destroy()
         finally:
+            ttkbootstrap.style.Style.instance = previous_style
             root.destroy()
 
     def test_click_summary_shows_current_position(self):
@@ -9657,7 +9736,10 @@ class PlayerTests(unittest.TestCase):
     def test_guard_poll_records_recognition_time_without_reordering_actions(self):
         player = MacroPlayer(on_guard_poll=lambda: None)
         player._execute_action = Mock(return_value=None)
-        with patch("macroflow.execution.player.time.perf_counter", side_effect=[10.0, 10.025]):
+        # 一次动作会取 4 次时钟：守卫评估（识别计时）2 次 + 等待/动作耗时 2 次。
+        # 识别计时 = 守卫评估前后两次之差（这里 25ms）。
+        with patch("macroflow.execution.player.time.perf_counter",
+                   side_effect=[10.0, 10.025, 10.025, 10.025, 10.025, 10.025]):
             player._run_action_sequence([{"type": "comment"}], None)
 
         self.assertEqual(player._execute_action.call_args_list[0].args[0]["type"], "comment")
@@ -10029,14 +10111,22 @@ class PlayerTests(unittest.TestCase):
         timing = []
         player = MacroPlayer(on_timing=timing.append)
         player._wait = lambda _milliseconds: player.stop()
+        # 时钟顺序：播放开始 → 每个动作 2 次（等待起点/终点）+ 2 次（动作耗时）
+        # → 动作边界 mark_boundary → 收尾。停止请求记在 _wait 里的 stop()，
+        # 清理耗时 = 收尾时刻 - 停止请求时刻 = 100.040 - 100.005。
         with patch("macroflow.execution.player.time.perf_counter", side_effect=[
-            100.000, 100.025, 100.030, 100.080,
+            99.995,                                       # play() 起始
+            100.000, 100.005, 100.010, 100.015,           # 动作 1
+            100.020, 100.025, 100.030, 100.035,           # 动作 2（_wait 中请求停止）
+            100.040,                                      # mark_boundary
+            100.040,                                      # play() 收尾 1
+            100.040,                                      # play() 收尾 2
         ]), patch("macroflow.execution.player.send_button"):
             player.play([
                 {"type": "mouse_button", "button": "left", "down": True},
                 {"type": "delay", "ms": 1},
             ])
-        self.assertAlmostEqual(timing[0]["stop_cleanup_ms"], 55.0)
+        self.assertAlmostEqual(timing[0]["stop_cleanup_ms"], 35.0)
 
     def test_release_all_clears_keys_and_buttons_when_a_release_raises(self):
         player = MacroPlayer()
@@ -10305,7 +10395,7 @@ class PlayerTests(unittest.TestCase):
         waits = []
         logs = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        player._log_event = lambda text: logs.append(text)
+        player._trace = lambda text, **_kwargs: logs.append(text)
         module = {
             "name": "直接动作", "recognize": "none", "delay_ms": 120,
             "after_action": "continue", "run_code_after_action": True,
@@ -12299,7 +12389,7 @@ class PlayerTests(unittest.TestCase):
             }, {"target-a": 6})
         self.assertIn("脚本全局模块", kind)
         self.assertIn("触发后跳转到第 6 行", detail)
-        self.assertIn("点击识别区域", detail)
+        self.assertIn("点击识别位置", detail)
 
     def test_module_ref_summary_shows_deleted_jump_target(self):
         module_obj = {
@@ -18234,6 +18324,349 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.deiconify.assert_called_once()
         dialog.update_idletasks.assert_called_once()
         dialog.lift.assert_called_once()
+
+
+class LogStreamsTests(unittest.TestCase):
+    """两个分开的日志：事件日志（去重）+ 执行明细（每行动作一条）。"""
+
+    def _app(self, folder: Path) -> MacroFlowApp:
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.session_log_path = Path(folder) / "MacroFlow_test.log"
+        app.trace_log_path = Path(folder) / "MacroFlow_trace_test.log"
+        app.log_file_lock = threading.Lock()
+        app.trace_file_lock = threading.Lock()
+        app._log_dedup_window_ms = 30000
+        app._log_dedup_text = ""
+        app._log_dedup_count = 0
+        app._log_dedup_since = 0.0
+        return app
+
+    def test_event_log_merges_identical_repeats(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = self._app(Path(folder))
+            for _ in range(6):
+                app._write_log_line("[10:00:00] [鼠标 1,1] 全局检测触发：模块[A]。\n", "全局检测触发：模块[A]。")
+            app._write_log_line("[10:00:00] [鼠标 2,2] 脚本结束\n", "脚本结束")
+            app._flush_log_dedup()
+            text = app.session_log_path.read_text(encoding="utf-8")
+        # 合并提示里会带上被合并那一行，所以按“以该消息结尾的行”计数。
+        self.assertEqual(sum(1 for line in text.splitlines() if line.endswith("全局检测触发：模块[A]。")), 1)
+        self.assertIn("重复 5 次", text)
+
+    def test_event_log_keeps_different_messages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = self._app(Path(folder))
+            app._write_log_line("[10:00:00] 第 1 行\n", "第 1 行")
+            app._write_log_line("[10:00:01] 第 2 行\n", "第 2 行")
+            app._flush_log_dedup()
+            text = app.session_log_path.read_text(encoding="utf-8")
+        self.assertIn("第 1 行", text)
+        self.assertIn("第 2 行", text)
+        self.assertNotIn("重复", text)
+
+    def test_trace_log_writes_one_line_per_action(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = self._app(Path(folder))
+            app._on_player_trace({
+                "script": "工业4", "depth": 0, "index": 10, "total": 813,
+                "action": {"type": "key", "vk": 69, "name": "E", "down": True},
+                "elapsed_ms": 2.0, "waited_ms": 1000.0,
+            })
+            app._on_player_trace({
+                "script": "背包", "depth": 1, "index": 0, "total": 3,
+                "action": {"type": "delay", "ms": 500},
+                "elapsed_ms": 501.0, "waited_ms": 0.0,
+            })
+            text = app.trace_log_path.read_text(encoding="utf-8")
+        lines = [line for line in text.splitlines() if not line.startswith("#")]
+        self.assertEqual(len(lines), 2)
+        self.assertIn("第 11/813 行", lines[0])
+        self.assertIn("按下 E", lines[0])
+        self.assertIn("等待 1000ms", lines[0])
+        self.assertIn("代码段[背包] 第 1/3 行", lines[1])
+        self.assertIn("耗时 501ms", lines[1])
+
+    def test_trace_context_writes_hierarchy_header_before_action_lines(self):
+        # 两级日志：明细先写一行 ▶ 层级标题（工作流第几步 · 哪个脚本 · 第几次），
+        # 下面才是逐行动作；事件日志每条也带上同样的位置，便于定位执行到哪了。
+        with tempfile.TemporaryDirectory() as folder:
+            app = self._app(Path(folder))
+            app._set_trace_context(
+                step=3, steps=31, script="工业4封装", total=12, repeat=4, repeats=100,
+            )
+            app._on_player_trace({
+                "script": "工业4封装", "depth": 0, "index": 2, "total": 12,
+                "action": {"type": "click", "button": "left", "x": 1, "y": 2},
+                "elapsed_ms": 1.0, "waited_ms": 0.0,
+            })
+            app._trace_event("模块 专注 执行结果：成功", module_detail=True)
+            text = app.trace_log_path.read_text(encoding="utf-8")
+        lines = [line for line in text.splitlines() if not line.startswith("#")]
+        header = app._trace_context_header()
+        self.assertEqual(
+            header.replace("  ", " "),
+            "脚本[工业4封装]（12 行） · 工作流第 3/31 步 · 第 4/100 次",
+        )
+        self.assertIn(header, lines[0])
+        self.assertIn("第 3/12 行", lines[1])
+        # 模块内部说明缩进，一眼区分“脚本行”和“这一行做了什么”。
+        self.assertIn("└ 模块 专注 执行结果：成功", lines[2])
+        # 事件日志按上下文标注行号与脚本名。
+        self.assertEqual(
+            app._with_event_context("步骤开始"), "工作流第 3/31 步 · 脚本[工业4封装]：步骤开始",
+        )
+
+    def test_event_context_is_empty_outside_execution(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        self.assertEqual(app._with_event_context("应用已就绪。"), "应用已就绪。")
+
+
+class CloseActionTests(unittest.TestCase):
+    """关闭按钮行为：直接退出＝不留后台；隐藏到托盘＝按设置保留。"""
+
+    def _app(self, action: str) -> MacroFlowApp:
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.close_action_var = _FakeSettingVar(action)
+        app.main_hidden_to_tray = False
+        app._persist_workflow_draft = Mock()
+        app._quit_app = Mock()
+        app._hide_main_to_tray = Mock(return_value=True)
+        return app
+
+    def test_exit_action_closes_the_whole_process(self):
+        app = self._app("exit")
+        app.on_close()
+        app._hide_main_to_tray.assert_not_called()
+        app._quit_app.assert_called_once_with()
+
+    def test_tray_action_hides_the_window_instead(self):
+        app = self._app("tray")
+        app.on_close()
+        app._hide_main_to_tray.assert_called_once_with()
+        app._quit_app.assert_not_called()
+
+    def test_tray_action_falls_back_to_exit_without_a_tray_icon(self):
+        # 托盘图标建不出来时不能留下“既无窗口又无图标”的隐藏进程。
+        app = self._app("tray")
+        app._hide_main_to_tray = Mock(return_value=False)
+        app.on_close()
+        app._quit_app.assert_called_once_with()
+
+    def test_close_action_is_saved_with_the_sidebar_settings(self):
+        # 选择要落盘：下次打开软件仍按用户选的关闭行为走。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.close_action_var = _FakeSettingVar("tray")
+        app.interval_var = _FakeSettingVar("100")
+        app.repeat_var = _FakeSettingVar("1")
+        app.backup_interval_var = _FakeSettingVar("1h")
+        for name in (
+            "sound_enabled_var", "mini_window_enabled_var", "execution_mini_enabled_var",
+            "focus_mode_enabled_var", "activate_target_enabled_var",
+            "timed_backup_enabled_var", "windows_startup_enabled_var",
+            "start_minimized_to_tray_var", "startup_run_workflow_var",
+            "activation_enabled_var",
+        ):
+            setattr(app, name, _FakeSettingVar(False))
+        for name, value in (
+            ("playback_speed_var", 1.0), ("script_category_var", "关卡"),
+            ("floating_notice_position_var", "顶部居中"),
+            ("startup_workflow_path_var", ""), ("level_scripts_dir_var", "scripts/关卡"),
+            ("level_pack_scripts_dir_var", "scripts/关卡封装"),
+            ("switch_scripts_dir_var", "scripts/切换"),
+            ("direction_scripts_dir_var", "scripts/方向"),
+            ("workflow_name_var", "未命名工作流"), ("workflow_start_var", ""),
+        ):
+            setattr(app, name, _FakeSettingVar(value))
+        app.script = None
+        app.script_path = None
+        app.workflow_path = None
+        app.saved_window_signature = None
+        app.workflow = Workflow()
+        app.app_settings = {}
+
+        settings = app._collect_sidebar_settings()
+
+        self.assertEqual(settings["close_action"], "tray")
+
+
+class InputGuardRestartTests(unittest.TestCase):
+    """专注模式守卫的启动/退出竞态：连续两次执行不能被“上一次还没退完”否掉。"""
+
+    def test_start_waits_for_previous_hook_thread_instead_of_failing(self):
+        # 上一次执行的钩子线程还在收尾时再执行一次：必须等它退完再启动新会话，
+        # 不能直接判失败（否则这次执行被整个取消＝按了执行没反应）。
+        guard = FocusInputGuard()
+
+        def fake_run() -> None:
+            # 模拟新会话启动成功（不真的装钩子/锁输入）。
+            guard.active = True
+            guard._ready.set()
+
+        dying = threading.Thread(target=lambda: time.sleep(0.2), daemon=True)
+        dying.start()
+        guard._thread = dying  # 上一次会话的钩子线程：还没退完
+        self.addCleanup(guard.release)
+        with patch.object(guard, "_run", fake_run):
+            started = time.perf_counter()
+            self.assertTrue(guard.start(timeout=2.0))
+        elapsed = time.perf_counter() - started
+        self.assertFalse(dying.is_alive(), "应该等上一个钩子线程退出后再启动")
+        self.assertGreater(elapsed, 0.1, "应当等待上一个钩子线程收尾，而不是立刻启动")
+        self.assertIsNot(guard._thread, dying)
+
+    def test_previous_session_teardown_does_not_clear_new_dispatcher(self):
+        import macroflow.input.input_guard as guard_module
+
+        guard = FocusInputGuard()
+        seen = []
+        with patch.object(guard_module.wininput, "set_input_dispatcher",
+                          side_effect=seen.append):
+            guard._session = 1
+            # 上一次会话（启动时 session=0）这时候才跑完收尾。
+            guard._release_dispatcher(0)
+            self.assertEqual(seen, [])
+            # 自己这一会话退出时才撤销分发器。
+            guard._release_dispatcher(1)
+        self.assertEqual(seen, [None])
+
+    def test_guard_sends_input_only_after_focus_callback(self):
+        import macroflow.input.input_guard as guard_module
+
+        order = []
+        guard = FocusInputGuard()
+        guard._before_input = lambda: order.append("focus")
+        guard._thread = threading.current_thread()
+        with patch.object(guard_module.wininput, "_send_input_direct",
+                          side_effect=lambda _input: order.append("send")):
+            guard._dispatch_input(object())
+        # 先抢回目标窗口前台，再发这一包输入；顺序反了这一包就发给了别的前台窗口。
+        self.assertEqual(order, ["focus", "send"])
+
+    def test_input_actions_restore_target_foreground_first(self):
+        # 焦点被抢后，下一个输入动作要先把目标窗口抢回前台：按键发给别的前台
+        # 窗口就是“这一次按键没反应”。
+        player = MacroPlayer()
+        player._ensure_foreground_for_input = Mock()
+        with patch("macroflow.execution.player.send_key") as send_key:
+            player._execute_action({"type": "key", "vk": 69, "down": True}, 100)
+        player._ensure_foreground_for_input.assert_called_once_with(100)
+        send_key.assert_called_once_with(69, True)
+
+    def test_delay_actions_do_not_touch_foreground(self):
+        player = MacroPlayer()
+        player._ensure_foreground_for_input = Mock()
+        player._wait = Mock()
+        player._execute_action({"type": "delay", "ms": 0}, 100)
+        player._ensure_foreground_for_input.assert_not_called()
+
+
+class LogTabViewTests(unittest.TestCase):
+    """界面「运行日志」标签：事件日志 / 执行明细两个视图，内容各自独立。"""
+
+    def _app(self, root):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = root
+        app.logs_dir = BASE_DIR / "logs"
+        app.log_tab = tk.Frame(root)
+        app.ui_queue = None
+        app.session_log_path = None
+        app.trace_log_path = None
+        app.log_file_lock = threading.Lock()
+        app.trace_file_lock = threading.Lock()
+        app._log_dedup_window_ms = 30000
+        app._log_dedup_text = ""
+        app._log_dedup_count = 0
+        app._log_dedup_since = 0.0
+        return app
+
+    def test_two_log_views_show_their_own_stream(self):
+        root = tk.Tk()
+        # 不 withdraw：tk.Text 需要真实布局才能断言内容；用全透明避免闪窗。
+        root.attributes("-alpha", 0.0)
+        self.addCleanup(root.destroy)
+        app = self._app(root)
+        app._build_log_tab()
+
+        app._log("脚本开始执行：工业4")
+        app._on_player_trace({
+            "script": "工业4", "depth": 0, "index": 10, "total": 813,
+            "action": {"type": "key", "vk": 69, "name": "E", "down": True},
+            "elapsed_ms": 2.0, "waited_ms": 1000.0,
+        })
+        app._flush_log_view("event")
+        app._flush_log_view("trace")
+
+        event_text = app.log_text.get("1.0", "end")
+        self.assertIn("脚本开始执行：工业4", event_text)
+        self.assertNotIn("第 11/813 行", event_text)
+
+        app._show_log_view("trace")
+        trace_text = app.log_text.get("1.0", "end")
+        self.assertIn("第 11/813 行", trace_text)
+        self.assertIn("按下 E", trace_text)
+        self.assertNotIn("脚本开始执行：工业4", trace_text)
+
+        # 切回事件日志：内容还在，没被明细顶掉。
+        app._show_log_view("event")
+        self.assertIn("脚本开始执行：工业4", app.log_text.get("1.0", "end"))
+
+
+class AutohideScrollbarTests(unittest.TestCase):
+    """列表滚动条自动显隐：空的隐藏、内容超一屏必须真的显示出来。"""
+
+    ROWS = 200
+
+    def _build(self):
+        from tkinter import ttk
+
+        from macroflow.ui.app import attach_autohide_scrollbar
+
+        root = tk.Tk()
+        # 布局尺寸要按真实（已映射）窗口算，所以不能 withdraw；用全透明代替，
+        # 测试期间屏幕上不会真的闪出一个窗口。
+        root.attributes("-alpha", 0.0)
+        root.geometry("700x400")
+        self.addCleanup(root.destroy)
+        shell = ttk.Frame(root)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, weight=1)
+        shell.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(shell, columns=("a",), show="headings", height=8)
+        scroll = ttk.Scrollbar(shell, orient="vertical", command=tree.yview)
+        # 与 _build_ui 相同的顺序：先 attach（滚动条还没进布局），再 grid。
+        attach_autohide_scrollbar(tree, scroll)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        root.update()
+        return root, tree, scroll
+
+    def _insert_rows(self, root, tree, count):
+        for index in range(count):
+            tree.insert("", "end", iid=str(index), values=(index,))
+        root.update()
+
+    def test_scrollbar_appears_when_rows_overflow(self):
+        # 回归：attach 时滚动条还没被布局管理器接管，显示路径曾走成 pack，
+        # 在 grid 管理的外壳里 Tk 报 "cannot use geometry manager pack"，
+        # 滚动条再也不出现——打开长脚本也看不到、拖不动。
+        root, tree, scroll = self._build()
+        self.assertFalse(scroll.winfo_ismapped())  # 空列表：自动隐藏
+        self._insert_rows(root, tree, self.ROWS)
+        self.assertEqual(scroll.winfo_manager(), "grid")
+        self.assertTrue(scroll.winfo_ismapped())
+        # 滚动条要排在列表右边，不能盖在列表上或掉到底部。
+        self.assertEqual(scroll.winfo_x(), tree.winfo_x() + tree.winfo_width())
+        self.assertEqual(scroll.winfo_y(), tree.winfo_y())
+        first, last = tree.yview()
+        self.assertLess(last - first, 1.0)  # 内容确实超出一屏
+        tree.yview_moveto(1.0)
+        root.update()
+        self.assertGreaterEqual(tree.yview()[1], 1.0)  # 能滚到底
+
+    def test_scrollbar_fits_without_rows(self):
+        root, tree, scroll = self._build()
+        self._insert_rows(root, tree, 3)
+        self.assertFalse(scroll.winfo_ismapped())
 
 
 class RawInputTests(unittest.TestCase):

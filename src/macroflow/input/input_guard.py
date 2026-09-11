@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import queue
 import threading
+import time
 from ctypes import wintypes
 from typing import Callable
 
@@ -111,16 +112,31 @@ class FocusInputGuard:
         self._f12_down = False
         self._system_blocked = False
         self._input_requests: queue.Queue = queue.Queue()
+        # 每次发输入前在钩子线程上执行的回调（抢回目标窗口前台）。
+        self._before_input: Callable[[], None] | None = None
+        # 会话号：每次 start() 递增。正在退出的旧线程据此判断自己是否还是
+        # “当前会话”，避免它的 finally 拆掉新会话刚装好的输入分发器。
+        self._session = 0
 
     def start(self, timeout: float = 2.0) -> bool:
         if self.active:
             return True
-        if self._thread is not None and self._thread.is_alive():
-            # 上一次会话的钩子线程仍在退出中（可能还持有 BlockInput）：绝不
-            # 并行启动第二个线程，否则旧线程的 finally 会拆掉新会话的状态。
-            return False
+        deadline = time.monotonic() + max(0.5, float(timeout))
+        while self._thread is not None and self._thread.is_alive():
+            # 上一次会话的钩子线程可能还在退出（解钩 + BlockInput(False)）。
+            # 不能并行启动第二个线程（旧线程的 finally 会拆掉新会话的状态），
+            # 但也不能直接判失败：上一次执行刚结束就再执行一次是常规操作，
+            # 直接返回 False 会让这次执行被整个取消（日志里是「无法启动专注
+            # 模式，已取消执行以避免误触」，表现就是按了执行/快捷键没反应）。
+            if threading.current_thread() is not self._thread:
+                self._thread.join(0.05)
+            if time.monotonic() >= deadline:
+                return False
+            if not self._thread.is_alive():
+                break
         self._ready.clear()
         self._error = None
+        self._session += 1
         self._thread = threading.Thread(target=self._run, name="MacroFlowFocusGuard", daemon=True)
         self._thread.start()
         if not self._ready.wait(timeout):
@@ -170,11 +186,22 @@ class FocusInputGuard:
             return
         self._thread = None
         self._thread_id = 0
+        # 线程确实已经退出：它的 finally 已经跑完（钩子已解、BlockInput 已
+        # 解除），此时清掉分发器不会和新会话抢。
+        wininput.set_input_dispatcher(None)
+
+    def set_before_input(self, callback: Callable[[], None] | None) -> None:
+        """Register a pre-input hook executed on the hook thread before sending.
+
+        专注模式下所有输入都由钩子线程发出，发之前要把目标窗口抢回前台，
+        否则按键会发给当时的前台窗口（游戏丢焦点 → 这一次按键没反应）。
+        """
+        self._before_input = callback
 
     def _dispatch_input(self, input_obj) -> None:
         """Execute an input packet on the thread that owns BlockInput."""
         if threading.current_thread() is self._thread:
-            wininput._send_input_direct(input_obj)
+            self._send_input_here(input_obj)
             return
         if not self.active or not self._thread_id:
             raise RuntimeError("强制专注输入线程未运行。")
@@ -200,11 +227,31 @@ class FocusInputGuard:
                 # PostThreadMessageW 失败时已把错误交给调用方，这一包不能再注入。
                 continue
             try:
-                wininput._send_input_direct(request["input"])
+                self._send_input_here(request["input"])
             except Exception as exc:
                 request["error"] = exc
             finally:
                 request["done"].set()
+
+    def _send_input_here(self, input_obj) -> None:
+        """Send one packet from the hook thread after re-checking input focus."""
+        callback = self._before_input
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                # 抢前台失败不能吞掉输入：照常发送，由直发路径继续尝试。
+                pass
+        wininput._send_input_direct(input_obj)
+
+    def _release_dispatcher(self, session: int) -> None:
+        """退出时撤销输入分发器——只撤自己这一会话装的那个。
+
+        本线程退出期间新会话可能已经启动并装好了自己的分发器，这里再清一次
+        会让新会话的输入全部走直发（BlockInput 仍由本线程持有 → 游戏收不到）。
+        """
+        if self._session == session:
+            wininput.set_input_dispatcher(None)
 
     def _fail_input_requests(self) -> None:
         while True:
@@ -216,6 +263,7 @@ class FocusInputGuard:
             request["done"].set()
 
     def _run(self) -> None:
+        session = self._session
         self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
 
         @HOOKPROC
@@ -280,7 +328,7 @@ class FocusInputGuard:
             self._error = exc
             self._ready.set()
         finally:
-            wininput.set_input_dispatcher(None)
+            self._release_dispatcher(session)
             self._fail_input_requests()
             if self._system_blocked:
                 user32.BlockInput(False)

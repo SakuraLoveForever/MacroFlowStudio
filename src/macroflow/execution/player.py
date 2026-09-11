@@ -67,6 +67,13 @@ class JumpToCurrentScriptLastAction(Exception):
 
 JUMP_CURRENT_SCRIPT_LAST_RESULT = "jump_current_script_last"
 
+# 会把输入发给当前前台窗口的动作。只有这些动作需要“先抢回目标窗口前台”：
+# 纯坐标点击即使发到别的窗口也带坐标，按键则会完全丢失。
+INPUT_ACTION_KINDS = frozenset({
+    "key", "key_press", "text",
+    "mouse_button", "mouse_move", "click", "repeat_click", "scroll", "turn",
+})
+
 
 class AdvanceToNextWorkflowStep(Exception):
     """Finish the current top-level script and let its workflow advance."""
@@ -238,6 +245,8 @@ class MacroPlayer:
                  on_global_detect_request: Callable[[dict], None] | None = None,
                  on_restart_workflow_request: Callable[[dict], bool] | None = None,
                  on_log: Callable[[str], None] | None = None,
+                 on_trace: Callable[[dict], None] | None = None,
+                 on_trace_line: Callable[[str], None] | None = None,
                  on_script_scope_enter: Callable[[list[dict]], object] | None = None,
                  on_script_scope_exit: Callable[[object], None] | None = None,
                  on_target_window_request: Callable[[], int | None] | None = None,
@@ -253,6 +262,12 @@ class MacroPlayer:
         self.on_restart_workflow_request = on_restart_workflow_request
         # 运行日志通道：模块触发/超时等关键操作同步写入（on_status 只进状态栏）。
         self.on_log = on_log
+        # 执行明细通道：每执行一行脚本动作回调一次（应用层写“执行明细”日志，
+        # 不进界面日志）。事件字典字段：
+        #   phase="start"/"end"、script、depth、index、total、action、elapsed_ms
+        self.on_trace = on_trace
+        # 执行期细节行（模块识别/点击/OCR 观察等）：只进“执行明细”日志。
+        self.on_trace_line = on_trace_line
         self.on_script_scope_enter = on_script_scope_enter
         self.on_script_scope_exit = on_script_scope_exit
         self.on_target_window_request = on_target_window_request
@@ -351,9 +366,33 @@ class MacroPlayer:
             self.on_status(text)
 
     def _log_event(self, text: str) -> None:
-        """状态栏 + 运行日志双写（模块触发/超时等关键操作）。"""
+        """状态栏 + 事件日志双写（脚本/工作流边界、关键状态变化）。"""
         self._status(text)
         if self.on_log:
+            self.on_log(text)
+
+    def _trace(self, text: str, module_detail: bool = False) -> None:
+        """执行期细节只写“执行明细”日志：不进事件日志、也不刷状态栏。
+
+        逐行识别/点击/轮询这类信息量极大（一次挂机几十万行），放在事件日志里
+        会把真正有用的状态变化埋掉；排查“某一行到底做了什么”看明细日志。
+
+        ``module_detail`` 标记“这一行脚本正在做这件事”的内部说明（模块命中/点击/
+        阻塞/逐行扫描等），由界面层缩进显示，与脚本行本身区分开。
+
+        只传了 on_log（例如单元测试或独立使用播放器）时退回 on_log，保证明细
+        不会凭空消失。
+        """
+        if self.on_trace_line:
+            if module_detail:
+                try:
+                    self.on_trace_line(text, module_detail=True)
+                except TypeError:
+                    # 只接受一个位置参数的旧回调（测试替身/第三方接入）。
+                    self.on_trace_line(text)
+            else:
+                self.on_trace_line(text)
+        elif self.on_log:
             self.on_log(text)
 
     def _diagnostic_log_event(self, text: str,
@@ -464,7 +503,7 @@ class MacroPlayer:
             return
         total = len(actions)
         for index, action in enumerate(actions, start=1):
-            self._log_event(
+            self._trace(
                 f"全局检测处理段动作 {index}/{total}："
                 f"{self._guard_processing_action_description(action)}。"
             )
@@ -487,19 +526,19 @@ class MacroPlayer:
             if kind == "timeout":
                 self._log_event(f"全局检测超时：{script_context}{subject}，执行超时处理段。")
             else:
-                self._log_event(f"全局检测触发：{script_context}{subject}，开始执行处理段。")
+                self._trace(f"全局检测触发：{script_context}{subject}，开始执行处理段。")
             delay = max(0, int(hit.get("delay_ms", 0)))
             if delay:
-                self._log_event(f"全局检测处理动作：等待 {delay} ms。")
+                self._trace(f"全局检测处理动作：等待 {delay} ms。")
                 self._wait(delay)
             activation_hwnd = hit.get("activation_hwnd")
             if activation_hwnd and is_window(activation_hwnd):
-                self._log_event("全局检测处理动作：执行前置窗口激活。")
+                self._trace("全局检测处理动作：执行前置窗口激活。")
                 if not activate_window(activation_hwnd):
                     self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
             click = hit.get("click")
             if click and len(click) == 2:
-                self._log_event(
+                self._trace(
                     f"全局检测处理动作：点击 {hit.get('button', 'left')} "
                     f"@ ({int(click[0])}, {int(click[1])}) × "
                     f"{max(1, int(hit.get('click_count', 1)))}。"
@@ -512,7 +551,7 @@ class MacroPlayer:
                 )
             second = hit.get("second")
             if second:
-                self._log_event(
+                self._trace(
                     "全局检测处理动作：执行二次识别"
                     f"（{Path(str(second.get('second_match_template', ''))).name or '未设置模板'}）。"
                 )
@@ -530,12 +569,12 @@ class MacroPlayer:
                 if not script_path.is_file():
                     raise RuntimeError(f"全局模块脚本不存在：{script_value}")
                 script = load_script(script_path)
-                self._log_event(f"全局检测处理动作：执行模块脚本「{script.name}」。")
+                self._trace(f"全局检测处理动作：执行模块脚本「{script.name}」。")
                 self._play_guard_actions(
                     script.actions, hwnd, hit,
                     source_screen=dict(script.settings.get("recorded_screen", {})) or None,
                 )
-                self._log_event(f"全局模块步骤已执行：{script.name}。")
+                self._trace(f"全局模块步骤已执行：{script.name}。")
             jump_action_id = str(hit.get("jump_action_id", "")).strip()
             if jump_action_id or hit.get("jump_row"):
                 target = (
@@ -544,7 +583,7 @@ class MacroPlayer:
                     else f"动作 {jump_action_id}" if jump_action_id
                     else f"第 {max(1, int(hit.get('jump_row', 1)))} 行"
                 )
-                self._log_event(f"全局检测处理动作：跳转到{target}。")
+                self._trace(f"全局检测处理动作：跳转到{target}。")
                 raise GuardJumpRequest(
                     jump_action_id, max(1, int(hit.get("jump_row", 1))),
                     hit.get("scope_action_ids"),
@@ -878,6 +917,29 @@ class MacroPlayer:
                 ) = nested_timeline_state
                 self._timeline.mark_boundary()
 
+    def _trace_action(self, action: dict, index: int, total: int, depth: int,
+                      elapsed_ms: float, waited_ms: float = 0.0) -> None:
+        """把一行动作的执行明细交给应用层写「执行明细」日志（失败不影响执行）。
+
+        elapsed_ms = 这一行真正执行的耗时；waited_ms = 执行前等待（录制间隔/
+        手工延时）。两者分开记，才能看出“是等太久”还是“这一行本身卡住”。
+        """
+        callback = self.on_trace
+        if callback is None:
+            return
+        try:
+            callback({
+                "script": self._active_script_name,
+                "depth": int(depth),
+                "index": int(index),
+                "total": int(total),
+                "action": action,
+                "elapsed_ms": round(float(elapsed_ms), 1),
+                "waited_ms": round(float(waited_ms), 1),
+            })
+        except Exception:
+            pass
+
     def _run_action_sequence_body(self, actions: list[dict], hwnd: int | None,
                                   start_index: int,
                                   script_stack: set[str] | None,
@@ -890,17 +952,28 @@ class MacroPlayer:
             if action.get("action_id")
         }
         index = max(0, min(int(start_index), max(0, len(actions) - 1)))
+        total = len(actions)
         while index < len(actions):
             action = actions[index]
             try:
                 # 动作边界守卫评估：命中时内联执行处理段（可携带跳转/结束/推进语义）。
                 self._poll_guards()
+                # 等这一行的“执行前延时”：明细日志里单独记一段等待时长，
+                # 动作本身的耗时只算真正发出去的那一下。
                 default_delay = 1000 if action.get("type") == "image_match" else 0
+                wait_started = time.perf_counter()
                 if "recorded_at_ms" in action:
                     self._timeline.wait_until(self._timeline_offset_ms(action))
                 else:
                     self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
+                waited_ms = (time.perf_counter() - wait_started) * 1000
+                action_started = time.perf_counter()
                 jump_target = self._execute_action(action, hwnd, script_stack, depth)
+                # 一行动作一条明细：前面等多久 + 这一下真正花了多久。
+                self._trace_action(
+                    action, index, total, depth,
+                    (time.perf_counter() - action_started) * 1000, waited_ms,
+                )
                 if action.get("type") in {"delay", "script_ref", "image_match"}:
                     self._timeline.mark_boundary()
             except GuardJumpRequest as request:
@@ -1144,8 +1217,14 @@ class MacroPlayer:
     def _execute_action(self, action: dict, hwnd: int | None,
                         script_stack: set[str] | None = None,
                         depth: int = 0) -> tuple[str, str | int] | None:
-        # 每个输入动作前确保目标窗口在前台：焦点被抢后下一个动作自动抢回。
+        # 每个输入动作前确保目标窗口在前台：焦点被抢（其他软件弹窗、误点桌面、
+        # 执行小窗/通知闪现）后，接下来的输入会发给当时的前台窗口——只有鼠标
+        # 坐标点击还带坐标，按键则完全丢失（表现就是“某个键没反应”）。
+        # 目标窗口本来就在前台时不激活，避免多一次 SetForegroundWindow 让游戏
+        # 弹“点击游戏画面继续操作”。
         kind = action.get("type")
+        if kind in INPUT_ACTION_KINDS:
+            self._ensure_foreground_for_input(hwnd)
         if kind == "delay":
             # 手工延时同样跟随倍速，否则同一份脚本里“录制间隔加速、手工延时
             # 不加速”两种口径混在一起。
@@ -1604,14 +1683,15 @@ class MacroPlayer:
                     str(module_obj.get("name") or "").strip()
                     or Path(template).name or "模块"
                 )
-                self._log_event(
+                self._trace(
                     f"模块 {start_label} 进入前延时 {start_delay_ms} ms",
+                    module_detail=True,
                 )
                 self._wait(self._scaled_delay(start_delay_ms))
         if module_obj is not None and module_obj.get("recognize") == "none":
             module_label = str(module_obj.get("name") or "无需识图模块")
             self._status(f"无需识图，直接执行模块：{module_label}")
-            self._log_event(f"模块 {module_label} 无需识图，直接执行")
+            self._trace(f"模块 {module_label} 无需识图，直接执行", module_detail=True)
             self._wait(max(0, int(module_obj.get("delay_ms", 0))))
             result = self._after_module_success(
                 module_obj, {}, hwnd, script_stack, depth,
@@ -1658,13 +1738,15 @@ class MacroPlayer:
                 # “等待目标消失”与“阻塞等待出现”语义相反：看到目标才执行动作，
                 # 检测不到就算完成。日志若仍写“等待 …… 出现”，用户会以为模块
                 # 在等图片出现，实际它第一帧就判定“已消失”并直接成功了。
-                self._log_event(
+                self._trace(
                     f"{script_context}模块 {module_label} 是“等待目标消失”：看到 "
-                    f"{target_label} 就执行动作并重新识别，检测不到即完成当前模块。"
+                    f"{target_label} 就执行动作并重新识别，检测不到即完成当前模块。",
+                    module_detail=True,
                 )
             else:
-                self._log_event(
-                    f"{script_context}模块 {module_label} 开始阻塞等待 {target_label} 出现。"
+                self._trace(
+                    f"{script_context}模块 {module_label} 开始阻塞等待 {target_label} 出现。",
+                    module_detail=True,
                 )
         # OCR 单次约几百毫秒，文字和数字模式的轮询间隔不能太短。
         if text_module or number_module:
@@ -1778,7 +1860,7 @@ class MacroPlayer:
                         f"模块 {module_label} 读取「{raw_digits}」→ 数字 {number_value}；"
                         f"比较 {expected_number} · {'相等' if equal else '不相等'}"
                     )
-                    self._log_event(observation)
+                    self._trace(observation, module_detail=True)
                     self._status(observation)
                     return self._module_result_route(
                         action, module_obj, succeeded=equal,
@@ -1788,7 +1870,7 @@ class MacroPlayer:
                 observation = f"模块 {module_label}：指定区域内未读取到数字"
                 if observation != last_ocr_observation:
                     last_ocr_observation = observation
-                    self._log_event(observation)
+                    self._trace(observation, module_detail=True)
                 match = None
             elif text_module:
                 # OCR 引擎未就绪时等待（可中断）：F12 能中止，不会卡死在首次导入。
@@ -1809,7 +1891,8 @@ class MacroPlayer:
                 )
                 if observation != last_ocr_observation:
                     last_ocr_observation = observation
-                    self._log_event(observation)
+                    self._trace(observation, module_detail=True)
+                    self._status(observation)
                 if wait_target_absent and text_present:
                     if not waiting_absent_logged:
                         waiting_absent_logged = True
@@ -1950,9 +2033,10 @@ class MacroPlayer:
                     if text_module else
                     str(module_obj.get("name") or Path(template).name or "模块")
                 )
-                self._log_event(
+                self._trace(
                     f"模块 {timeout_subject} 阻塞等待达到 {timeout_ms} ms，"
                     "按失败分支处理（默认跳过当前脚本行）",
+                    module_detail=True,
                 )
                 if action.get("show_result_notice") and self.on_notice:
                     self.on_notice(
@@ -1971,9 +2055,10 @@ class MacroPlayer:
                     if text_module else str(module_obj.get("name") or "").strip()
                     or Path(template).name
                 )
-                self._log_event(
+                self._trace(
                     f"模块 {timeout_subject} 连续 {module_timeout_ms} ms 未识别到，"
                     f"执行超时代码段（{len(segment)} 个动作）",
+                    module_detail=True,
                 )
                 if depth >= MAX_SCRIPT_REF_DEPTH:
                     raise RuntimeError("模块超时代码段嵌套过深，已停止执行")
@@ -2118,7 +2203,8 @@ class MacroPlayer:
             return
         if depth >= MAX_SCRIPT_REF_DEPTH:
             raise RuntimeError("模块失败代码段嵌套过深，已停止执行")
-        self._log_event(f"模块失败，执行脚本行失败代码段（{len(segment)} 个动作）")
+        self._trace(f"模块失败，执行脚本行失败代码段（{len(segment)} 个动作）",
+                    module_detail=True)
         self._run_action_sequence(
             segment, hwnd, script_stack=script_stack, depth=depth + 1,
         )
@@ -2134,7 +2220,9 @@ class MacroPlayer:
             or Path(str(module_obj.get("template", ""))).name or "模块"
         if not succeeded:
             self._run_failure_segment(action, hwnd, script_stack, depth)
-        self._log_event(f"模块 {module_label} {result_label or f'执行结果：{result_text}'}")
+        # 模块结果属于「这一行脚本做了什么」：只进执行明细，不刷事件日志。
+        self._trace(f"模块 {module_label} {result_label or f'执行结果：{result_text}'}",
+                    module_detail=True)
         status_result = result_label or f"执行{result_text}"
         behavior_key = "on_found" if succeeded else "on_timeout"
         target_key = "found_jump_action_id" if succeeded else "timeout_jump_action_id"
@@ -2192,7 +2280,8 @@ class MacroPlayer:
             )
             if observation != last_ocr_observation:
                 last_ocr_observation = observation
-                self._log_event(observation)
+                self._trace(observation, module_detail=True)
+                self._status(observation)
             if matched:
                 if expected:
                     self._status(f"识别文字命中：{recognized[:40]}")
@@ -2270,8 +2359,9 @@ class MacroPlayer:
                 left, right = pair
                 equal = left == right
                 result_name = "相等" if equal else "不相等"
-                self._log_event(
+                self._trace(
                     f"识别数字比较：读取「{recognized}」→ {left} {separator} {right}，结果：{result_name}",
+                    module_detail=True,
                 )
                 self._status(f"识别数字比较：{left} {separator} {right} · {result_name}")
                 prefix = "equal" if equal else "not_equal"
@@ -2597,8 +2687,9 @@ class MacroPlayer:
         row_offsets = list(range(0, list_height - max_child_bottom + 1, row_height))
         if not row_offsets:
             raise RuntimeError("列表逐行条件点击的首行区域超出列表有效扫描范围")
-        self._log_event(
+        self._trace(
             f"列表逐行点击：使用配置行高 {row_height} 像素，共扫描 {len(row_offsets)} 行",
+            module_detail=True,
         )
         try:
             click_count = int(action.get("click_count", 1))
@@ -2626,8 +2717,9 @@ class MacroPlayer:
                 zip(predicted_target_offsets, corrected_target_offsets), start=1,
             ):
                 if predicted != corrected:
-                    self._log_event(
+                    self._trace(
                         f"列表逐行点击：第{index}行位置局部校正 {corrected - predicted:+d} 像素",
+                        module_detail=True,
                     )
             try:
                 for row_index, row_offset in enumerate(row_offsets):
@@ -2656,8 +2748,9 @@ class MacroPlayer:
                         or y + height > target_list_y + target_list_height
                         for x, y, width, height in translated_regions.values()
                     ):
-                        self._log_event(
+                        self._trace(
                             f"列表逐行点击：第{row_index + 1}行局部校正后超出列表边界，已跳过",
+                            module_detail=True,
                         )
                         continue
 
@@ -2676,8 +2769,9 @@ class MacroPlayer:
                         click_x + click_width // 2, click_y + click_height // 2,
                         str(action.get("button", "left")), click_count, hwnd,
                     )
-                    self._log_event(
+                    self._trace(
                         f"列表逐行点击：第{row_index + 1}行命中，已连续点击 {click_count} 次",
+                        module_detail=True,
                     )
                     return self._row_list_result_route(
                         action, succeeded=True, hwnd=hwnd,
@@ -2686,12 +2780,13 @@ class MacroPlayer:
             finally:
                 self._row_list_active_snapshot = None
             if str(action.get("no_match_action", "finish")) != "retry":
-                self._log_event("列表逐行点击：本轮没有满足条件的行，结束扫描")
+                self._trace("列表逐行点击：本轮没有满足条件的行，结束扫描", module_detail=True)
                 return self._row_list_result_route(
                     action, succeeded=False, hwnd=hwnd,
                     script_stack=script_stack, depth=depth,
                 )
-            self._log_event("列表逐行点击：本轮没有满足条件的行，等待后从顶部重新扫描")
+            self._trace("列表逐行点击：本轮没有满足条件的行，等待后从顶部重新扫描",
+                        module_detail=True)
             self._wait(max(0, int(action.get("retry_interval_ms", 500))))
 
     @staticmethod
@@ -2737,9 +2832,10 @@ class MacroPlayer:
                 )
             matched = match is not None
             module_label = str(module.get("name") or "").strip() or module_key or "未设置模块"
-            self._log_event(
+            self._trace(
                 f"{label} 图片识别：{module_label}；"
                 f"{'命中' if matched else '未命中'}",
+                module_detail=True,
             )
             return matched
         if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
@@ -2769,7 +2865,8 @@ class MacroPlayer:
                 ).apply(gray)
                 enhanced = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
                 recognized, matches = recognize_image_with_boxes(enhanced, crop_origin)
-                self._log_event(f"{label} OCR：首次未能解析，已使用同帧图像增强重试")
+                self._trace(f"{label} OCR：首次未能解析，已使用同帧图像增强重试",
+                            module_detail=True)
             if diagnostic_cache is not None:
                 # 诊断期间留存本轮 OCR 结果，供结果窗口逐格显示识别文字。
                 diagnostic_cache[tuple(region)] = (recognized, matches)
@@ -2779,7 +2876,7 @@ class MacroPlayer:
             mode = str(condition.get("match_mode", "contains"))
             matched = find_expected_match(matches, expected, mode) is not None \
                 or matches_expected(recognized, expected, mode)
-            self._log_event(
+            self._trace(
                 f"{label} OCR：识别成「{recognized_text}」；"
                 f"期望「{expected.strip() or '任意文字'}」；"
                 f"{'命中' if matched else '未命中'}",
@@ -2792,18 +2889,20 @@ class MacroPlayer:
             separator = str(condition.get("separator", "/"))
             pair = parse_ocr_number_pair(recognized, separator)
             if pair is None:
-                self._log_event(
+                self._trace(
                     f"{label} OCR：识别成「{recognized_text}」；"
                     f"无法按分隔符「{separator}」解析数字；未命中",
+                    module_detail=True,
                 )
                 return False
             left, right = pair
             matched = left == right if relation == "equal" else left != right
             relation_text = "相等" if relation == "equal" else "不相等"
-            self._log_event(
+            self._trace(
                 f"{label} OCR：识别成「{recognized_text}」；"
                 f"解析为 {left}{separator}{right}，要求{relation_text}；"
                 f"{'命中' if matched else '未命中'}",
+                module_detail=True,
             )
             return matched
         raise RuntimeError(f"列表逐行条件点击存在未知条件类型：{kind}")
@@ -2897,9 +2996,10 @@ class MacroPlayer:
                 x += int(obj.get("ocr_offset_right", 0)) - int(obj.get("ocr_offset_left", 0))
                 y += int(obj.get("ocr_offset_down", 0)) - int(obj.get("ocr_offset_up", 0))
             self._click_module_point(x, y, button, click_count, hwnd)
-            self._log_event(
+            self._trace(
                 f"模块 {module_label} 已点击 ({x}, {y})"
-                + (f" × {click_count}" if click_count > 1 else "")
+                + (f" × {click_count}" if click_count > 1 else ""),
+                module_detail=True,
             )
         elif after_action == "second_match":
             result = self._execute_second_match(obj, hwnd, match)
@@ -2911,9 +3011,10 @@ class MacroPlayer:
             if depth >= MAX_SCRIPT_REF_DEPTH:
                 raise RuntimeError("模块代码段嵌套过深，已停止执行")
             if segment:
-                self._log_event(
+                self._trace(
                     f"模块 {module_label} 主动作完成，执行附加代码段"
                     f"（{len(segment)} 个动作）",
+                    module_detail=True,
                 )
                 self._run_action_sequence(segment, hwnd,
                                           script_stack=script_stack, depth=depth + 1)

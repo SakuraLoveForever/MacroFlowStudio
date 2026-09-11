@@ -350,15 +350,20 @@ def attach_autohide_scrollbar(tree, scrollbar) -> None:
 
     ttk 没有自动隐藏：内容不满一屏时滚动条仍会显示成一条空槽，看起来像“没
     占满却先上了滚动条”。这里按 tree 的可见范围自动显隐。
+
+    放进布局的布局管理器要现问现用：调用方是「先 attach、再 grid」，attach
+    时滚动条还没被任何布局管理器接管（winfo_manager() 返回空串），照当时的
+    值记下来就会把「显示」走成 pack —— 在 grid 管理的外壳里 Tk 直接报
+    "cannot use geometry manager pack inside ... grid is already managing its
+    content windows"，滚动条再也显示不出来（打开长脚本也看不到、拖不动）。
     """
-    manager = scrollbar.winfo_manager() or "pack"
-    state = {"visible": True}
+    state = {"visible": None}
 
     def set_visible(visible: bool) -> None:
         if visible == state["visible"]:
             return
         state["visible"] = visible
-        if manager == "grid":
+        if (scrollbar.winfo_manager() or "grid") == "grid":
             if visible:
                 scrollbar.grid()
             else:
@@ -459,13 +464,26 @@ def coordinate_scale_summary(source: dict | None, current: dict | None) -> str:
     return f"坐标缩放  {source_size} → {current_size} {suffix}"
 
 
-MODULE_AFTER_ACTION_LABELS = {
-    "click_match": "点击识别区域",
+MODULE_CLICK_LABELS = {
+    "click_match": "点击识别位置",
     "click_custom": "点击自定义位置",
-    "continue": "成功后继续",
     "second_match": "二次识别后点击",
-    "run_actions": "成功后执行代码段",
 }
+# 参数列里的识别区域：宽度为 0 视为未设置；不写坐标，只写区域类型，
+# 具体框选数字在编辑窗口里。与「触发条件」摘要（"区域：模板"）同一套措辞。
+REGION_LABELS = {
+    "screen": "全屏", "window": "绑定窗口", "template": "模板区域",
+}
+
+
+def short_region_text(region, fallback: str = "全屏") -> str:
+    if isinstance(region, (list, tuple)) and len(region) == 4:
+        try:
+            width = int(region[2])
+        except (TypeError, ValueError):
+            width = 0
+        return "自定义区域" if width > 0 else fallback
+    return fallback
 
 
 def _module_row_result_summary(action: dict, action_rows: dict[str, int] | None,
@@ -520,7 +538,6 @@ def _module_ref_summary(action: dict, label: str,
         "script_global": "脚本全局模块",
     }.get(obj.get("category"), label)
     after = str(obj.get("after_action", "click_match"))
-    after_label = MODULE_AFTER_ACTION_LABELS.get(after, after)
     direct_mode = obj.get("recognize") == "none"
     number_mode = obj.get("recognize") == "number"
     blocking = (
@@ -530,36 +547,26 @@ def _module_ref_summary(action: dict, label: str,
         if obj.get("blocking") and action.get("blocking_timeout_enabled", False) else
         "阻塞直到出现" if obj.get("blocking") else "等待超时后继续"
     )
-    delay_a = int(obj.get("delay_ms", 0))
-    region = obj.get("region", [0, 0, 0, 0])
-    region_text = (
-        ",".join(map(str, region))
-        if len(region) == 4 and region[2] > 0 else "全屏"
-    )
+    click_text = ""
+    if not number_mode:
+        if after in MODULE_CLICK_LABELS:
+            click_text = MODULE_CLICK_LABELS[after]
+            if after != "second_match":
+                click_text += f" × {max(1, int(obj.get('click_count', 1)))}"
+    # 参数列只写核心功能：区域坐标、阈值、延时、代码段项数这些都在「编辑模块引用」
+    # 窗口里，摘要里重复一遍只会把关键信息（模块名、点击方式、跳转目标）埋掉。
     if number_mode:
-        detail = f"引用{category}模块 {name} · 读取数字 · 区域 {region_text} · {blocking}"
+        detail = f"引用{category}模块 {name} · 读取数字"
     else:
-        detail = (
-            f"引用{category}模块 {name} · "
-            + ("无需识图 · " if direct_mode else f"区域 {region_text} · {blocking} · ")
-            + f"延时 {delay_a} ms · 动作 {after_label}"
-        )
-    if not number_mode and after in ("click_match", "click_custom", "second_match"):
-        detail += f" × {max(1, int(obj.get('click_count', 1)))} 下"
-    if obj.get("category") in ("workflow_global", "script_global"):
-        detail += (
-            f" · 持续超过 {int(obj.get('hold_ms', 1000))} ms"
-            if obj.get("hold_enabled", False) else " · 识别到立即执行"
-        )
-    if int(obj.get("start_delay_ms", 0) or 0) > 0:
-        detail += f" · 进入前延时 {int(obj.get('start_delay_ms', 0))} ms"
-    if not number_mode and (bool(obj.get("run_code_after_action", False)) or after == "run_actions"):
-        detail += f" · 再执行代码段 {len(obj.get('on_success_actions') or [])} 项"
-    if bool(obj.get("run_code_on_timeout", False)):
-        detail += (
-            f" · 未识别 {int(obj.get('not_found_timeout_ms', DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS))} ms 后"
-            f"执行代码段 {len(obj.get('on_timeout_actions') or [])} 项"
-        )
+        detail = f"引用{category}模块 {name}"
+        if direct_mode:
+            detail += " · 无需识图"
+        elif click_text:
+            detail += f" · {click_text}"
+        detail += f" · {blocking}" if not direct_mode else ""
+    if obj.get("category") in ("workflow_global", "script_global") \
+            and obj.get("hold_enabled", False):
+        detail += f" · 持续超过 {int(obj.get('hold_ms', 1000))} ms"
     if kind == "global_detect" and action.get("module_ref"):
         # 引用模块行的“触发后跳转”沿用旧引擎语义：配置了跳转目标即生效
         # （该行没有独立开关），未配置则自然无跳转。
@@ -578,7 +585,8 @@ def _module_ref_summary(action: dict, label: str,
                 detail += f" · 触发后跳转到第 {max(1, int(action.get('jump_row', 1)))} 行"
     if kind == "image_match":
         detail += f" · {_module_row_result_summary(action, action_rows, number_mode)}"
-    return action_kind_label(kind, label), detail, f"{int(action.get('delay_ms', 0))} ms"
+    delay = int(action.get("delay_ms", 0))
+    return action_kind_label(kind, label), detail, f"{delay} ms" if delay else ""
 
 
 def key_action_matches(
@@ -751,13 +759,12 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
     if kind == "text_ocr":
         expected = str(action.get("expected_text", "")).strip() or "任意文字"
         match_text = "等于" if action.get("match_mode", "contains") == "equals" else "包含"
-        region_text = (
-            ",".join(str(int(part)) for part in action.get("region", []))
-            if len(action.get("region", [])) == 4
-            else {"screen": "全屏", "window": "绑定窗口"}.get(
-                str(action.get("region_mode", "screen")), "全屏"
+        if len(action.get("region", [])) == 4:
+            region_text = short_region_text(action.get("region"))
+        else:
+            region_text = REGION_LABELS.get(
+                str(action.get("region_mode", "screen")), "全屏",
             )
-        )
         timeout_ms = int(action.get("timeout_ms", 3000))
         timeout_label = "只识别一次" if timeout_ms <= 0 else f"等待超时 {timeout_ms} ms"
         if action.get("on_found", "continue") == "jump":
@@ -800,8 +807,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         )
     if kind == "ocr_compare":
         separator = str(action.get("separator", "/"))
-        region = ",".join(str(int(part)) for part in action.get("region", []))
-        click_region = ",".join(str(int(part)) for part in action.get("click_region", []))
+        region_text = short_region_text(action.get("region"))
+        click_region_text = short_region_text(action.get("click_region"), "识别位置")
         equal_action = str(action.get("equal_action", "continue"))
         not_equal_action = str(action.get("not_equal_action", "continue"))
         equal_text = (
@@ -828,7 +835,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         timeout_text = "只识别一次" if timeout_ms <= 0 else f"超时 {timeout_ms} ms"
         return (
             action_kind_label(kind, "数字比较"),
-            f"识别区域 {region} · 分隔符 {separator} · 点击区域 {click_region} · "
+            f"识别区域 {region_text} · 分隔符 {separator} · 点击 {click_region_text} · "
             f"相等：{equal_text} · 不相等：{not_equal_text} · {timeout_text}",
             delay,
         )
@@ -840,23 +847,21 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
                 condition_text.append(f"条件{index}未启用")
                 continue
             condition_kind = str(condition.get("type", ""))
-            region = ",".join(str(int(part)) for part in condition.get("region", []))
             if condition_kind == "image":
                 detail = Path(str(condition.get("template", ""))).name or "未设置模板"
             elif condition_kind == "ocr":
                 if str(condition.get("ocr_mode", "text")) == "number":
-                    detail = f"数字{condition.get('separator', '/')}数字·{condition.get('relation', 'equal')}"
+                    relation = "相等" if condition.get("relation", "equal") == "equal" else "不相等"
+                    detail = f"数字比数字（{relation}）"
                 else:
                     detail = f"文字:{str(condition.get('expected_text', '')) or '任意文字'}"
             else:
                 detail = "未知条件"
-            condition_text.append(
-                f"条件{index}{type_labels.get(condition_kind, condition_kind)}:{detail} [{region}]"
-            )
-        click_region = ",".join(str(int(part)) for part in action.get("click_region", []))
+            condition_text.append(f"条件{index}{type_labels.get(condition_kind, condition_kind)}:{detail}")
         return (
             action_kind_label(kind, "多条件识图"),
-            f"{' · '.join(condition_text) or '未设置条件'} · 点击区域 {click_region} · "
+            f"{' · '.join(condition_text) or '未设置条件'} · "
+            f"点击 {short_region_text(action.get('click_region'), '识别位置')} · "
             f"连续点击 {int(action.get('click_count', 1))} 次 · 超时 {int(action.get('timeout_ms', 3000))} ms",
             delay,
         )
@@ -901,10 +906,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         if action.get("module_ref"):
             return _module_ref_summary(action, "脚本全局模块", action_rows)
         template_name = Path(str(action.get("template", ""))).name or "未设置"
-        region_text = (
-            ",".join(str(int(part)) for part in action.get("region", []))
-            if len(action.get("region", [])) == 4 else "全屏"
-        )
+        region_text = short_region_text(action.get("region"))
         jump_row = action.get("jump_row")
         if jump_row or action.get("jump_action_id"):
             # 普通脚本内嵌全局模块行：跳转目标是脚本里的一行对象（按动作唯一标识引用）。
@@ -921,21 +923,18 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
                     jump_text = "触发后跳转目标已删除"
                 else:
                     jump_text = f"触发后跳转到第 {max(1, int(jump_row or 1))} 行"
-            detail = (
-                f"脚本全局模块 {template_name} · 区域 {region_text} · 持续超过 "
-                f"{int(action.get('hold_ms', 1000))} ms · {jump_text} · "
-                f"阈值 {float(action.get('threshold', .85)):.0%}"
-            )
+            # 参数列只写核心：模板、持续时长、跳转目标；区域/阈值/间隔在编辑窗口。
+            hold_text = f"持续超过 {int(action.get('hold_ms', 1000))} ms"
+            detail = f"脚本全局模块 {template_name} · {hold_text} · {jump_text}"
             return action_kind_label(kind, "脚本全局模块"), detail, delay
         click_text = (
             ",".join(str(int(part)) for part in action.get("click_point", []))
             if len(action.get("click_point", [])) == 2 else "未设置"
         )
+        hold_text = f"持续超过 {int(action.get('hold_ms', 1000))} ms"
         detail = (
-            f"全局检测 {template_name} · 区域 {region_text} · 持续超过 "
-            f"{int(action.get('hold_ms', 1000))} ms · 点击 ({click_text}) · "
-            f"点击后 {int(action.get('restart_delay_ms', DEFAULT_GLOBAL_CLICK_DELAY_MS))} ms 继续原工作流 · "
-            f"阈值 {float(action.get('threshold', .85)):.0%}"
+            f"全局检测 {template_name} · 区域 {region_text} · {hold_text} · 点击 ({click_text}) · "
+            f"点击后 {int(action.get('restart_delay_ms', DEFAULT_GLOBAL_CLICK_DELAY_MS))} ms 继续原工作流"
         )
         return action_kind_label(kind, "全局"), detail, delay
     if kind == "notice":
@@ -1017,6 +1016,31 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
     return action_kind_label(kind, kind), json.dumps(action, ensure_ascii=False)[:100], delay
 
 
+# 两个日志文件各写一行表头，打开就知道该看哪个。
+EVENT_LOG_HEADER = (
+    "# 事件日志：脚本/工作流边界、识别命中、输入与窗口状态变化、异常。\n"
+    "# 30 秒内完全相同的消息合并成一行并标注次数；逐行执行细节见同目录 "
+    "MacroFlow_trace_*.log。\n"
+)
+TRACE_LOG_HEADER = (
+    "# 执行明细：先写一行 ▶ 层级标题（工作流第几步 · 哪个脚本 / 代码段 · 第几次重复），\n"
+    "# 下面每执行一行脚本动作写一条：时间 | 行号 | 动作参数 | 等待/耗时。\n"
+    "# 模块/识别内部细节以 “└ ” 开头，只在实际发生时写；等待≥100ms 或耗时≥50ms 才写时间。\n"
+)
+
+
+def action_detail(action: dict) -> str:
+    """执行明细日志里的一行动作描述（与动作列表“参数”列同一套措辞）。"""
+    try:
+        detail = str(action_summary(action)[1] or "").strip()
+    except Exception:
+        detail = ""
+    if not detail:
+        return str(action.get("type", "未知动作"))
+    # 明细日志一行一条：多行文本动作会把换行摊成多行，这里折成单行。
+    return " ".join(detail.replace("\n", "↵").split())
+
+
 def recorded_action_description(action: dict) -> str:
     """Short, concrete wording for the live recording panel."""
     kind = action.get("type", "unknown")
@@ -1056,10 +1080,22 @@ class MacroFlowApp:
         self.logs_dir = BASE_DIR / "logs"
         session_logs_dir = self.logs_dir / started_at.strftime("%Y-%m-%d")
         session_logs_dir.mkdir(parents=True, exist_ok=True)
-        self.session_log_path = session_logs_dir / (
-            f"MacroFlow_{started_at.strftime('%H-%M-%S-%f')[:-3]}_{os.getpid()}.log"
-        )
+        stamp = f"{started_at.strftime('%H-%M-%S-%f')[:-3]}_{os.getpid()}"
+        # 两个分开的日志：
+        #   MacroFlow_*.log        事件日志：状态变化/边界/异常（重复行合并）
+        #   MacroFlow_trace_*.log  执行明细：每一次脚本动作执行一行
+        self.session_log_path = session_logs_dir / f"MacroFlow_{stamp}.log"
+        self.trace_log_path = session_logs_dir / f"MacroFlow_trace_{stamp}.log"
         self.log_file_lock = threading.Lock()
+        self.trace_file_lock = threading.Lock()
+        # 当前执行位置（工作流第几步 / 哪个脚本 / 第几次重复）：两级日志都靠它
+        # 标注上下文，见 _set_trace_context / _with_event_context。
+        self._trace_context_state: dict = {}
+        # 事件日志去重：长时间重复的同一句话只留一行 + 次数。
+        self._log_dedup_window_ms = 30000
+        self._log_dedup_text = ""
+        self._log_dedup_count = 0
+        self._log_dedup_since = 0.0
         self.root = ttk.Window(themename="darkly")
         # DPI 缩放必须在建界面之前算好：所有像素常量都按它换算。
         set_ui_scale(self.root)
@@ -1171,6 +1207,8 @@ class MacroFlowApp:
             on_global_detect_request=self._activate_global_detect_from_config,
             on_restart_workflow_request=self._on_restart_workflow_request,
             on_log=lambda text: self._ui(self._log, text),
+            on_trace=self._on_player_trace,
+            on_trace_line=self._trace_event,
             on_script_scope_enter=self._enter_script_global_scope,
             on_script_scope_exit=self._exit_script_global_scope,
             on_target_window_request=lambda: self._bound_hwnd(update_display=False),
@@ -1187,6 +1225,8 @@ class MacroFlowApp:
         self.hotkey_player = MacroPlayer(
             on_notice=self._player_notice_callback,
             on_log=lambda text: self._ui(self._log, f"[快捷键] {text}"),
+            on_trace=self._on_player_trace,
+            on_trace_line=lambda text: self._trace_event(f"[快捷键] {text}"),
             on_ocr_engine_wait=self._hotkey_wait_ocr_ready,
         )
         self.workflow_stop = threading.Event()
@@ -1514,6 +1554,10 @@ class MacroFlowApp:
         if notice_position not in FLOATING_NOTICE_POSITIONS:
             notice_position = "顶部居中"
         self.floating_notice_position_var = tk.StringVar(value=notice_position)
+        close_action = str(self.app_settings.get("close_action", "exit"))
+        self.close_action_var = tk.StringVar(
+            value=close_action if close_action in {"exit", "tray"} else "exit",
+        )
         self.timed_backup_enabled_var = tk.BooleanVar(
             value=bool(self.app_settings.get("timed_backup_enabled", False)),
         )
@@ -1651,6 +1695,8 @@ class MacroFlowApp:
             "foreground": COLOR_TEXT, "activeforeground": "#FFFFFF", "selectcolor": COLOR_SURFACE_ALT,
             "highlightthickness": 0, "borderwidth": 0, "font": (FONT_FAMILY, FONT_BODY),
         }
+        radio_style = dict(check_style)
+        radio_style.pop("anchor")
         tk.Checkbutton(option_row, text="快捷键提示音", variable=self.sound_enabled_var,
                        command=self._settings_changed, **check_style).pack(anchor="w", pady=px(1))
         tk.Checkbutton(option_row, text="录制时显示悬浮小窗", variable=self.mini_window_enabled_var,
@@ -1665,7 +1711,17 @@ class MacroFlowApp:
         ttk.Label(option_row, text="点击关闭按钮时", style="Section.TLabel").pack(anchor="w", pady=pad(7, 2))
         close_row = ttk.Frame(option_row, style="Sidebar.TFrame")
         close_row.pack(fill="x")
-        ttk.Label(close_row, text="保存并完全退出程序", style="Sidebar.TLabel").pack(side="left")
+        for value, label in (("exit", "直接退出"), ("tray", "隐藏到托盘")):
+            tk.Radiobutton(
+                close_row, text=label, value=value, variable=self.close_action_var,
+                command=self._settings_changed, **radio_style,
+            ).pack(side="left", padx=pad(0, 10))
+        ttk.Label(
+            option_row,
+            text="“直接退出”＝关掉窗口就彻底结束进程（无后台）；“隐藏到托盘”＝窗口收起、"
+                 "快捷键继续生效，右键托盘图标选“退出”才结束。",
+            wraplength=px(300), style="SidebarMuted.TLabel",
+        ).pack(anchor="w", pady=pad(4, 0))
 
         record_mode_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         record_mode_title.pack(fill="x", pady=pad(0, 5))
@@ -2416,22 +2472,187 @@ class MacroFlowApp:
         self.workflow_tree.bind("<Control-a>", self._select_all_workflow_steps)
         self.workflow_tree.bind("<Button-3>", self._show_workflow_context_menu, add="+")
 
+    # 界面日志视图的字符上限：超出后只保留最后一段（磁盘文件始终完整）。
+    LOG_VIEW_LIMIT = 200_000
+
     def _build_log_tab(self):
+        """运行日志标签：与磁盘上两个日志文件一致的两个视图。
+
+        事件日志＝状态变化（重复消息已合并）；执行明细＝每一行脚本动作。
+        两个视图各自独立缓冲/清空，都在主线程写入。
+        """
         frame = ttk.Frame(self.log_tab, padding=px(16), style="Workspace.TFrame")
         frame.pack(fill="both", expand=True)
         top = ttk.Frame(frame)
         top.pack(fill="x", pady=pad(0, 8))
-        ttk.Label(top, text="运行与错误记录", style="PageTitle.TLabel").pack(side="left")
-        ttk.Button(top, text="清空", command=lambda: self.log_text.delete("1.0", "end"), bootstyle="secondary-outline").pack(side="right")
+        ttk.Label(top, text="运行日志", style="PageTitle.TLabel").pack(side="left")
+        self.log_view_var = tk.StringVar(value="event")
+        self.log_view_buttons: dict[str, tk.Button] = {}
+        for value, label in (("event", "事件日志"), ("trace", "执行明细")):
+            button = tk.Button(
+                top, text=label, command=lambda target=value: self._show_log_view(target),
+                relief="flat", borderwidth=0, padx=px(10), pady=px(3), cursor="hand2",
+                font=(FONT_FAMILY, FONT_BODY),
+            )
+            button.pack(side="left", padx=pad(8, 0))
+            self.log_view_buttons[value] = button
         ttk.Button(
             top, text="打开日志目录", command=lambda: self.open_folder(self.logs_dir),
             bootstyle="secondary-outline",
         ).pack(side="right", padx=pad(0, 6))
+        ttk.Button(top, text="清空", command=self._clear_active_log_view,
+                   bootstyle="secondary-outline").pack(side="right")
+        hint = ttk.Frame(frame)
+        hint.pack(fill="x")
+        self.log_view_hint_var = tk.StringVar(value="")
+        ttk.Label(hint, textvariable=self.log_view_hint_var, style="Muted.TLabel").pack(
+            side="left", pady=pad(0, 6),
+        )
+        # 两个视图共用一个文本框：切换时按当前标签重放内容。
         self.log_text = tk.Text(frame, wrap="word", state="disabled", background=COLOR_SURFACE,
                                 foreground=COLOR_TEXT, insertbackground=COLOR_TEXT,
                                 selectbackground="#244D78", relief="flat", bd=0,
                                 font=(FONT_MONO, FONT_BODY), padx=px(16), pady=px(14))
         self.log_text.pack(fill="both", expand=True)
+        self._trace_view_pending: list[str] = []
+        self._trace_view_job = None
+        self._event_view_pending: list[str] = []
+        self._event_view_job = None
+        # 两个视图各自的内容缓冲：切换标签/清空都只动界面，磁盘日志不受影响。
+        self._trace_view_buffer: list[str] = []
+        self._event_view_buffer: list[str] = []
+        self._sync_log_view_buttons()
+
+    def _show_log_view(self, view: str) -> None:
+        self.log_view_var.set("trace" if view == "trace" else "event")
+        self._sync_log_view_buttons()
+        self._render_log_view()
+
+    def _active_log_view(self) -> str:
+        return getattr(self, "log_view_var", None) and self.log_view_var.get() or "event"
+
+    def _sync_log_view_buttons(self) -> None:
+        active = self._active_log_view()
+        for value, button in getattr(self, "log_view_buttons", {}).items():
+            if value == active:
+                button.configure(background=COLOR_BLUE, foreground="#FFFFFF",
+                                 activebackground=COLOR_BLUE, activeforeground="#FFFFFF")
+            else:
+                button.configure(background=COLOR_SURFACE, foreground=COLOR_TEXT,
+                                 activebackground=COLOR_HOVER, activeforeground=COLOR_TEXT)
+        hint = getattr(self, "log_view_hint_var", None)
+        if hint is None:
+            return
+        if active == "trace":
+            hint.set("执行明细：每执行一行脚本动作一条（行号 · 动作 · 等待/耗时）；文件 MacroFlow_trace_*.log")
+        else:
+            hint.set("事件日志：状态变化与异常，30 秒内重复的同一句已合并；文件 MacroFlow_*.log")
+
+    def _locked_log_text(self):
+        """两个视图共用的 Text：未建好界面时返回 None（测试夹具直接跳过）。"""
+        widget = getattr(self, "log_text", None)
+        if widget is None:
+            return None
+        try:
+            widget.configure(state="normal")
+        except tk.TclError:
+            return None
+        return widget
+
+    def _log_view_buffer(self, view: str) -> list[str]:
+        attr = "_trace_view_buffer" if view == "trace" else "_event_view_buffer"
+        buffer = getattr(self, attr, None)
+        if buffer is None:
+            buffer = []
+            setattr(self, attr, buffer)
+        return buffer
+
+    def _log_view_text(self, view: str) -> str:
+        return "".join(self._log_view_buffer(view))
+
+    def _render_log_view(self) -> None:
+        """按当前缓冲重画当前视图（切换标签、清空、超上限裁剪时用）。"""
+        widget = self._locked_log_text()
+        if widget is None:
+            return
+        try:
+            widget.delete("1.0", "end")
+            text = self._log_view_text(self._active_log_view())
+            if text:
+                widget.insert("end", text)
+            widget.see("end")
+        finally:
+            widget.configure(state="disabled")
+
+    def _insert_log_view(self, text: str, view: str) -> None:
+        """只在当前视图就是这一路日志时直接追加（否则等切过去时重画）。"""
+        if not text:
+            return
+        widget = self._locked_log_text()
+        if widget is None:
+            return
+        try:
+            if self._active_log_view() == view:
+                widget.insert("end", text)
+                widget.see("end")
+        finally:
+            widget.configure(state="disabled")
+
+    def _clear_active_log_view(self) -> None:
+        """清空当前视图（磁盘日志文件保留）。"""
+        self._log_view_buffer(self._active_log_view()).clear()
+        self._render_log_view()
+
+    def _queue_log_view_line(self, text: str, view: str) -> None:
+        """把一行日志排队到界面对应视图（后台线程安全）。"""
+        if getattr(self, "log_text", None) is None or not text:
+            return  # 测试夹具没有界面控件
+        # 缓冲按需创建：没有走完整界面初始化的测试夹具也不该在这里炸。
+        pending = self._log_view_pending(view)
+        pending.append(text)
+        job_attr = "_trace_view_job" if view == "trace" else "_event_view_job"
+        if getattr(self, job_attr, None) is not None:
+            return
+        root = getattr(self, "root", None)
+        if root is None:
+            # 没有事件循环（测试夹具直接调 _log）：立即刷出，行为与原来一致。
+            self._flush_log_view(view)
+            return
+        job = root.after(120, self._flush_log_view, view)
+        setattr(self, job_attr, job)
+
+    def _log_view_pending(self, view: str) -> list[str]:
+        attr = "_trace_view_pending" if view == "trace" else "_event_view_pending"
+        pending = getattr(self, attr, None)
+        if pending is None:
+            pending = []
+            setattr(self, attr, pending)
+        return pending
+
+    def _flush_log_view(self, view: str) -> None:
+        setattr(self, "_trace_view_job" if view == "trace" else "_event_view_job", None)
+        pending = self._log_view_pending(view)
+        if not pending:
+            return
+        text = "".join(pending)
+        pending.clear()
+        buffer = self._log_view_buffer(view)
+        buffer.append(text)
+        # 挂机跑几小时会有几十万行：只保留最后一段，避免界面被日志拖垮
+        # （磁盘上的日志文件始终是完整的）。
+        dropped = 0
+        total = sum(len(part) for part in buffer)
+        while total > self.LOG_VIEW_LIMIT and len(buffer) > 1:
+            dropped += len(buffer[0])
+            total -= len(buffer.pop(0))
+        try:
+            if dropped:
+                self._render_log_view()
+            else:
+                self._insert_log_view(text, view)
+        except tk.TclError:
+            # 界面正在销毁（退出流程）：丢掉这一批即可，文件日志已经落盘。
+            pass
 
     # General helpers
     def _ui(self, callback, *args):
@@ -2448,22 +2669,23 @@ class MacroFlowApp:
         if getattr(callback, "__self__", None) is self \
                 and getattr(callback, "__func__", None) is MacroFlowApp._log \
                 and args:
-            line = self._format_log_line(str(args[0]))
-            self._write_log_line(line)
-            callback = self._append_log_line_to_ui
-            args = (line,)
+            # 事件日志是「外层进度」：每条都带上当前工作流行与脚本，便于定位
+            # 「软件执行到哪了」；逐行细节走执行明细（见 _trace_event）。
+            message = self._with_event_context(str(args[0]))
+            line = self._format_log_line(message)
+            # 去重按“消息本身”判定：行首的鼠标坐标每次都变，按整行判定等于不去重。
+            display = self._write_log_line(line, message)
+            if display:
+                self._queue_log_view_line(display, "event")
+            return
         key = "status" if getattr(callback, "__func__", None) is MacroFlowApp._set_status else None
-        batch_key = (
-            "log" if getattr(callback, "__func__", None) is MacroFlowApp._append_log_line_to_ui
-            else None
-        )
         urgent = bool(key == "status" and args and str(args[0]).lower() in {"错误", "停止"})
         ui_queue = getattr(self, "ui_queue", None)
         if ui_queue is None:
             # 允许未经过完整窗口初始化的后台测试 fixture 复用同一 UI 入口。
             self.root.after(0, callback, *args)
             return
-        ui_queue.submit(callback, *args, key=key, batch_key=batch_key, urgent=urgent)
+        ui_queue.submit(callback, *args, key=key, urgent=urgent)
 
     def _set_status(self, text: str, style: str = "normal"):
         self.status_var.set(text)
@@ -2518,36 +2740,204 @@ class MacroFlowApp:
             cursor = "[鼠标 ?,?]"
         return f"[{stamp}] {cursor} {text}\n"
 
-    def _append_log_line_to_ui(self, line: str | list[str]) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.insert("end", "".join(line) if isinstance(line, list) else line)
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def _write_log_line(self, line: str, message: str | None = None) -> None:
+        """写事件日志 + 界面「事件日志」视图；30 秒内重复的消息合并成一行。
 
-    def _write_log_line(self, line: str) -> None:
+        全局检测每秒轮询一次，目标一直可见时同一句“识别到/触发”会刷成千上万
+        行（实测一份日志 93% 是 3 句话的重复），把真正有用的信息埋掉。
+        去重按消息本身（行首鼠标坐标每次都变，按整行判定等于不去重）；
+
+        返回界面该追加的文本（'' 表示这一条被合并掉了）。
+        """
+        text = (message if message is not None else line).strip()
+        now = time.perf_counter()
+        lock = getattr(self, "log_file_lock", None)
+        if lock is None:
+            lock = self.log_file_lock = threading.Lock()
+        with lock:
+            window_ms = getattr(self, "_log_dedup_window_ms", 30000)
+            if text == getattr(self, "_log_dedup_text", "") and \
+                    (now - getattr(self, "_log_dedup_since", 0.0)) * 1000 < window_ms:
+                self._log_dedup_count = getattr(self, "_log_dedup_count", 1) + 1
+                self._log_dedup_line = line
+                return ""
+            pending = self._log_dedup_pending()
+            self._log_dedup_text = text
+            self._log_dedup_line = line
+            self._log_dedup_count = 1
+            self._log_dedup_since = now
+            self._append_log_file(line + pending)
+            return pending + line
+
+    def _log_dedup_pending(self) -> str:
+        """被合并掉的重复行：在下一行之前补一条“重复 N 次”。"""
+        count = getattr(self, "_log_dedup_count", 0)
+        if count <= 1 or not getattr(self, "_log_dedup_text", ""):
+            return ""
+        # 用被合并那一行的格式（含它自己的时间与鼠标位置），别写成新行的副本。
+        return (f"    ↳ 上一行（{getattr(self, '_log_dedup_line', '').strip()}）"
+                f"重复 {count - 1} 次，已合并\n")
+
+    def _flush_log_dedup(self) -> None:
+        """退出前把累计的重复次数落盘，避免丢掉这段计数。"""
+        lock = getattr(self, "log_file_lock", None)
+        if lock is None:
+            return
+        with lock:
+            pending = self._log_dedup_pending()
+            if not pending:
+                return
+            self._log_dedup_text = ""
+            self._log_dedup_count = 0
+            self._append_log_file(pending)
+
+    def _append_log_file(self, text: str) -> None:
         log_path = getattr(self, "session_log_path", None)
-        if log_path is not None:
-            try:
-                lock = getattr(self, "log_file_lock", None)
-                if lock is None:
-                    lock = threading.Lock()
-                    self.log_file_lock = lock
-                with lock:
-                    log_path.parent.mkdir(parents=True, exist_ok=True)
-                    with log_path.open("a", encoding="utf-8") as log_file:
-                        log_file.write(line)
-                        log_file.flush()
-            except OSError:
-                pass
+        if log_path is None or not text:
+            return
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            new_file = not log_path.exists()
+            with log_path.open("a", encoding="utf-8") as log_file:
+                if new_file:
+                    log_file.write(EVENT_LOG_HEADER)
+                log_file.write(text)
+                log_file.flush()
+        except OSError:
+            pass
+
+    def _trace_event(self, text: str, module_detail: bool = False) -> None:
+        """执行期细节（模块识别/点击/轮询）只进执行明细，不进事件日志。
+
+        ``module_detail`` 表示这是“某一行脚本内部发生了什么”（模块命中、点击、
+        阻塞等待、逐行扫描…），明细里缩进显示，和脚本行本身区分开。
+        """
+        if module_detail:
+            self._emit_trace_line(f"└ {text}")
+            return
+        # 不传这个关键字：调用方（_ui 夹具、快捷键回调）可能只接受一个参数。
+        self._emit_trace_line(text)
+
+    def _trace_context(self) -> dict:
+        context = getattr(self, "_trace_context_state", None)
+        if context is None:
+            context = {}
+            self._trace_context_state = context
+        return context
+
+    def _set_trace_context(self, **fields) -> None:
+        """记录当前执行位置（工作流第几步 / 哪个脚本 / 第几次），供两级日志分层。
+
+        明细日志靠它打出「工作流第 3/31 步 · 脚本[X]（12 行）· 第 4/100 次」这样的
+        层级标题，事件日志靠它把每条消息标到具体的工作流行与脚本上；两者都不再
+        混着写，也不用每行重复一遍上下文。
+        """
+        context = self._trace_context()
+        previous = self._trace_context_header()
+        context.update(fields)
+        header = self._trace_context_header()
+        if header and header != previous:
+            self._emit_trace_line(f"▶ {header}")
+
+    def _clear_trace_context(self) -> None:
+        self._trace_context().clear()
+
+    def _trace_context_header(self) -> str:
+        context = self._trace_context()
+        parts = []
+        if str(context.get("script", "")).strip():
+            label = f"脚本[{context['script']}]"
+            if int(context.get("total", 0) or 0) > 0:
+                label += f"（{int(context['total'])} 行）"
+            parts.append(label)
+        if int(context.get("step", 0) or 0) > 0 and int(context.get("steps", 0) or 0) > 0:
+            parts.append(f"工作流第 {int(context['step'])}/{int(context['steps'])} 步")
+        if int(context.get("repeat", 0) or 0) > 1:
+            total = int(context.get("repeats", 0) or 0)
+            parts.append(
+                f"第 {int(context['repeat'])}/{total} 次" if total > 1
+                else f"第 {int(context['repeat'])} 次"
+            )
+        # 段落和分隔符上都不留多余空格：层级标题必须稳定成
+        # 「脚本[X]（12 行）· 工作流第 3/31 步 · 第 4/100 次」这一种写法。
+        header = " · ".join(" ".join(str(part).split()) for part in parts if str(part).strip())
+        return " · ".join(segment.strip() for segment in header.split("·"))
+
+    def _event_context_label(self) -> str:
+        """事件日志每条消息前面的执行位置；没有正在执行的脚本时为空。"""
+        context = self._trace_context()
+        script = str(context.get("script", "")).strip()
+        if not script:
+            return ""
+        parts = []
+        if int(context.get("step", 0) or 0) > 0 and int(context.get("steps", 0) or 0) > 0:
+            parts.append(f"工作流第 {int(context['step'])}/{int(context['steps'])} 步")
+        parts.append(f"脚本[{script}]")
+        return " · ".join(parts)
+
+    def _with_event_context(self, text: str) -> str:
+        context = self._event_context_label()
+        if not context or text.startswith(context) or text.startswith("工作流第 "):
+            # 消息本身已经写明工作流进度（"工作流第 5 行完成一次…"）时不再重复前缀。
+            return text
+        return f"{context}：{text}"
+
+    def _emit_trace_line(self, text: str) -> None:
+        """一条执行明细：落盘 + 排队到界面「执行明细」视图（播放线程调用）。"""
+        line = f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | {text}" + "\n"
+        self._write_trace_line(line)
+        self._queue_log_view_line(line, "trace")
+
+    def _write_trace_line(self, text: str) -> None:
+        """写执行明细文件（失败不影响执行）。"""
+        trace_path = getattr(self, "trace_log_path", None)
+        if trace_path is None or not text:
+            return
+        lock = getattr(self, "trace_file_lock", None)
+        if lock is None:
+            lock = self.trace_file_lock = threading.Lock()
+        try:
+            with lock:
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                new_file = not trace_path.exists()
+                with trace_path.open("a", encoding="utf-8") as trace_file:
+                    if new_file:
+                        trace_file.write(TRACE_LOG_HEADER)
+                    trace_file.write(text)
+                    trace_file.flush()
+        except OSError:
+            pass
+
+    def _on_player_trace(self, event: dict) -> None:
+        """播放器每执行一行脚本动作回调一次：写「执行明细」日志。"""
+        action = event.get("action") or {}
+        index = int(event.get("index", 0))
+        total = int(event.get("total", 0))
+        elapsed = float(event.get("elapsed_ms", 0.0) or 0.0)
+        waited = float(event.get("waited_ms", 0.0) or 0.0)
+        depth = int(event.get("depth", 0) or 0)
+        where = f"第 {index + 1}/{total} 行"
+        if depth > 0:
+            owner = str(event.get("script", "")).strip() or "代码段"
+            where = f"代码段[{owner}] {where}"
+        # 只记有意义的时间：几十毫秒的等待/耗时写出来只是噪音。
+        parts = []
+        if waited >= 100:
+            parts.append(f"等待 {waited:.0f}ms")
+        if elapsed >= 50:
+            parts.append(f"耗时 {elapsed:.0f}ms")
+        timing = " ".join(parts)
+        fields = " | ".join(part for part in (where, action_detail(action), timing) if part)
+        self._emit_trace_line(fields)
 
     def _log(self, text: str):
-        line = self._format_log_line(text)
-        self._write_log_line(line)
-        queue = getattr(self, "ui_queue", None)
-        if queue is None:
-            self._append_log_line_to_ui(line)
-        else:
-            queue.submit(self._append_log_line_to_ui, line, batch_key="log")
+        # 事件日志是「外层进度」：每条都带上当前工作流行与脚本，便于定位
+        # 「软件执行到哪了」；逐行细节走执行明细（见 _trace_event）。
+        message = self._with_event_context(text)
+        line = self._format_log_line(message)
+        display = self._write_log_line(line, message)
+        if display:
+            self._queue_log_view_line(display, "event")
 
     def _mark_dirty(self):
         self.dirty = True
@@ -2773,6 +3163,7 @@ class MacroFlowApp:
                 )
             ],
             "floating_notice_position": self.floating_notice_position_var.get(),
+            "close_action": self.close_action_var.get(),
             "repeat": repeat,
             "bound_window": self.saved_window_signature,
             "activation_window_draft_enabled": bool(getattr(
@@ -3356,8 +3747,10 @@ class MacroFlowApp:
         start_delay_text = (
             f" · {start_delay} ms 后开始识别" if guard.get("start_delay_ms", 0) else ""
         )
+        # 每个模块的完整配置属于「这一行脚本做了什么」：进执行明细，
+        # 不刷事件日志（工作流全局模块会随每一次重复重新注册）。
         self._ui(
-            self._log,
+            self._trace_event,
             f"全局检测已启用：模块[{module_display_name}] · {name} · 区域 {region_text} · {hold_text}"
             f"{start_delay_text} · {repeat_text}"
             f"触发后{tail}",
@@ -3597,7 +3990,7 @@ class MacroFlowApp:
                 if not guard.get("target_absent_armed"):
                     guard["target_absent_armed"] = True
                     self._ui(
-                        self._log,
+                        self._trace_event,
                         f"全局检测：{self._global_monitor_subject(guard, '已识别到目标')}，开始持续执行直到消失。",
                     )
                 if match:
@@ -3619,7 +4012,7 @@ class MacroFlowApp:
                     self._guard_fallback_click(guard, fallback_match, fallback_name)
                 else:
                     self._ui(
-                        self._log,
+                        self._trace_event,
                         f"全局检测：备用模块 {fallback_name} 已识别，继续识别主模块。",
                     )
             elif not fallback_match:
@@ -3637,7 +4030,7 @@ class MacroFlowApp:
                 if not guard.get("awaiting_clear_logged"):
                     guard["awaiting_clear_logged"] = True
                     self._ui(
-                        self._log,
+                        self._trace_event,
                         f"全局检测：{condition_subject} 刚刚已触发，等待消失后再允许下次触发。",
                     )
             else:
@@ -3663,7 +4056,7 @@ class MacroFlowApp:
                 guard["match_since"] = now
                 if match:
                     self._ui(
-                        self._log,
+                        self._trace_event,
                         f"全局检测：识别到 {condition_subject} @ "
                         f"({match['center_x']}, {match['center_y']})，"
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
@@ -3672,7 +4065,7 @@ class MacroFlowApp:
                     self._detection_overlay(match["x"], match["y"], match["width"], match["height"])
                 else:
                     self._ui(
-                        self._log,
+                        self._trace_event,
                         f"全局检测：识别到 {condition_subject}，"
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
                            if guard.get("hold_enabled", False) else "立即触发。"),
@@ -3694,7 +4087,7 @@ class MacroFlowApp:
         else:
             if guard.get("was_detected"):
                 self._ui(
-                    self._log,
+                    self._trace_event,
                     f"全局检测：{self._global_monitor_subject(guard, absent_target_name + '已消失')}，持续触发完成。"
                     if repeat_while_detected else
                     f"全局检测：{self._global_monitor_subject(guard, '图片已消失')}，计时重置。",
@@ -3833,7 +4226,8 @@ class MacroFlowApp:
         )
         if observation != guard.get("last_ocr_observation"):
             guard["last_ocr_observation"] = observation
-            self._ui(self._log, observation)
+            # 逐次识别结果（每次 OCR 识别成什么）属于执行明细，不进事件日志。
+            self._ui(self._trace_event, observation)
             self._ui(self._append_mini_step, observation)
         return present, match
 
@@ -4223,6 +4617,9 @@ class MacroFlowApp:
     def _record_workflow_repeat(self, current, total, number, count, name):
         """Record the repeat index about to run, then update the progress label."""
         self.current_workflow_repeat_index = max(0, current - 1)
+        self._set_trace_context(
+            step=number, steps=count, script=name, repeat=current, repeats=total,
+        )
         self._ui(
             self._set_execution_progress,
             workflow_execution_progress(number, count, name, total, current),
@@ -5386,11 +5783,9 @@ class MacroFlowApp:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "请先停止当前脚本或工作流。")
             return
-        if getattr(self, "dirty", False):
-            # 重新录制会清空编辑器动作并覆盖当前文档：未保存的修改必须先拦截，
-            # 否则录制一开始就被静默丢弃（与新建/打开脚本的 dirty 拦截一致）。
-            self._notify("当前修改尚未保存", "请先保存脚本或撤销修改后再录制。")
-            return
+        # 录制本身就是「重新录一遍」：不再拦未保存的修改，否则录制结束会被
+        # 自己置上的 dirty 卡住，F8 从此没反应（只能先保存或撤销打开）。
+        # 录制只覆盖编辑器里的动作，已保存的旧文件不动，保存新录制时才提示覆盖。
         hwnd = self._bound_hwnd()
         # A bound window may be either a game or an ordinary desktop program.
         # Center-lock detection is what makes the single recording mode choose
@@ -6999,12 +7394,32 @@ class MacroFlowApp:
                 for item in self.hotkey_scripts
             )
             self._ui(self._log, f"专注模式快捷键（守卫钩子识别触发）：{names}")
+        # 专注模式下输入全部由守卫钩子线程发出，发之前必须把目标窗口抢回
+        # 前台：否则焦点被抢（弹窗/误点桌面/小窗闪现）时按键会发给别的前台
+        # 窗口，游戏收不到，表现就是“某个键没反应”。回调在钩子线程上执行。
+        self.input_guard.set_before_input(self._restore_input_focus)
         self._ui(self._log, "已切换英语输入法并进入强制专注模式；桌面及游戏原始键鼠输入均已锁定，仅 F12 可紧急停止。")
         return True
+
+    def _restore_input_focus(self) -> None:
+        """专注重放期间：目标窗口不在前台就先抢回来，再发这次输入。
+
+        只在目标进程确实不在前台时才激活——本来就在前台时不做任何操作，
+        避免多余的 SetForegroundWindow 让游戏弹“点击游戏画面继续操作”。
+        """
+        player = getattr(self, "player", None)
+        if player is None or not getattr(player, "_activate_target", False):
+            return
+        hwnd = getattr(self, "bound_window", None)
+        hwnd = int(hwnd.hwnd) if hwnd is not None else None
+        if not hwnd or not is_window(hwnd) or is_window_process_foreground(hwnd):
+            return
+        player._ensure_foreground_for_input(self._bound_hwnd(update_display=False))
 
     def _leave_focus_mode(self) -> None:
         guard = getattr(self, "input_guard", None)
         if guard is not None:
+            guard.set_before_input(None)
             guard.release()
 
     def _set_execution_progress(self, text: str) -> None:
@@ -7119,6 +7534,11 @@ class MacroFlowApp:
                            focus_enabled, activate_target, start_index=0, trigger=None,
                            script_name: str = ""):
         script_label = str(script_name).strip() or "未命名脚本"
+        # 明细日志的层级标题：先写明是哪个脚本、共几行、执行几次，再往下逐行记。
+        self._set_trace_context(
+            step=0, steps=0, script=script_label,
+            total=len(actions), repeat=0, repeats=repeats,
+        )
         self._ui(self._set_status, "正在执行脚本…", "warning")
         if start_index:
             self._ui(
@@ -7195,6 +7615,7 @@ class MacroFlowApp:
                     # 收尾路径，退出前统一释放。
                     self.player._release_all(None)
                 else:
+                    self._clear_trace_context()
                     self._ui(self._append_mini_step, "脚本执行完成。")
                     self._ui(self._set_status, "脚本执行完成", "success")
                     self._ui(self._log, "脚本执行完成。")
@@ -8744,7 +9165,6 @@ class MacroFlowApp:
                     # 守卫注册与播放器评估同线程（worker），直接调用避免跨线程竞态。
                     self._activate_global_detect_from_config(config, module)
                     self._ui(self._append_mini_step, "全局检测模块已启用。")
-                    self._ui(self._log, "全局检测模块已启用，触发后执行模块步骤并继续工作流。")
                 else:
                     self._ui(
                         self._log,
@@ -8856,7 +9276,8 @@ class MacroFlowApp:
                 )
                 self._ui(
                     self._log,
-                    f"步骤 {index + 1}：{script.name}，{repeat_desc}，重复间隔 {repeat_interval} ms。",
+                    f"工作流第 {script_number}/{len(steps)} 步：脚本[{script.name}]，"
+                    f"{repeat_desc}，每次间隔 {repeat_interval} ms。",
                 )
                 step_activation = pending_activation_hwnd
                 step_activation_prepared = pending_activation_prepared
@@ -8882,6 +9303,10 @@ class MacroFlowApp:
                         self._ui(self._log, message)
                         step_activation = None
                         step_activation_prepared = False
+                self._set_trace_context(
+                    step=script_number, steps=len(steps), script=script.name,
+                    total=len(script.actions), repeat=0, repeats=repeats,
+                )
                 self.player.play(
                     script.actions, repeats, hwnd,
                     repeat_interval_ms=repeat_interval,
@@ -8935,6 +9360,7 @@ class MacroFlowApp:
                 # 这段守卫循环不经过 play()，处理段里按下的键/鼠标键没有收尾路径。
                 self.player._release_all(None)
             if not self.workflow_stop.is_set() and not self.player.stop_event.is_set():
+                self._clear_trace_context()
                 self._ui(self._set_status, "工作流执行完成", "success")
                 self._ui(self._append_mini_step, "工作流执行完成。")
                 self._ui(self._log, "工作流执行完成。")
@@ -9170,6 +9596,13 @@ class MacroFlowApp:
             self._hotkey_script_running = False
 
     def on_close(self):
+        """点主窗口关闭按钮：按设置直接退出，或收进托盘继续在后台运行。"""
+        if getattr(self, "close_action_var", None) is not None \
+                and self.close_action_var.get() == "tray":
+            self._persist_workflow_draft()
+            if self._hide_main_to_tray():
+                return
+            # 托盘图标建不出来时绝不留下既无窗口又无图标的隐藏进程。
         self._quit_app()
 
     def _quit_app(self):
@@ -9202,16 +9635,16 @@ class MacroFlowApp:
         if self.hotkey_listener:
             self.hotkey_listener.stop()
         self._stop_tray()
+        self._flush_log_dedup()
         self.ui_queue.flush()
         self.ui_queue.close()
         self.root.destroy()
 
     def run(self):
         self.root.mainloop()
-        if self.exiting and getattr(sys, "frozen", False):
-            # _quit_app saves drafts and releases hooks before destroying Tk.
-            # Native OCR teardown and third-party threads must not keep the
-            # packaged application (and its one-file bootloader) alive.
+        if getattr(sys, "frozen", False):
+            # _quit_app 已保存草稿并释放钩子/托盘；即便收尾路上出了岔子，也绝不
+            # 把窗口关掉却让进程（原生 OCR、pystray 等非守护线程）留在后台。
             os._exit(0)
 
 
