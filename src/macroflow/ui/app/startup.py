@@ -79,6 +79,10 @@ def spawn_new_instance(args: list[str]):
         clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     subprocess.Popen(args, cwd=str(BASE_DIR), env=clean_env)
 def main():
+    # MacroFlowApp 定义在包 __init__ 里（由各 mixin 组合），这里只能按需导入：
+    # 顶层导入会与「__init__ → startup」形成循环。
+    from macroflow.ui.app import MacroFlowApp
+
     try:
         MacroFlowApp().run()
     except Exception:
