@@ -19,6 +19,10 @@ JUMP_TARGET_KEYS = (
     "equal_jump_action_id", "not_equal_jump_action_id",
 )
 RECORDED_AT_KEY = "recorded_at_ms"
+# 「录制动作」：一次录制的键鼠操作整体作为**一条**动作插入脚本（列表里只占一行，
+# 双击才展开里面的每一步），steps 里存的就是录制原始动作（key/mouse_move/…）。
+RECORDED_INPUT_TYPE = "recorded_input"
+RECORDED_INPUT_STEPS_KEY = "steps"
 INPUT_MODE_KEY = "mode"
 PULSE_STARTED_AT_KEY = "pulse_started_at_ms"
 PULSE_DURATION_KEY = "pulse_duration_ms"
@@ -50,9 +54,53 @@ def new_action_id() -> str:
     return uuid.uuid4().hex
 
 
+# 滚轮动作的两个方向：正 delta（滚轮远离用户）向上，负 delta 向下。
+SCROLL_UP_LABEL = "向上"
+SCROLL_DOWN_LABEL = "向下"
+
+
+def scroll_direction_label(dy: Any) -> str:
+    """滚轮动作的滚动方向文字。
+
+    Windows 滚轮 delta 的正负就是方向：正数向上（滚轮远离用户），负数向下。
+    """
+    try:
+        value = int(dy)
+    except (TypeError, ValueError):
+        value = 0
+    return SCROLL_UP_LABEL if value > 0 else SCROLL_DOWN_LABEL
+
+
+def scroll_clicks(dy: Any) -> int:
+    """滚轮动作滚过的格数（方向见 scroll_direction_label，格数至少为 1）。"""
+    try:
+        value = abs(int(dy))
+    except (TypeError, ValueError):
+        value = 0
+    return max(1, value)
+
+
+def recorded_input_steps(action: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the folded steps of one recorded action (always a list)."""
+    steps = action.get(RECORDED_INPUT_STEPS_KEY)
+    if not isinstance(steps, list):
+        return []
+    return [step for step in steps if isinstance(step, dict)]
+
+
 def ensure_action_ids(actions: list[dict[str, Any]]) -> bool:
-    """Give every action a unique stable identity and migrate legacy row jumps."""
+    """Give every action a unique stable identity and migrate legacy row jumps.
+
+    折叠的「录制动作」里的每一步同样要有 id：双击打开后要能选中、编辑、上下移。
+    """
     changed = False
+    for action in actions:
+        if str(action.get("type")) != RECORDED_INPUT_TYPE:
+            continue
+        steps = recorded_input_steps(action)
+        if steps:
+            # 先补内层：外层 id 由下面的循环统一发放，顺序不影响结果。
+            changed = ensure_action_ids(steps) or changed
     used: set[str] = set()
     for action in actions:
         action_id = str(action.get(ACTION_ID_KEY, "")).strip()

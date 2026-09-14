@@ -65,18 +65,18 @@ Insert the following actions on the Script Editor page; double-click an action t
 | 📝 Text | Type text |
 | 🖱️ Mouse move / button / click / multi-click | Pick coordinates on screen; left / right / middle button |
 | ↔️ Drag | Press at the start point, drag to the end point and release (screen-pick or manual coordinates); steps / duration / mouse button configurable |
-| 🎡 Wheel | Horizontal / vertical scroll at a given position |
+| 🎡 Wheel | Scroll up / down a chosen number of notches at a given position (toolbar “↕ 滚轮”, coordinates can be picked on screen) |
 | 🖼️ Image match | Template matching (see below) |
 | 🔤 OCR text | Offline region text recognition (see below) |
 | 💬 Floating notice / comment | On-screen reminder / note text |
-| 🔗 Script reference | Load and run another script in place (embedded execution, no jump) |
+| 🔗 Script reference | Load and run another script in place (embedded execution, no jump); right-click the row in the action list → "▶ 执行指定次数…" to run just that referenced script 1–N times (default 1) |
 | 🚀 Open / close app | Launch a program (with args) / gracefully or forcefully terminate a process |
 | 🧭 Jump | Jump to a target action line, script start, or script end |
 | 📌 Foreground window | Bring the bound window to the foreground before execution |
 | ⭐ Special modules | Restart workflow / end the innermost script and continue / jump to the actual last line |
 | 🧰 Module reference | Insert a saved module object (see "Module Objects") |
 
-Editing: undo / redo, duplicate down (multi-select supported), run from here (trial run skipping earlier actions), clear undo history after save.
+Editing: undo / redo, move up / move down (a contiguous multi-row selection moves as one block), duplicate down (multi-select supported), run from here (trial run skipping earlier actions), clear undo history after save. Opening or creating another script while the current one has unsaved changes asks first (save / discard / cancel) instead of silently doing nothing.
 
 ## 🔍 Image Matching & OCR
 
@@ -187,7 +187,7 @@ Source code lives in the `src/macroflow/` package, organized by domain (`core/` 
 ```powershell
 python -m pip install -r requirements.txt
 .\run.bat                 # run from source (= PYTHONPATH=.deps;src + python -m macroflow.ui.app)
-python tests\test_core.py # run the full unit-test suite
+python -m unittest discover -s tests -t .   # run the full unit-test suite
 .\build.ps1               # package: outputs dist\MacroFlowStudio.exe + dist\paddle_ocr\
 ```
 
@@ -229,12 +229,13 @@ First public release, organized by feature area:
 
 - Steps: repeat count, unlimited, wait before run, repeat interval, enable state, start delay, unified restart target, start-from-line from the 2nd run
 - Workflow-global modules: hold-duration trigger, timeout code segments, end current script / restart workflow, breakpoint resume
-- Test mode, run from selected line, single-run test; remaining counts and jump lines are strictly consistent
+- Test mode, run from selected line, single-run test, right-click a script-reference row to run it a specified number of times; remaining counts and jump lines are strictly consistent
 
 ### System & Stability
 
 - Focus lock mode with a system-level input lock; held keys are released on abnormal exit
 - Execution mini window never steals focus; run logs are written per date / session
+- Screensaver / display timeout / sleep are suppressed while a script runs (a system-level request, your power settings are left untouched), so long recognition waits are not cut off by the screensaver
 - Timed backup, auto start on boot, start to tray, auto-run a workflow at startup
 - OCR engine externalized in the packaged build (~70 MB main exe); the build pipeline verifies version, symbols, and input locks
 
@@ -242,7 +243,7 @@ First public release, organized by feature area:
 
 ## 🤝 AI Collaboration Rules
 
-- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python tests\test_core.py` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
+- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python -m unittest discover -s tests -t .` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
 - **GPT**: visual and smoke checks as needed — UI layout / button changes require launching the app to confirm; pure logic changes can be delivered directly; packaged DPI smoke tests on demand.
 
 ---

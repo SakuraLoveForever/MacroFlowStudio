@@ -15,7 +15,9 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
-    "app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click",
+    # 主窗口是按功能拆开的包（macroflow.ui.app：constants / base / summaries /
+    # startup + 11 个 mixin），打包入口是它的 __main__.py → 归档里的 __main__。
+    "macroflow.ui.app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click",
             "_on_restart_workflow_request", "_poll_workflow_stop_for_restart_workflow",
             "_launch_workflow_restart", "_restart_workflow_resolved_row",
             "_evaluate_global_guards", "_evaluate_one_guard", "_build_guard_hit",
@@ -30,14 +32,15 @@ EXPECT_SYMBOLS = {
             "undo_delete_global_module", "_update_workflow_delete_undo_buttons",
             "_select_all_workflow_steps", "_select_all_global_modules",
             "_restore_workflow_scan_foreground",
-            "add_workflow_global_module",
+            "add_workflow_global_module", "add_scroll",
             "recognize_region_with_boxes",
             "_run_timed_backup", "_run_configured_startup_workflow",
             "_sync_windows_startup",
             "rename_workflow", "duplicate_workflow", "_switch_to_workflow",
-            "_restore_workflow_scan_foreground"],
+            "_restore_workflow_scan_foreground",
+            "run_script_ref_with_count", "run_referenced_script_alone"],
     "macroflow.ui.dialogs": ["TemplateRegionManagerDialog", "TemplateRegionFormDialog",
-                "ScreenOffsetPicker",
+                "ScreenOffsetPicker", "ScrollDialog",
                 "ModulePickerDialog", "BatchModuleScriptDialog", "JumpActionDialog",
                 "ModuleReferenceDelayDialog", "OcrCompareActionDialog", "MultiConditionClickDialog",
                 "fit_window_to_content", "fit_scrollable_window_to_content",
@@ -75,11 +78,16 @@ EXPECT_SYMBOLS = {
                  "save_module_images_dir", "module_image_inventory"],
     "macroflow.execution.player": ["registered_module_object", "on_restart_workflow_request",
                "_execute_second_match", "_execute_ocr_compare", "_execute_multi_condition_click", "_multi_condition_matches", "AdvanceToNextWorkflowStep",
-               "ocr_match_center", "recognize_region_with_boxes", "matches_expected"],
-    "macroflow.core.models": ["NEXT_WORKFLOW_STEP_TARGET_ID", "SCRIPT_START_TARGET_ID"],
+               "ocr_match_center", "recognize_region_with_boxes", "matches_expected",
+               "CAPTURE_ERRORS", "_note_capture_failure", "_clear_capture_failure"],
+    "macroflow.core.models": ["NEXT_WORKFLOW_STEP_TARGET_ID", "SCRIPT_START_TARGET_ID",
+                "scroll_direction_label", "scroll_clicks"],
+    # 执行期间阻止屏保：声明必须进 exe，否则挂机时屏保一起来截图就全废。
+    "macroflow.core.display_power": ["SetThreadExecutionState", "keep_display_awake",
+                "allow_display_sleep", "ES_DISPLAY_REQUIRED", "ES_CONTINUOUS"],
     "macroflow.core.image_match": ["find_template", "find_template_in_image",
                     "_estimate_background_color", "_build_ignore_background_mask",
-                    "_match_with_mask"],
+                    "_match_with_mask", "CAPTURE_ERRORS", "CAPTURE_ATTEMPTS"],
     "macroflow.core.ocr": ["recognize_region", "recognize_image", "recognize_image_with_boxes",
             "recognize_region_with_boxes", "find_expected_match", "matches_expected",
             "format_ocr_observation", "extract_ocr_integer", "parse_ocr_number_pair", "ocr_match_center",
@@ -195,24 +203,43 @@ def module_code(module):
     return marshal.loads(raw)
 
 
-# 版本号：入口脚本（打包为顶层模块 app）在 CArchive 根目录。
-if EXPECT_VERSION not in list(literals_of(unmarshal(archive.extract("app")))):
-    ERRORS.append(f"app 缺少 APP_VERSION 常量 {EXPECT_VERSION}")
+def module_codes(module):
+    """取一个模块的代码对象；模块是包时连同全部子模块一起取。
+
+    macroflow.ui.app 与 macroflow.ui.dialogs 都是按功能拆开的包（app：mixin +
+    constants / base / summaries / startup；dialogs：base / helpers / segments /
+    module_objects / actions / recognition / app_dialogs），符号与常量散在各子
+    模块里，所以按包校验时要取并集。
+    """
+    names = [key for key in pyz_toc if key == module or key.startswith(module + ".")]
+    if module not in names:
+        names.append(module)
+    return [module_code(key) for key in names if key in pyz_toc]
+
+
+# 打包入口（src/macroflow/ui/app/__main__.py）在 CArchive 根目录，模块名 __main__。
+ENTRY_NAME = "__main__" if "__main__" in archive.toc else "app"
+entry_names = set(names_of(unmarshal(archive.extract(ENTRY_NAME))))
+if "main" not in entry_names or "macroflow.ui.app.startup" not in entry_names:
+    ERRORS.append(f"打包入口 {ENTRY_NAME} 没有指向 macroflow.ui.app.startup.main")
+
+# 版本号随主窗口包一起校验。
+if EXPECT_VERSION not in {
+        lit for code in module_codes("macroflow.ui.app") for lit in literals_of(code)}:
+    ERRORS.append(f"macroflow.ui.app 缺少 APP_VERSION 常量 {EXPECT_VERSION}")
 
 for module, symbols in EXPECT_SYMBOLS.items():
-    if module == "app":
-        code = unmarshal(archive.extract("app"))
-    else:
-        code = module_code(module)
-    names = list(names_of(code))
+    names = [name for code in module_codes(module) for name in names_of(code)]
     for symbol in symbols:
         if symbol not in names:
             ERRORS.append(f"{module} 缺少符号 {symbol}")
 
 for module, expected_literals in {
-    "app": ["关卡", "关卡封装", "切换", "workflow_global", "script_global",
+    "macroflow.ui.app": ["关卡", "关卡封装", "切换", "workflow_global", "script_global",
             "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
-            "ocr_offset_left", "ocr_offset_right"],
+            "ocr_offset_left", "ocr_offset_right",
+            "▶ 执行指定次数…"],
+    # 引用脚本行右键执行指定次数：新菜单项必须真的进了 exe。
     "macroflow.ui.dialogs": ["工作流全局模块", "脚本全局模块", "读取数字", "expected_number",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],
@@ -222,8 +249,7 @@ for module, expected_literals in {
     "macroflow.execution.player": ["expected_number", "number", "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
                "ocr_offset_left", "ocr_offset_right"],
 }.items():
-    code = unmarshal(archive.extract("app")) if module == "app" else module_code(module)
-    literals = set(literals_of(code))
+    literals = {lit for code in module_codes(module) for lit in literals_of(code)}
     for expected in expected_literals:
         if expected not in literals:
             ERRORS.append(f"{module} 缺少分类常量 {expected}")

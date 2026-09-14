@@ -18,7 +18,8 @@
 
 ## 构建与打包规则
 
-- 每次修改代码后必须立即重新构建 exe（`.\build.ps1`），确保 `dist\MacroFlowStudio.exe` 与最新代码一致；不得只改源码不构建。
+- **中间步骤不必每次构建**：定位、重构、局部改动这类过程中的每一步，只跑与改动相关的单元测试即可（例如 `python -m unittest tests.test_workflow` 或单个测试类），不必每步都 `build.ps1` + 全量测试 + `verify_build.py`。
+- **交付点必须构建**：一个功能做完、一个重构阶段收尾、要交给用户验证或打包时，必须执行 `.\build.ps1`，确保 `dist\MacroFlowStudio.exe` 与最新源码一致，并跑一次全量测试（`python -m unittest discover -s tests -t .`）+ `verify_build.py`；不得在交付时留下「改了源码没构建」的状态。
 - zip 只在重大修改时打包：`.\pack.ps1`（将 `dist\MacroFlowStudio.exe` + `dist\paddle_ocr\` + README.md + CHANGELOG.md 打包为项目根目录下的 `MacroFlowStudio_latest_win64.zip`），打包内容缺失时脚本会报错。重大修改指功能级大改、需要分发/交付测试的改动，或用户明确要求打包。
 - 普通修改只更新 exe，不重新打包 zip；打包后不得把旧 zip 当作最新包分发。
 - 任何执行 `.\pack.ps1` 的打包流程，必须先执行并成功完成 `.\build.ps1`，确认 dist 中 exe 与外置 OCR 组件来自最新源码后，才能压缩 zip。
@@ -30,3 +31,4 @@
 - 一律不得启动软件界面进行测试；所有测试必须通过后台命令完成，例如单元测试、编译检查、打包和产物静态校验。
 - 如果当前模型是 ChatGPT，可根据任务需要执行不涉及可见界面操作的单元测试、编译检查、打包和产物静态校验。
 - 除上述差异外，仍应按用户要求和改动风险选择必要的非冒烟验证。
+- 全量测试命令：`python -m unittest discover -s tests -t .`（按功能拆分的多个测试文件）；只跑相关范围用 `python -m unittest tests.test_<功能>`。

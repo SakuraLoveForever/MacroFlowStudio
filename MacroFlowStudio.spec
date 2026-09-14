@@ -62,7 +62,7 @@ datas = [(s, d) for s, d in datas if not d.replace('\\', '/').startswith('cv2/da
 
 
 a = Analysis(
-    ['src/macroflow/ui/app.py'],
+    ['src/macroflow/ui/app/__main__.py'],
     pathex=[str(Path(SPECPATH).resolve() / 'src')],
     binaries=binaries,
     datas=datas,

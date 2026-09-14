@@ -92,13 +92,13 @@ class DialogPureHelperTests(unittest.TestCase):
         self.assertEqual(condition_field_visibility("number"), {"separator", "relation"})
 
     def test_log_falls_back_without_queue_on_new_fixture(self):
+        # 没有 log_text / root 的裸夹具：_log 照样落盘，界面排队那一步自己吞掉。
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app._with_event_context = lambda text: text
         app._format_log_line = lambda text: f"{text}\n"
-        app._write_log_line = Mock()
-        app._append_log_line_to_ui = Mock()
+        app._write_log_line = Mock(return_value="fallback\n")
         app._log("fallback")
-        app._write_log_line.assert_called_once_with("fallback\n")
-        app._append_log_line_to_ui.assert_called_once_with("fallback\n")
+        app._write_log_line.assert_called_once_with("fallback\n", "fallback")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import cv2
 import mss
 import numpy as np
+from mss.exception import ScreenShotError
+
+# 截图失败的异常集合：锁屏 / 屏保 / 独占全屏 / 切换显示模式时 GDI 的 BitBlt
+# 会对普通进程返回「拒绝访问」（WinError 5）。调用方据此把「截图暂时不可用」
+# 与「这一轮没识别到」区分开，不再让一次瞬时失败打断整个工作流。
+CAPTURE_ERRORS = (ScreenShotError, OSError)
+
+# 单次抓屏的瞬时失败重试：显示模式切换、独占全屏进出时的一两帧失败应当
+# 由截图层自己吸收，不升级成动作失败。
+CAPTURE_ATTEMPTS = 3
+CAPTURE_RETRY_DELAY_S = 0.12
 
 
 def load_image(path: str | Path) -> np.ndarray | None:
@@ -19,16 +31,30 @@ def load_image(path: str | Path) -> np.ndarray | None:
 
 
 def capture_bgr(region: tuple[int, int, int, int] | None = None) -> tuple[np.ndarray, tuple[int, int]]:
-    with mss.mss() as grabber:
-        if region:
-            left, top, width, height = region
-            monitor = {"left": left, "top": top, "width": max(1, width), "height": max(1, height)}
-            origin = (left, top)
-        else:
-            monitor = grabber.monitors[0]
-            origin = (int(monitor["left"]), int(monitor["top"]))
-        shot = np.asarray(grabber.grab(monitor))
-        return cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR), origin
+    """抓屏；瞬时失败重试几次后仍失败才抛 CAPTURE_ERRORS。
+
+    重试只覆盖「同一时刻系统不让截图」这种可自愈的情况（显示模式切换、
+    独占全屏进出）。持续失败（锁屏 / 屏保 / DRM 独占）由调用方决定是继续
+    轮询还是收尾报错，因此这里不吞异常。
+    """
+    attempts_left = CAPTURE_ATTEMPTS
+    while True:
+        attempts_left -= 1
+        try:
+            with mss.mss() as grabber:
+                if region:
+                    left, top, width, height = region
+                    monitor = {"left": left, "top": top, "width": max(1, width), "height": max(1, height)}
+                    origin = (left, top)
+                else:
+                    monitor = grabber.monitors[0]
+                    origin = (int(monitor["left"]), int(monitor["top"]))
+                shot = np.asarray(grabber.grab(monitor))
+            return cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR), origin
+        except CAPTURE_ERRORS:
+            if attempts_left <= 0:
+                raise
+            time.sleep(CAPTURE_RETRY_DELAY_S)
 
 
 def stabilize_row_offsets(
