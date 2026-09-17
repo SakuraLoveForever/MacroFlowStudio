@@ -104,9 +104,53 @@ OK
 
 ```
 python -m unittest discover -s tests -t .
-Ran 1210 tests in 39.312s
+Ran 1212 tests in 43.186s
 OK
 ```
+
+## 已完成：阶段 1 包入口与测试减耦
+
+### 包入口
+
+| 文件 | 改造前 | 改造后 |
+| --- | --- | --- |
+| `src/macroflow/ui/app/__init__.py` | 292 行，聚合 ~150 个兼容重导出 + 定义主窗口 | 16 行，只转出 `MacroFlowApp` |
+| `src/macroflow/ui/app/main.py` | 不存在 | 主窗口由哪些 mixin 组合的组合定义 |
+| `startup.main()` | 按需 `from macroflow.ui.app import MacroFlowApp`（规避循环导入） | `from .main import MacroFlowApp` |
+| `ui/app/*.py` 的对话框导入 | 全部走 `macroflow.ui.dialogs` 包入口 | 指向 `dialogs.<功能>` 子模块 |
+
+### 测试
+
+- 12 个测试文件去掉 `from tests.common import *`，改为从**各名字真正的定义模块**
+  导入；`tests/common.py` 只保留导入路径配置与共用替身。
+- 新增 `tests/helpers/patches.py`：显式的 名字 → 实现模块 目标表
+  （`tests/helpers/patch_targets.json`，由实现模块真实的 import / 使用点生成）。
+  `package_patch("app", "load_script")` 取代了原来的 `_PackagePatch`——
+  后者会遍历包及**所有**子模块做替换，依赖包结构、看不出测试依赖什么。
+- 781 处 `patch_app/patch_dialogs/patch_player` 改为 `package_patch(...)`；
+  97 处 `patch("macroflow.ui.app.X")` 改到真正定义 X 的实现模块；
+  直接 patch 的模块级目标（`tk` / `ttk` / `ModalDialog.__init__` 等）按定义模块 patch。
+
+### 新增的边界检查
+
+- `tests/test_import_boundaries.py`：在**全新子进程**里导入纯模块，检查传递导入闭包
+  里没有 tkinter / cv2 / numpy / paddle / paddleocr / paddlex；并验证检查器自身
+  能抓住一个故意 `import tkinter` 的最小示例。
+- `tests/test_edit_performance.py`：编辑路径的复杂度与 p95 目标，
+  自带无界面夹具，可脱离 `tests/common.py` 单独运行。
+
+### 导入耗时（重构后，全新子进程）
+
+| 模块 | 耗时 | 新增模块数 | 传递闭包里的重依赖 |
+| --- | --- | --- | --- |
+| `macroflow.core.models` | 38 ms | 28 | 无 |
+| `macroflow.core.storage` | 67 ms | 53 | 无 |
+| `macroflow.execution.player` | 236 ms | 226 | cv2, mss, numpy |
+| `macroflow.ui.app` | 726 ms | 412 | + tkinter, ttkbootstrap, pystray, PIL, pypinyin |
+
+`macroflow.ui.app` 仍然很重：它导入全部 mixin，而 mixin 会导入 `dialogs` 与
+`player`。**「轻量包入口」这一条尚未达成**——接下来要么让主窗口在启动时才组合，
+要么把 `dialogs` / `player` 的重依赖下沉到首次使用路径（阶段 4）。
 
 ## 未验证项（不得当作已完成）
 
