@@ -36,6 +36,8 @@ from .constants import (
     MIN_MAIN_HEIGHT,
     MIN_MAIN_WIDTH,
     SCRIPT_CATEGORY_LABELS,
+    TARGET_MAIN_HEIGHT,
+    TARGET_MAIN_WIDTH,
 )
 
 def enable_per_monitor_dpi_awareness() -> None:
@@ -195,13 +197,17 @@ def bind_tree_hover(tree, tag: str = "hover") -> None:
     tree.bind("<Motion>", on_motion, add="+")
     tree.bind("<Leave>", on_leave, add="+")
 def default_main_geometry() -> str:
-    """默认窗口尺寸：比旧版更紧凑，并按当前显示器收敛，永不超过屏幕。"""
+    """默认窗口尺寸：目标 1100×700，并按当前显示器收敛，永不超过屏幕。
+
+    尺寸按 96 DPI 的逻辑像素设计，再交给 px() 换算成实际像素；不能把物理
+    像素当逻辑像素用，否则高 DPI 屏上窗口会小于设计值、控件被裁切。
+    """
     screen = get_virtual_screen_rect()
     scale = _UI_SCALE if _UI_SCALE > 0 else 1.0
     logical_width = int(screen.get("width", 0)) / scale
     logical_height = int(screen.get("height", 0)) / scale
-    width = min(1440, max(MIN_MAIN_WIDTH, int(logical_width) - 80))
-    height = min(820, max(MIN_MAIN_HEIGHT, int(logical_height) - 80))
+    width = min(TARGET_MAIN_WIDTH, max(MIN_MAIN_WIDTH, int(logical_width) - 80))
+    height = min(TARGET_MAIN_HEIGHT, max(MIN_MAIN_HEIGHT, int(logical_height) - 80))
     return f"{px(width)}x{px(height)}"
 def workflow_script_name(value: str) -> str:
     """Show a workflow script as a clean name, never as scripts/name.json."""

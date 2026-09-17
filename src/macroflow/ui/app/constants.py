@@ -16,8 +16,13 @@ FLOATING_NOTICE_POSITIONS = ("左上", "顶部居中", "右上", "左下", "底�
 SCRIPT_CATEGORY_VALUES = ("关卡", "关卡封装", "切换", "方向")
 FLOATING_NOTICE_WIDTH = 360
 FLOATING_NOTICE_HEIGHT = 68
-MIN_MAIN_WIDTH = 1180
-MIN_MAIN_HEIGHT = 640
+# 主窗口按 96 DPI 的逻辑像素设计，实际尺寸由 px() 随 DPI 缩放。
+# 最小宽度 1024：常见 1366×768 笔记本与 1024 宽的逻辑分辨率下主要操作仍可用。
+MIN_MAIN_WIDTH = 1024
+MIN_MAIN_HEIGHT = 600
+# 默认窗口目标尺寸（受屏幕尺寸收敛，见 default_main_geometry）。
+TARGET_MAIN_WIDTH = 1100
+TARGET_MAIN_HEIGHT = 700
 COLOR_BG = "#0E1419"
 COLOR_SIDEBAR = "#131B22"
 COLOR_SURFACE = "#182129"
