@@ -3,15 +3,26 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-import cv2
+# mss 很轻（28 个模块），且测试要替换 image_match.mss 注入假抓屏器，
+# 所以放在模块级；真正重的是 cv2 / numpy，它们在各自函数里按需导入。
 import mss
-import numpy as np
 from mss.exception import ScreenShotError
 
 # 截图失败的异常集合：锁屏 / 屏保 / 独占全屏 / 切换显示模式时 GDI 的 BitBlt
 # 会对普通进程返回「拒绝访问」（WinError 5）。调用方据此把「截图暂时不可用」
 # 与「这一轮没识别到」区分开，不再让一次瞬时失败打断整个工作流。
-CAPTURE_ERRORS = (ScreenShotError, OSError)
+# 截图失败的异常集合。mss 只在截图时才需要，所以这里按需导入，
+# 让导入本模块本身不拉起截图 / 图像依赖。
+def _capture_errors():
+    import mss  # noqa: PLC0415 - 按需导入
+    try:
+        from mss.exception import ScreenShotError
+    except ImportError:  # 没装截图依赖时只保留 OSError
+        return (OSError,)
+    return (ScreenShotError, OSError)
+
+
+CAPTURE_ERRORS = _capture_errors()
 
 # 单次抓屏的瞬时失败重试：显示模式切换、独占全屏进出时的一两帧失败应当
 # 由截图层自己吸收，不升级成动作失败。
@@ -21,6 +32,8 @@ CAPTURE_RETRY_DELAY_S = 0.12
 
 def load_image(path: str | Path) -> np.ndarray | None:
     """Load an image without relying on OpenCV's Windows path handling."""
+    import cv2  # noqa: PLC0415 - 按需导入
+    import numpy as np  # noqa: PLC0415 - 按需导入
     try:
         encoded = np.fromfile(str(path), dtype=np.uint8)
     except OSError:
@@ -37,6 +50,8 @@ def capture_bgr(region: tuple[int, int, int, int] | None = None) -> tuple[np.nda
     独占全屏进出）。持续失败（锁屏 / 屏保 / DRM 独占）由调用方决定是继续
     轮询还是收尾报错，因此这里不吞异常。
     """
+    import cv2  # noqa: PLC0415 - 按需导入
+    import numpy as np  # noqa: PLC0415 - 按需导入
     attempts_left = CAPTURE_ATTEMPTS
     while True:
         attempts_left -= 1
@@ -70,6 +85,8 @@ def stabilize_row_offsets(
     separator may only make a small correction around each independently
     predicted row, so one imperfect row never shifts every row below it.
     """
+    import cv2  # noqa: PLC0415 - 按需导入
+    import numpy as np  # noqa: PLC0415 - 按需导入
     offsets = [max(0, int(value)) for value in predicted_offsets]
     if not offsets or not isinstance(screen, np.ndarray) or screen.ndim < 2:
         return offsets
@@ -130,6 +147,7 @@ def _estimate_background_color(template: np.ndarray) -> np.ndarray | None:
     纹理都成立；渐变背景每像素颜色不同，占比必然不足，返回 None 让
     调用方回退普通匹配）。背景色取簇内原始像素的均值，更贴近实际底色。
     """
+    import numpy as np  # noqa: PLC0415 - 按需导入
     border = np.vstack([
         template[:2].reshape(-1, 3),
         template[-2:].reshape(-1, 3),
@@ -159,6 +177,8 @@ def _build_ignore_background_mask(template: np.ndarray,
     前景占比必须落在 [5%, 95%] 之间，否则掩码无意义（纯背景图或纯前景图），
     返回 None 回退普通匹配。
     """
+    import cv2  # noqa: PLC0415 - 按需导入
+    import numpy as np  # noqa: PLC0415 - 按需导入
     diff = np.linalg.norm(
         template.astype(np.float32) - background.astype(np.float32), axis=2,
     )
@@ -183,6 +203,8 @@ def _match_with_mask(search: np.ndarray, template: np.ndarray,
     前景像素，且各自减去窗口均值再归一化，背景颜色与整体亮度变化都不
     影响分数，语义与普通匹配一致（越大越像，1.0 = 完全一致）。
     """
+    import cv2  # noqa: PLC0415 - 按需导入
+    import numpy as np  # noqa: PLC0415 - 按需导入
     gray_s = cv2.cvtColor(search, cv2.COLOR_BGR2GRAY).astype(np.float32)
     gray_t = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY).astype(np.float32)
     m = (mask > 0).astype(np.float32)
@@ -245,6 +267,7 @@ def find_template_in_image(template_path: str | Path, screen: np.ndarray,
     下降。调用方按 执行机屏幕宽度 / 录制机屏幕宽度 传入，模板先等比缩放到
     当前尺寸再匹配；匹配结果坐标仍处于截图坐标系，无需换算。
     """
+    import cv2  # noqa: PLC0415 - 按需导入
     template = load_image(template_path)
     if template is None:
         raise FileNotFoundError(f"无法读取模板图片：{template_path}")
