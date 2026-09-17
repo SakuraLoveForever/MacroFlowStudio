@@ -81,11 +81,17 @@ def px(value) -> int:
 def pad(*values) -> tuple[int, ...]:
     """换算一组像素值（padding/padx/pady）。"""
     return tuple(px(value) for value in values)
-def toolbar_spec_rows(specs, row_size: int = 8) -> tuple[tuple, ...]:
-    """Split a toolbar's button specs into rows that fit the content area."""
+def split_toolbar_specs(specs, primary: set[str]) -> tuple[tuple, tuple]:
+    """把按钮清单拆成「常驻按钮」与「更多菜单项」，保持各自原顺序。
+
+    界面减法用：动作类型太多时，常驻只留最常用的那几个，其余进「+ 添加动作 ▾」
+    的菜单。两个清单来自同一份 specs，因此不会有动作只存在于一个入口——
+    菜单项执行的是同一个命令函数，快捷键与右键菜单也照旧。
+    """
     items = tuple(specs)
-    size = max(1, int(row_size))
-    return tuple(items[index:index + size] for index in range(0, len(items), size))
+    head = tuple(item for item in items if item[1] in primary)
+    tail = tuple(item for item in items if item[1] not in primary)
+    return head, tail
 def floating_notice_xy(position: str, screen_width: int, screen_height: int,
                        width: int = FLOATING_NOTICE_WIDTH,
                        height: int = FLOATING_NOTICE_HEIGHT) -> tuple[int, int]:

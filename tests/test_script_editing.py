@@ -27,11 +27,65 @@ from macroflow.ui.dialogs.segments import RecordedInputDialog, SegmentEditorMixi
 from tests.helpers.core import FakeSettingVar, FakeTree, FakeVar
 from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
 from tests.helpers.ui import make_edit_app  # noqa: E402
-from macroflow.ui.app.constants import ACTION_TREE_COLUMNS  # noqa: E402
+from macroflow.ui.app.base import split_toolbar_specs  # noqa: E402
+from macroflow.ui.app.constants import (  # noqa: E402
+    ACTION_TREE_COLUMNS, ADD_ACTION_MENU_LABEL, PRIMARY_ACTION_COMMANDS,
+)
 from tests.helpers.patches import package_patch
 
 
 class ScriptEditingTests(unittest.TestCase):
+    def test_compact_toolbar_keeps_every_action_reachable(self):
+        """工具栏压成一行后，每个动作都必须还有入口，且只有一个常驻按钮。
+
+        界面减法最容易出的错是「折叠时漏掉一个动作」：按钮从工具栏挪进菜单后
+        没人再能添加它。这里用同一份按钮清单把两个入口对齐。
+        """
+        specs = MacroFlowApp._script_action_button_specs()
+        primary, overflow = split_toolbar_specs(
+            specs, set(PRIMARY_ACTION_COMMANDS),
+        )
+
+        # 两个入口的并集必须恰好等于完整清单：不多（重复入口）也不少（漏掉动作）。
+        combined = [item[1] for item in primary] + [item[1] for item in overflow]
+        self.assertEqual(sorted(combined), sorted(item[1] for item in specs))
+        self.assertEqual(len(combined), len(set(combined)), "同一个动作不能有两个入口")
+        self.assertEqual(
+            len(primary), len(PRIMARY_ACTION_COMMANDS),
+            "常驻按钮数应等于 PRIMARY_ACTION_COMMANDS，工具栏才不会又变宽",
+        )
+        # 常驻里每个命令都要真能在实例上取到（否则按钮点不动）。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        for _text, command_name, _style in primary:
+            self.assertTrue(callable(getattr(app, command_name)), command_name)
+        # 菜单文案不能和常驻按钮重复（重复等于两个入口抢同一件事）。
+        self.assertNotIn(ADD_ACTION_MENU_LABEL, [item[0] for item in specs])
+
+    def test_add_action_menu_lists_every_overflow_action(self):
+        """「+ 添加动作 ▾」菜单项恰好覆盖所有非常驻动作，一条不多一条不少。"""
+        specs = MacroFlowApp._script_action_button_specs()
+        _primary, overflow = split_toolbar_specs(specs, set(PRIMARY_ACTION_COMMANDS))
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.add_action_menu_button = Mock()
+        app.add_action_menu_button.winfo_rootx.return_value = 10
+        app.add_action_menu_button.winfo_rooty.return_value = 20
+        app.add_action_menu_button.winfo_height.return_value = 24
+        for _text, command_name, _style in specs:
+            setattr(app, command_name, Mock())
+
+        with patch("macroflow.ui.app.shell.tk.Menu") as menu_class:
+            app._show_add_action_menu()
+
+        menu = menu_class.return_value
+        labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
+        expected = [item[0] for item in overflow]
+        self.assertEqual(labels[:len(expected)], expected)
+        # 菜单里还能插入脚本引用（工具栏不再放这两个按钮）。
+        self.assertIn("⇥ 引用脚本（实时读取）", labels)
+        self.assertIn("⇥ 逐行插入脚本", labels)
+        menu.tk_popup.assert_called_once()
+
     def test_script_editor_add_actions_use_one_module_entry(self):
         labels = [label for label, _command, _style in MacroFlowApp._script_action_button_specs()]
 

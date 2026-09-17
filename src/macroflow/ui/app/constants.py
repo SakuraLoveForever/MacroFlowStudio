@@ -46,6 +46,16 @@ ACTION_TREE_COLUMNS = (
     ("detail", "参数", 420, "w"), ("delay", "执行前延时", 92, "center"),
 )
 RECORD_TOOLBAR_BUTTON_LABEL = "⏺ 录制"
+ADD_ACTION_MENU_LABEL = "+ 添加动作 ▾"
+# 常驻在工具栏上的动作（按命令名）。其余动作进「添加动作」菜单：两个入口来自
+# 同一份按钮清单（_script_action_button_specs），命令函数相同，快捷键与右键
+# 菜单也不变，所以功能一个都不会少。动作类型有 19 个，全摆出来会把工具栏
+# 挤成三行，低频项折进菜单后工具栏回到一行。
+PRIMARY_ACTION_COMMANDS = (
+    "add_click", "add_key", "add_delay", "add_text", "add_mouse_move",
+    "_toggle_record_from_toolbar",
+)
+
 ACTION_ICONS = {
     "delay": "◷",
     "key": "⌨",

@@ -316,14 +316,34 @@ class WorkflowDisplayTests(unittest.TestCase):
         self.assertIn('text="从选中行运行"', source)
         self.assertIn('text="运行工作流"', source)
 
-    def test_toolbar_spec_rows_keep_action_buttons_visible(self):
-        from macroflow.ui.app.base import toolbar_spec_rows
+    def test_script_toolbar_stays_on_one_row_with_an_overflow_menu(self):
+        """脚本页工具栏必须是一行 + 「添加动作」菜单。
 
-        specs = tuple((f"button-{index}", None, "ScriptTool.TButton") for index in range(16))
-        rows = toolbar_spec_rows(specs, row_size=8)
+        19 个动作按钮铺开会占两到三行，把动作列表挤下去；这里的约束是
+        常驻按钮不超过 PRIMARY_ACTION_COMMANDS，其余全部有菜单入口。
+        """
+        from macroflow.ui.app.base import split_toolbar_specs
+        from macroflow.ui.app.constants import PRIMARY_ACTION_COMMANDS
 
-        self.assertEqual([len(row) for row in rows], [8, 8])
-        self.assertEqual(tuple(item for row in rows for item in row), specs)
+        source = inspect.getsource(MacroFlowApp._build_script_tab)
+        self.assertIn("split_toolbar_specs", source)
+        self.assertIn("ADD_ACTION_MENU_LABEL", source)
+        # 旧的两行分组（「添加动作」标题 + 逐行排版）不能再回来。
+        self.assertNotIn("toolbar_spec_rows", source)
+        self.assertNotIn('text="添加动作"', source)
+
+        specs = MacroFlowApp._script_action_button_specs()
+        primary, overflow = split_toolbar_specs(specs, set(PRIMARY_ACTION_COMMANDS))
+        self.assertEqual(len(primary), len(PRIMARY_ACTION_COMMANDS))
+        self.assertGreater(len(overflow), 0, "低频动作应当折进菜单而不是删掉")
+
+        # 工具栏是用 getattr(self, 命令名) 取按钮命令的：命令名写错会在建界面时
+        # 直接抛 AttributeError，这里先把每个命令名都解析一遍。
+        for _text, command_name, _style in specs:
+            self.assertTrue(
+                callable(getattr(MacroFlowApp, command_name)),
+                f"工具栏命令 {command_name} 在主窗口上不存在",
+            )
 
     def test_workflow_tab_uses_resizable_split_and_grouped_toolbars(self):
         source = inspect.getsource(MacroFlowApp._build_workflow_tab)
