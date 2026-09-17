@@ -220,10 +220,17 @@ def module_codes(module):
 
 
 # 打包入口（src/macroflow/ui/app/__main__.py）在 CArchive 根目录，模块名 __main__。
+# 入口用 `from macroflow.ui.app.startup import main` 导入，所以基名里应当出现
+# "macroflow.ui.app.startup" 与 "main"。
 ENTRY_NAME = "__main__" if "__main__" in archive.toc else "app"
 entry_names = set(names_of(unmarshal(archive.extract(ENTRY_NAME))))
 if "main" not in entry_names or "macroflow.ui.app.startup" not in entry_names:
     ERRORS.append(f"打包入口 {ENTRY_NAME} 没有指向 macroflow.ui.app.startup.main")
+
+# 主窗口类必须真的进包：包入口只转出它，所以查包入口的 co_names。
+app_entry_names = set(names_of(module_code("macroflow.ui.app")))
+if "MacroFlowApp" not in app_entry_names:
+    ERRORS.append("macroflow.ui.app 包入口没有转出 MacroFlowApp")
 
 # 版本号随主窗口包一起校验。
 if EXPECT_VERSION not in {
