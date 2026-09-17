@@ -8,6 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.common import *  # noqa: E402,F401,F403
+from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
+from tests.helpers.ui import make_edit_app  # noqa: E402
+from macroflow.ui.app.constants import ACTION_TREE_COLUMNS  # noqa: E402
 
 
 class ScriptEditingTests(unittest.TestCase):
@@ -246,7 +249,7 @@ class ScriptEditingTests(unittest.TestCase):
         app._search_key_actions(1)
 
         app.key_search_match_var.set.assert_called_once_with("匹配 1 项")
-        app.action_tree.selection_set.assert_called_once_with("1")
+        app.action_tree.selection_set.assert_called_with("1")
 
     def test_set_matching_key_action_delays_changes_only_search_matches(self):
         actions = [
@@ -421,15 +424,8 @@ class ScriptEditingTests(unittest.TestCase):
                 )
 
     def test_add_row_list_condition_click_assigns_new_action_identity(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.root = Mock()
-        app.script = MacroScript(actions=[])
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
+        app = make_edit_app()
         app._selected_action_index = Mock(return_value=None)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
         result = {
             "type": "row_list_condition_click",
             "left_condition": {"type": "image"},
@@ -448,6 +444,7 @@ class ScriptEditingTests(unittest.TestCase):
             "right_condition": {"type": "image"},
             "action_id": "new-row-list-id",
         }])
+        self.assertEqual(app.action_tree.get_children(), ("0",))
 
     def test_editing_row_list_condition_click_opens_its_dialog_and_preserves_identity(self):
         original = {
@@ -606,65 +603,45 @@ class ScriptEditingTests(unittest.TestCase):
         app._sync_global_script_marker.assert_called_once()
 
     def test_delete_selected_actions_updates_script_and_can_be_undone(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
             {"type": "comment", "text": "C"},
         ])
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("1",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._set_status = Mock()
-        app._notify = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("1")
         app.delete_actions()
         self.assertEqual([action["text"] for action in app.script.actions], ["A", "C"])
-        app._checkpoint_action_edit.assert_called_once()
+        self.assertTrue(app.action_undo_stack, "删除必须留下可撤销记录")
         app._mark_dirty.assert_called_once()
-        app.action_tree.selection_set.assert_called_once_with("1")
-        app.action_tree.focus.assert_called_once_with("1")
-        app.action_tree.see.assert_called_once_with("1")
+        # 行真被删掉、行号跟着重排（不是只改了数据）。
+        self.assertEqual(app.action_tree.get_children(), ("0", "1"))
+        self.assertEqual(app.action_tree.value("1", "detail"), "C")
+        self.assertEqual(app.action_tree.value("1", "index"), 2)
         app._set_status.assert_called_once()
 
     def test_delete_last_action_selects_new_last_action(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
         ])
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("1",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._set_status = Mock()
-        app._notify = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("1")
 
         app.delete_actions()
 
         self.assertEqual([action["text"] for action in app.script.actions], ["A"])
-        app.action_tree.selection_set.assert_called_once_with("0")
-        app.action_tree.focus.assert_called_once_with("0")
-        app.action_tree.see.assert_called_once_with("0")
+        self.assertEqual(app.action_tree.get_children(), ("0",))
+        self.assertEqual(app.action_tree.selection(), ("0",))
+        self.assertEqual(app.action_tree.focus(), "0")
 
     def test_insert_script_below_selected_row_stores_reference(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
         ])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
         inserted = MacroScript(actions=[
             {"type": "comment", "text": "C1"},
             {"type": "comment", "text": "C2"},
@@ -678,21 +655,14 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(ref["script"], str(Path("C:/scripts/C.json").resolve()))
         self.assertEqual(ref["repeats"], 1)
         self.assertTrue(ref.get("action_id"))
-        app._checkpoint_action_edit.assert_called_once()
         app._mark_dirty.assert_called_once()
-        app.action_tree.selection_set.assert_called_once_with("1")
+        self.assertEqual(app.action_tree.get_children(), ("0", "1", "2"))
+        self.assertEqual(app.action_tree.selection(), ("1",))
 
     def test_insert_script_reference_accepts_multiple_selected_files_in_order(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app = make_edit_app(actions=[{"type": "comment", "text": "A"}])
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
         paths = ("C:/scripts/first.json", "C:/scripts/second.json")
 
         with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""), \
@@ -708,19 +678,12 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual([action["type"] for action in app.script.actions[1:]], [
             "script_ref", "script_ref",
         ])
-        app.action_tree.selection_set.assert_called_once_with("1", "2")
+        self.assertEqual(app.action_tree.get_children(), ("0", "1", "2"))
+        self.assertEqual(app.action_tree.selection(), ("1", "2"))
 
     def test_insert_script_expanded_accepts_multiple_selected_files_in_order(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ()
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app = make_edit_app()
+        app.rebuild_action_tree()
         paths = ("C:/scripts/first.json", "C:/scripts/second.json")
         scripts = [
             MacroScript(actions=[{"type": "comment", "text": "first"}]),
@@ -735,19 +698,12 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(
             [action["text"] for action in app.script.actions], ["first", "second"],
         )
-        app.action_tree.selection_set.assert_called_once_with("0", "1")
+        self.assertEqual(app.action_tree.get_children(), ("0", "1"))
+        self.assertEqual(app.action_tree.selection(), ("0", "1"))
 
     def test_insert_script_into_empty_script_allowed(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ()
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app = make_edit_app()
+        app.rebuild_action_tree()
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
         with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch_app("load_script", return_value=inserted):
@@ -755,85 +711,66 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(len(app.script.actions), 1)
         self.assertEqual(app.script.actions[0]["type"], "script_ref")
         self.assertEqual(app.script.actions[0]["script"], str(Path("C:/scripts/C.json").resolve()))
-        app._checkpoint_action_edit.assert_called_once()
-        app.action_tree.selection_set.assert_called_once_with("0")
+        self.assertEqual(app.action_tree.get_children(), ("0",))
+        self.assertEqual(app.action_tree.selection(), ("0",))
         app._notify.assert_called_once()
 
     def test_insert_script_requires_selection_when_actions_exist(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ()
-        app._notify = Mock()
+        app = make_edit_app(actions=[{"type": "comment", "text": "A"}])
+        app.rebuild_action_tree()
         with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
             app._insert_script(False)
         picker.assert_not_called()
         app._notify.assert_called_once()
 
     def test_insert_action_above_selected_row(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
         ])
+        app.rebuild_action_tree()
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("1",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
+        app.action_tree.selection_set("1")
         app._insert_action({"type": "comment", "text": "C"})
         self.assertEqual([action["text"] for action in app.script.actions], ["A", "C", "B"])
-        app.action_tree.selection_set.assert_called_once_with("1")
+        self.assertEqual(app.action_tree.get_children(), ("0", "1", "2"))
+        self.assertEqual(app.action_tree.value("1", "detail"), "C")
+        self.assertEqual(app.action_tree.value("2", "detail"), "B")
+        self.assertEqual(app.action_tree.value("2", "index"), 3)
+        self.assertEqual(app.action_tree.selection(), ("1",))
 
     def test_insert_action_below_selected_row(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
+        app = make_edit_app(actions=[{"type": "comment", "text": "A"}])
+        app.rebuild_action_tree()
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "below"
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
+        app.action_tree.selection_set("0")
         app._insert_action({"type": "comment", "text": "C"})
         self.assertEqual([action["text"] for action in app.script.actions], ["A", "C"])
+        self.assertEqual(app.action_tree.get_children(), ("0", "1"))
+        self.assertEqual(app.action_tree.value("1", "detail"), "C")
 
     def test_insert_above_with_no_selection_goes_to_top(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
+        app = make_edit_app(actions=[{"type": "comment", "text": "A"}])
+        app.rebuild_action_tree()
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ()
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
         app._insert_action({"type": "comment", "text": "C"})
         self.assertEqual([action["text"] for action in app.script.actions], ["C", "A"])
+        self.assertEqual(app.action_tree.value("0", "detail"), "C")
+        self.assertEqual(app.action_tree.value("1", "detail"), "A")
 
     def test_insert_script_above_selected_row_stores_reference(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
         ])
+        app.rebuild_action_tree()
         app.root = Mock()
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("1",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app.action_tree.selection_set("1")
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
         with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
              patch_app("load_script", return_value=inserted):
@@ -841,21 +778,15 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(len(app.script.actions), 3)
         self.assertEqual(app.script.actions[1]["type"], "script_ref")
         self.assertEqual(app.script.actions[1]["script"], str(Path("C:/scripts/C.json").resolve()))
+        self.assertEqual(app.action_tree.get_children(), ("0", "1", "2"))
 
     def test_insert_script_expanded_copies_rows_and_remaps_jump_ids(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "comment", "text": "A"},
             {"type": "comment", "text": "B"},
         ])
-        app.root = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0",)
-        app._checkpoint_action_edit = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
         inserted = MacroScript(actions=[
             {"type": "comment", "text": "C1", "action_id": "src1"},
             {"type": "comment", "text": "C2", "action_id": "src2", "jump_action_id": "src1"},
@@ -886,22 +817,20 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(inserted.actions[0]["action_id"], "src1")
         # 插入的是逐行动作而非 script_ref
         self.assertNotEqual(app.script.actions[1]["type"], "script_ref")
-        app._checkpoint_action_edit.assert_called_once()
         app._mark_dirty.assert_called_once()
         app._notify.assert_called_once()
 
     def test_insert_script_expanded_migrates_legacy_jump_row(self):
         # 旧版脚本的 jump_row（无 action_id）插入后必须迁移为指向插入块内
         # 对应行的 jump_action_id，否则跳转会带着源脚本相对行号错位。
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "comment", "text": "主"}])
+        app = make_edit_app(actions=[{"type": "comment", "text": "主"}])
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
         app.root = Mock()
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
-        app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
         app._notify = Mock()
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
             ref = Path(folder) / "ref.json"
@@ -1123,18 +1052,13 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_add_module_special_insert_does_not_add_global_jump(self):
         # 特殊模块是固定动作，不应被当作全局识别模块自动补跳转。
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.root = Mock()
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "delay", "ms": 1, "action_id": "a1"},
             {"type": "delay", "ms": 2, "action_id": "a2"},
             {"type": "delay", "ms": 3, "action_id": "a3"},
         ])
+        app.rebuild_action_tree()
         app._selected_action_index = Mock(return_value=0)
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
         action = {
             "type": "global_detect", "template": "images/g.png",
             "module_ref": True, "module_category": "special",
@@ -1150,17 +1074,12 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_add_module_special_end_insert_does_not_add_global_jump(self):
         # 特殊模块在脚本末尾插入也不应生成识别跳转字段。
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.root = Mock()
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "delay", "ms": 1, "action_id": "a1"},
             {"type": "delay", "ms": 2, "action_id": "a2"},
         ])
+        app.rebuild_action_tree()
         app._selected_action_index = Mock(return_value=1)
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
         action = {
             "type": "global_detect", "template": "images/g.png",
             "module_ref": True, "module_category": "special",
@@ -1192,74 +1111,59 @@ class ScriptEditingTests(unittest.TestCase):
         app._insert_action.assert_not_called()
 
     def test_undo_restores_actions_before_last_edit(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "delay", "ms": 10}])
-        app.action_undo_stack = []
-        app.action_redo_stack = []
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("1",)
-        app.undo_button = Mock()
-        app.redo_button = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._set_status = Mock()
+        app = make_edit_app(actions=[{"type": "delay", "ms": 10}])
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("1")
 
         app._checkpoint_action_edit()
         app.script.actions.append({"type": "delay", "ms": 20})
         app._undo_redo_action_edit(False)
 
-        self.assertEqual(app.script.actions, [{"type": "delay", "ms": 10}])
+        self.assertEqual([action["ms"] for action in app.script.actions], [10])
         self.assertEqual(app.action_undo_stack, [])
         # 撤销后当前状态（含刚追加的动作）进重做栈，可恢复。
         self.assertEqual(
-            app.action_redo_stack,
-            [[{"type": "delay", "ms": 10}, {"type": "delay", "ms": 20}]],
+            [[action["ms"] for action in snapshot] for _kind, snapshot in app.action_redo_stack],
+            [[10, 20]],
         )
         app.undo_button.configure.assert_called_with(state="disabled")
         app.redo_button.configure.assert_called_with(state="normal")
 
     def test_redo_restores_actions_after_undo(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "delay", "ms": 10}])
+        app = make_edit_app(actions=[{"type": "delay", "ms": 10}])
+        app.rebuild_action_tree()
         app.action_undo_stack = []
-        app.action_redo_stack = [[{"type": "delay", "ms": 20}]]
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0",)
-        app.undo_button = Mock()
-        app.redo_button = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._set_status = Mock()
+        app.action_redo_stack = [("whole", [{"type": "delay", "ms": 20}])]
+        app.action_tree.selection_set("0")
 
         app._undo_redo_action_edit(True)
 
-        self.assertEqual(app.script.actions, [{"type": "delay", "ms": 20}])
+        self.assertEqual([action["ms"] for action in app.script.actions], [20])
         self.assertEqual(app.action_redo_stack, [])
         # 重做把当前状态压回撤销栈，可再撤销。
-        self.assertEqual(app.action_undo_stack, [[{"type": "delay", "ms": 10}]])
+        self.assertEqual(
+            [[action["ms"] for action in snapshot] for _kind, snapshot in app.action_undo_stack],
+            [[10]],
+        )
         app.undo_button.configure.assert_called_with(state="normal")
         app.redo_button.configure.assert_called_with(state="disabled")
 
     def test_redo_empty_stack_does_nothing(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[{"type": "delay", "ms": 10}])
+        app = make_edit_app(actions=[{"type": "delay", "ms": 10}])
+        app.rebuild_action_tree()
         app.action_redo_stack = []
-        app._mark_dirty = Mock()
-        app.redo_button = Mock()
 
         app._undo_redo_action_edit(True)
 
-        self.assertEqual(app.script.actions, [{"type": "delay", "ms": 10}])
+        self.assertEqual([action["ms"] for action in app.script.actions], [10])
         app._mark_dirty.assert_not_called()
         app.redo_button.configure.assert_called_with(state="disabled")
 
     def test_new_edit_clears_redo_stack(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.script = MacroScript(actions=[{"type": "delay", "ms": 10}])
-        app.action_undo_stack = [[{"type": "delay", "ms": 5}]]
-        app.action_redo_stack = [[{"type": "delay", "ms": 10}]]
+        app.action_undo_stack = [("whole", [{"type": "delay", "ms": 5}])]
+        app.action_redo_stack = [("whole", [{"type": "delay", "ms": 10}])]
         app.undo_button = Mock()
         app.redo_button = Mock()
 
@@ -1437,19 +1341,13 @@ class ScriptEditingTests(unittest.TestCase):
         app._notify.assert_called_once()
 
     def test_copy_contiguous_actions_inserts_after_selection(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "key", "vk": 65, "meta": {"name": "A"}},
             {"type": "delay", "ms": 100},
             {"type": "key", "vk": 66},
         ])
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = ("0", "1")
-        app.root = Mock()
-        app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
-        app._set_status = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0", "1")
 
         app.copy_selected_actions_down()
 
@@ -1459,7 +1357,7 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(app.script.actions[2]["vk"], 65)
         self.assertIsNot(app.script.actions[2], app.script.actions[0])
         self.assertIsNot(app.script.actions[2]["meta"], app.script.actions[0]["meta"])
-        app.action_tree.selection_set.assert_called_once_with("2", "3")
+        self.assertEqual(app.action_tree.selection(), ("2", "3",))
 
     def test_copy_rejects_non_contiguous_selection(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1474,7 +1372,6 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app._notify = Mock()
         app._mark_dirty = Mock()
-        app.rebuild_action_tree = Mock()
 
         app.copy_selected_actions_down()
 
@@ -1484,18 +1381,11 @@ class ScriptEditingTests(unittest.TestCase):
 
     @staticmethod
     def _move_app(selected, count: int = 6) -> MacroFlowApp:
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.script = MacroScript(actions=[
+        app = make_edit_app(actions=[
             {"type": "delay", "ms": index} for index in range(count)
         ])
-        app.action_tree = Mock()
-        app.action_tree.selection.return_value = ()
-        app.action_tree.selection.return_value = selected
-        app._mark_dirty = Mock()
-        app._checkpoint_action_edit = Mock()
-        app.rebuild_action_tree = Mock()
-        app._notify = Mock()
-        app._set_status = Mock()
+        app.rebuild_action_tree()
+        app.action_tree.selection_set(*selected)
         return app
 
     def test_move_action_moves_contiguous_block_up(self):
@@ -1505,8 +1395,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.move_action(-1)
 
         self.assertEqual([action["ms"] for action in app.script.actions], [0, 2, 3, 4, 1, 5])
-        app.action_tree.selection_set.assert_called_once_with("1", "2", "3")
-        app._checkpoint_action_edit.assert_called_once()
+        self.assertEqual(app.action_tree.selection(), ("1", "2", "3",))
         app._mark_dirty.assert_called_once()
         app._notify.assert_not_called()
         app._set_status.assert_called_once()
@@ -1517,7 +1406,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.move_action(1)
 
         self.assertEqual([action["ms"] for action in app.script.actions], [0, 3, 1, 2, 4, 5])
-        app.action_tree.selection_set.assert_called_once_with("2", "3")
+        self.assertEqual(app.action_tree.selection(), ("2", "3",))
 
     def test_move_action_single_row_swaps_with_neighbour(self):
         app = self._move_app(("1",))
@@ -1525,7 +1414,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.move_action(-1)
 
         self.assertEqual([action["ms"] for action in app.script.actions], [1, 0, 2, 3, 4, 5])
-        app.action_tree.selection_set.assert_called_once_with("0")
+        self.assertEqual(app.action_tree.selection(), ("0",))
         app._set_status.assert_not_called()
 
     def test_move_action_rejects_non_contiguous_selection(self):
@@ -1535,7 +1424,6 @@ class ScriptEditingTests(unittest.TestCase):
 
         self.assertEqual([action["ms"] for action in app.script.actions], [0, 1, 2, 3, 4, 5])
         app._notify.assert_called_once()
-        app._checkpoint_action_edit.assert_not_called()
         app._mark_dirty.assert_not_called()
 
     def test_move_action_stops_at_script_edges(self):
@@ -1548,7 +1436,6 @@ class ScriptEditingTests(unittest.TestCase):
                 self.assertEqual(
                     [action["ms"] for action in app.script.actions], [0, 1, 2, 3, 4, 5],
                 )
-                app._checkpoint_action_edit.assert_not_called()
                 app._mark_dirty.assert_not_called()
 
 
@@ -1571,14 +1458,22 @@ class CloseScriptTests(unittest.TestCase):
         app._notify = Mock()
         app._log = Mock()
         app._set_status = Mock()
-        app._clear_action_undo = Mock()
-        app.rebuild_action_tree = Mock()
         app._refresh_coordinate_scale_status = Mock()
         app._sync_activation_ui_from_script = Mock()
+        app._blank_script_with_activation_draft = Mock(return_value=MacroScript())
         app.script_name_var = Mock()
         app.interval_var = Mock()
         app.script_category_var = Mock()
         app.record_mode_var = Mock()
+        # 行刷新走真实实现（FakeTree），所以这里必须有动作列表控件。
+        app.action_tree = FakeTree(ACTION_TREE_COLUMNS)
+        app.empty_action_hint = Mock()
+        app.global_script_marker = Mock()
+        app.edit_action_button = Mock()
+        app.record_count_var = FakeVar("")
+        app.undo_button = Mock()
+        app.redo_button = Mock()
+        app.undo_open_button = Mock()
         return app
 
     def test_close_script_snapshots_and_clears_editor(self):
@@ -1954,7 +1849,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.run_current_script = Mock()
         with patch("macroflow.ui.app.tk.Menu") as menu_class:
             app._show_action_context_menu(Mock())
-        app.action_tree.selection_set.assert_called_once_with("1")
+        app.action_tree.selection_set.assert_called_with("1")
         command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
         command()
         app.run_current_script.assert_called_once_with(start_index=1)
@@ -2694,10 +2589,15 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.record_mode_var = FakeSettingVar("")
         app.interval_var = FakeSettingVar(20)
         app.script_category_var = FakeSettingVar("")
-        app._clear_action_undo = Mock()
         app._update_undo_open_button = Mock()
-        app.rebuild_action_tree = Mock()
         app._refresh_coordinate_scale_status = Mock()
+        app.action_tree = FakeTree(ACTION_TREE_COLUMNS)
+        app.record_count_var = FakeVar("")
+        app.empty_action_hint = Mock()
+        app.global_script_marker = Mock()
+        app.edit_action_button = Mock()
+        app.undo_button = Mock()
+        app.redo_button = Mock()
         app._sync_activation_ui_from_script = Mock()
         app._set_status = Mock()
         app._log = Mock()

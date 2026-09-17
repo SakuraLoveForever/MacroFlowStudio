@@ -60,16 +60,25 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from .base import (
+    _UI_SCALE,
     workflow_execution_progress,
     workflow_script_name,
 )
 from .constants import (
     COLOR_SURFACE,
     COLOR_TEXT,
+    FONT_FAMILY,
+    FONT_SUBTITLE,
+    WORKFLOW_TREE_COLUMNS,
 )
+from .script_edit import module_objects_snapshot
 from .startup import (
     spawn_new_instance,
 )
+
+# 已经量过列宽的 (tree, column)：普通编辑刷新不再重测整列文本。
+_AUTOSIZED_COLUMNS: set[tuple[int, str]] = set()
+
 
 class WorkflowMixin:
     """工作流页：步骤表格、单元格编辑、排序、全局模块列表与执行。"""
@@ -82,7 +91,7 @@ class WorkflowMixin:
     def _workflow_module_key(step: dict) -> str:
         action = step.get("action") if isinstance(step.get("action"), dict) else {}
         return str(action.get("module_key") or action.get("template") or "").strip()
-    def _workflow_module_enabled(self, step: dict) -> bool:
+    def _workflow_module_enabled(self, step: dict, module_objects: dict | None = None) -> bool:
         """Whether the module registry currently allows this workflow row."""
         if step.get("kind") != "module":
             return True
@@ -91,13 +100,19 @@ class WorkflowMixin:
             "restart_workflow", "end_current_script", "jump_current_script_last",
         }:
             return True
-        module_obj = registered_module_object(self._workflow_module_key(step))
+        module_obj = self._module_object(self._workflow_module_key(step), module_objects)
         return bool(module_obj and module_obj.get("enabled", True))
-    def _workflow_step_name(self, step: dict) -> str:
+    @staticmethod
+    def _module_object(module_key: str, module_objects: dict | None = None):
+        """查模块对象：给了本次刷新的快照就查快照，否则读一次仓库。"""
+        if module_objects is not None:
+            return module_objects.get(module_key)
+        return registered_module_object(module_key)
+    def _workflow_step_name(self, step: dict, module_objects: dict | None = None) -> str:
         if step.get("kind") != "module":
             return workflow_script_name(step.get("script", "")) or "未设置脚本"
         module_key = self._workflow_module_key(step)
-        module_obj = registered_module_object(module_key)
+        module_obj = self._module_object(module_key, module_objects)
         action = step.get("action") if isinstance(step.get("action"), dict) else {}
         special_type = str(action.get("type", ""))
         if special_type == "restart_workflow":
@@ -148,80 +163,114 @@ class WorkflowMixin:
     def _refresh_workflow_segment_bar(self, _event=None) -> None:
         """工作流表格选中一段步骤时，在最左边画出那根实心竖条。"""
         self._refresh_row_segment_bar(self.workflow_tree, "workflow_segment_painted")
+    def _workflow_row_values(self, step: dict, index: int,
+                             module_objects: dict) -> tuple[tuple, tuple]:
+        """一行工作流步骤的显示值与标签。"""
+        is_module = step.get("kind") == "module"
+        module_enabled = self._workflow_module_enabled(step, module_objects)
+        unlimited = bool(step.get("unlimited", False))
+        exhausted = not unlimited and int(step.get("repeats", 1)) <= 0
+        if is_module:
+            module_obj = self._module_object(self._workflow_module_key(step), module_objects)
+            missing = module_obj is None
+            script_label = f"◆ {self._workflow_step_name(step, module_objects)}"
+        else:
+            missing = not resolve_path(step.get("script", "")).is_file()
+            script_label = workflow_script_name(step.get("script", ""))
+        if missing:
+            script_label = f"⚠ {script_label}  ·  {'模块不存在' if is_module else '文件不存在'}"
+        repeat_label = "∞" if unlimited else step.get("repeats", 1)
+        if str(step.get("repeat_start_action_id", "")).strip():
+            repeat_label = f"{repeat_label} ↻"
+        if is_module and not module_enabled:
+            status_label = "● 模块已禁用"
+        elif not bool(step.get("enabled", True)):
+            status_label = "● 已禁用"
+        elif unlimited:
+            status_label = "✓ 不计次数"
+        elif exhausted:
+            status_label = "○ 次数用完"
+        else:
+            status_label = "✓ 启用"
+        if is_module and not module_enabled:
+            tags = ("module_disabled",)
+        elif not bool(step.get("enabled", True)):
+            tags = ("disabled",)
+        elif unlimited:
+            tags = ("unlimited",)
+        elif exhausted:
+            tags = ("exhausted",)
+        elif missing:
+            tags = ("missing",)
+        else:
+            tags = ()
+        values = (
+            "", index + 1, script_label, repeat_label,
+            f"{step.get('before_ms', 0)} ms",
+            f"{step.get('repeat_interval_ms', DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)} ms",
+            status_label,
+        )
+        return values, tags
     def rebuild_workflow_tree(self):
+        """整表重建：打开 / 新建 / 替换工作流，或列表结构整体变化时使用。"""
         self._reset_row_segment_bar("workflow_segment_painted")
         self._sync_workflow_restart_default_ui()
         self.workflow_tree.delete(*self.workflow_tree.get_children())
+        module_objects = module_objects_snapshot()
+        self.workflow_module_objects = module_objects
         workflow_steps = self._workflow_only_steps()
         script_labels = []
         for index, step in enumerate(workflow_steps):
-            is_module = step.get("kind") == "module"
-            script_value = step.get("script", "")
-            module_enabled = self._workflow_module_enabled(step)
-            enabled = bool(step.get("enabled", True)) and module_enabled
-            unlimited = bool(step.get("unlimited", False))
-            exhausted = not unlimited and int(step.get("repeats", 1)) <= 0
-            if is_module:
-                module_key = self._workflow_module_key(step)
-                module_obj = registered_module_object(module_key)
-                missing = module_obj is None
-                script_label = f"◆ {self._workflow_step_name(step)}"
-            else:
-                missing = not resolve_path(script_value).is_file()
-                script_label = workflow_script_name(script_value)
-            if missing:
-                missing_text = "模块不存在" if is_module else "文件不存在"
-                script_label = f"⚠ {script_label}  ·  {missing_text}"
-            script_labels.append(script_label)
-            if unlimited:
-                repeat_label = "∞"
-            else:
-                repeat_label = step.get("repeats", 1)
-            if str(step.get("repeat_start_action_id", "")).strip():
-                repeat_label = f"{repeat_label} ↻"
-            if is_module and not module_enabled:
-                status_label = "● 模块已禁用"
-            elif not bool(step.get("enabled", True)):
-                status_label = "● 已禁用"
-            elif unlimited:
-                status_label = "✓ 不计次数"
-            elif exhausted:
-                status_label = "○ 次数用完"
-            else:
-                status_label = "✓ 启用"
+            values, tags = self._workflow_row_values(step, index, module_objects)
+            script_labels.append(values[2])
             self.workflow_tree.insert(
-                "", "end", iid=str(index),
-                values=(
-                    "", index + 1, script_label, repeat_label,
-                    f"{step.get('before_ms', 0)} ms",
-                    f"{step.get('repeat_interval_ms', DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)} ms",
-                    status_label,
-                ),
-                tags=("module_disabled",) if is_module and not module_enabled else (
-                    ("disabled",) if not bool(step.get("enabled", True)) else (
-                        ("unlimited",) if unlimited else (
-                            ("exhausted",) if exhausted else (("missing",) if missing else ())
-                        )
-                    )
-                ),
+                "", "end", iid=str(index), values=values, tags=tags,
             )
         if workflow_steps:
             self.empty_workflow_hint.place_forget()
         else:
             self.empty_workflow_hint.place(relx=0.5, rely=0.45, anchor="center")
         self._autosize_tree_column(self.workflow_tree, "script", 500, script_labels)
-        self.rebuild_global_tree()
-    def rebuild_global_tree(self):
+        self.rebuild_global_tree(module_objects)
+    def _set_workflow_row(self, row: int, module_objects: dict | None = None) -> None:
+        """按当前数据重画一行工作流步骤。"""
+        steps = self._workflow_only_steps()
+        if not 0 <= row < len(steps):
+            return
+        iid = str(row)
+        if not self.workflow_tree.exists(iid):
+            return
+        values, tags = self._workflow_row_values(
+            steps[row], row,
+            module_objects if module_objects is not None
+            else getattr(self, "workflow_module_objects", None) or module_objects_snapshot(),
+        )
+        column_names = tuple(
+            column[0] if isinstance(column, (tuple, list)) else column
+            for column in WORKFLOW_TREE_COLUMNS
+        )
+        for column, value in zip(column_names, values):
+            if column != "mark":
+                self.workflow_tree.set(iid, column, value)
+        self.workflow_tree.item(iid, tags=tags)
+    def _refresh_one_workflow_row(self, row: int) -> None:
+        """单行步骤变化：只重画这一行，不重建全局模块表。"""
+        self._set_workflow_row(row)
+    def rebuild_global_tree(self, module_objects: dict | None = None):
         tree = getattr(self, "global_tree", None)
         if tree is None:
             return
+        if module_objects is None:
+            module_objects = getattr(self, "workflow_module_objects", None) \
+                or module_objects_snapshot()
+        self.workflow_module_objects = module_objects
         tree.delete(*tree.get_children())
         module_labels = []
         for index, step in enumerate(self._global_module_steps()):
             row_enabled = bool(step.get("enabled", True))
             registry_state = self._workflow_global_module_registry_state(step)
             enabled = row_enabled and registry_state in (None, "enabled")
-            module_label = self._global_module_label(step)
+            module_label = self._global_module_label(step, module_objects)
             module_labels.append(module_label)
             if registry_state == "missing":
                 status_label = "⚠ 模块不存在"
@@ -254,7 +303,7 @@ class WorkflowMixin:
                 if str(action.get("type")) == "global_detect" and "jump_row" not in action:
                     return dict(action)
         return config
-    def _global_module_label(self, step: dict) -> str:
+    def _global_module_label(self, step: dict, module_objects: dict | None = None) -> str:
         """Full summary for a global module, reading the referenced script when needed."""
         config = dict(step.get("config") or {})
         script_value = step.get("script", "")
@@ -268,7 +317,7 @@ class WorkflowMixin:
                     pass
         if config.get("module_ref") and str(config.get("template", "")).strip():
             module_key = str(config.get("module_key") or config.get("template", "")).strip()
-            module_obj = registered_module_object(module_key) or {}
+            module_obj = self._module_object(module_key, module_objects) or {}
             module_name = str(module_obj.get("name", "")).strip() or Path(
                 module_key.replace("\\", "/"),
             ).stem
@@ -301,16 +350,41 @@ class WorkflowMixin:
         hold_text = f"持续 {hold} ms" if config.get("hold_enabled", False) else "识别到立即执行"
         return (f"◈ 全局检测 · {script_text} · {template_name} · 区域 {region_text} · "
                 f"{hold_text} · 触发后执行模块步骤，再继续工作流")
-    def _measure_text_width(self, text: str) -> int:
+    def _measure_font(self):
+        """测量用字体：缓存一份，字号 / DPI 变了才重建。
+
+        每次测量都新建 ``tkfont.Font`` 会让自动列宽变成大列表上的主要开销；
+        缓存后按 (family, size, scaling) 失效，DPI 或字号改变时自然刷新。
+        """
+        signature = (FONT_FAMILY, FONT_SUBTITLE, round(_UI_SCALE, 3))
+        cached = getattr(self, "_measure_font_cache", None)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         try:
-            return tkfont.Font(family="Microsoft YaHei UI", size=11).measure(str(text))
+            font = tkfont.Font(family=FONT_FAMILY, size=FONT_SUBTITLE)
         except RuntimeError:
+            font = None
+        self._measure_font_cache = (signature, font)
+        return font
+    def _measure_text_width(self, text: str) -> int:
+        font = self._measure_font()
+        if font is None:
             # No Tk root available (unit tests): estimate CJK vs ASCII widths.
             return sum(14 if ord(ch) > 0x2E7F else 7 for ch in str(text))
-    def _autosize_tree_column(self, tree, column: str, min_width: int, texts: list[str]) -> None:
-        """Widen a tree column so its longest text stays fully visible."""
+        return font.measure(str(text))
+    def _autosize_tree_column(self, tree, column: str, min_width: int, texts: list[str],
+                              force: bool = True) -> None:
+        """Widen a tree column so its longest text stays fully visible.
+
+        全量测量只在打开文档 / 首次显示时跑（``force=True``）；普通编辑刷新复用
+        上次量好的列宽，不为了几个字符把整列文本重新量一遍。
+        """
+        key = (id(tree), column)
+        if not force and key in _AUTOSIZED_COLUMNS:
+            return
         needed = max((self._measure_text_width(text) for text in texts), default=0)
         tree.column(column, width=max(min_width, min(1600, needed + 40)), minwidth=min_width)
+        _AUTOSIZED_COLUMNS.add(key)
     def new_workflow(self):
         self.workflow = Workflow()
         self.workflow_path = None
@@ -741,8 +815,10 @@ class WorkflowMixin:
             step["enabled"] = not bool(step.get("enabled", True))
         else:
             return
-        self.rebuild_workflow_tree()
+        # 只重画被改的这一行：行数与其它行都没变，不需要重建整张表。
+        self._refresh_one_workflow_row(index)
         self.workflow_tree.selection_set(str(index))
+        self._update_workflow_selection_color()
         self._persist_workflow_draft()
     def toggle_selected_workflow_step(self):
         indices = self._selected_workflow_indices()
@@ -756,7 +832,7 @@ class WorkflowMixin:
         enabled = not all(bool(workflow_steps[index].get("enabled", True)) for index in indices)
         for index in indices:
             workflow_steps[index]["enabled"] = enabled
-        self.rebuild_workflow_tree()
+            self._refresh_one_workflow_row(index)
         rows = tuple(str(index) for index in indices)
         self.workflow_tree.selection_set(*rows)
         self.workflow_tree.see(rows[0])
@@ -782,7 +858,7 @@ class WorkflowMixin:
             return 0
         remaining = max(0, int(step.get("repeats", 0)) - 1)
         step["repeats"] = remaining
-        self.rebuild_workflow_tree()
+        self._refresh_one_workflow_row(index)
         self._persist_workflow_draft()
         if self.workflow_path is not None:
             try:
@@ -834,11 +910,14 @@ class WorkflowMixin:
             self._log,
             f"工作流第 {index + 1} 行成功完成一次，剩余 {remaining} 次{state_note}。",
         )
-        self._ui(self._refresh_workflow_repeat_ui)
+        self._ui(self._refresh_workflow_repeat_ui, index)
         return remaining
-    def _refresh_workflow_repeat_ui(self) -> None:
+    def _refresh_workflow_repeat_ui(self, index: int | None = None) -> None:
         """Refresh workflow controls after a worker-thread repeat is consumed."""
-        self.rebuild_workflow_tree()
+        if index is not None:
+            self._refresh_one_workflow_row(index)
+        else:
+            self.rebuild_workflow_tree()
         self._persist_workflow_draft()
     def set_all_workflow_step_options(self):
         workflow_steps = self._workflow_only_steps()

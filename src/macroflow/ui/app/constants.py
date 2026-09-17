@@ -6,7 +6,6 @@ APP_VERSION = "1.0.0"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_RUN_VALUE = "MacroFlowStudio"
 DEFAULT_GLOBAL_CLICK_DELAY_MS = 1000
-MAX_TREE_ROWS = 20_000
 BACKUP_INTERVAL_CHOICES = ("1h", "1天", "1周")
 BACKUP_INTERVAL_MS = {
     "1h": 60 * 60 * 1000,

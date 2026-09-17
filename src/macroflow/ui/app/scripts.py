@@ -60,10 +60,19 @@ from .base import (
     script_category_label,
 )
 from .constants import (
+    ACTION_TREE_COLUMNS,
     COLOR_RED,
     COLOR_SURFACE,
     COLOR_TEXT,
-    MAX_TREE_ROWS,
+)
+from .script_edit import (
+    ActionEditHistory,
+    ActionRowIndex,
+    RowEdit,
+    action_id_of,
+    action_row_values,
+    module_objects_snapshot,
+    reconcile_action_rows,
 )
 from .startup import (
     spawn_new_instance,
@@ -75,39 +84,145 @@ from .summaries import (
 )
 
 class ScriptsMixin:
-    """脚本持久化与动作列表：打开 / 保存 / 草稿 / 撤销 / 树操作。"""
+    """脚本持久化与动作列表：打开 / 保存 / 草稿 / 撤销 / 树操作。
+
+    行渲染与对齐规则在 ``script_edit``（纯业务，不碰 Tk）；这里只把结果落到
+    控件上：Treeview 只更新真正受影响的行，不再为单行编辑重建整个列表。
+    """
+
+    @property
+    def _action_rows(self) -> ActionRowIndex:
+        """本次刷新的行索引（动作 ID → 行号 + 模块配置快照）。"""
+        index = getattr(self, "action_row_index", None)
+        if index is None:
+            index = self.action_row_index = ActionRowIndex(
+                self.script.actions, module_objects_snapshot(),
+            )
+        return index
+
+    @property
+    def _action_history(self) -> ActionEditHistory:
+        history = getattr(self, "action_edit_history", None)
+        if history is None:
+            history = self.action_edit_history = ActionEditHistory()
+        return history
+
+    @property
+    def action_undo_stack(self) -> list[list[dict]]:
+        """撤销栈（视图；历史由 ``_action_history`` 拥有）。"""
+        return self._action_history.undo
+
+    @action_undo_stack.setter
+    def action_undo_stack(self, value) -> None:
+        self._action_history.undo = list(value)
+
+    @property
+    def action_redo_stack(self) -> list[list[dict]]:
+        """重做栈（视图；历史由 ``_action_history`` 拥有）。"""
+        return self._action_history.redo
+
+    @action_redo_stack.setter
+    def action_redo_stack(self, value) -> None:
+        self._action_history.redo = list(value)
+
+    def _has_undo_steps(self) -> bool:
+        return bool(self._action_history.undo)
+
+    def _has_redo_steps(self) -> bool:
+        return bool(self._action_history.redo)
 
     def _refresh_action_segment_bar(self, _event=None) -> None:
         """动作列表选中一段时，在最左边画出那根实心竖条。"""
         self._refresh_row_segment_bar(self.action_tree, "action_segment_painted")
+    def _reload_action_row_index(self) -> ActionRowIndex:
+        """重读模块配置并重建行号表——只在打开 / 替换数据集时调用。"""
+        index = ActionRowIndex(self.script.actions, module_objects_snapshot())
+        self.action_row_index = index
+        return index
     def rebuild_action_tree(self):
+        """整表重建：打开 / 替换数据集，或撤销这类整体替换时使用。"""
         self._reset_row_segment_bar("action_segment_painted")
         self.action_tree.delete(*self.action_tree.get_children())
-        action_rows = {
-            str(action.get(ACTION_ID_KEY, "")): index + 1
-            for index, action in enumerate(self.script.actions)
-            if action.get(ACTION_ID_KEY)
-        }
+        index = self._reload_action_row_index()
         detail_texts = []
-        for index, action in enumerate(self.script.actions[:MAX_TREE_ROWS]):
-            kind, detail, delay = action_summary(action, action_rows)
-            if action.get("failure_segment_enabled"):
-                detail += f" · 失败后执行代码段 {len(action.get('failure_actions') or [])} 项"
-            detail_texts.append(detail)
-            self.action_tree.insert(
-                "", "end", iid=str(index),
-                values=("", index + 1, kind, detail, delay),
-            )
+        for row, action in enumerate(self.script.actions):
+            values = action_row_values(action, row, index)
+            detail_texts.append(values[3])
+            self.action_tree.insert("", "end", iid=str(row), values=values)
         self._autosize_tree_column(self.action_tree, "detail", 590, detail_texts)
+        self._finish_action_tree_refresh()
+    def _finish_action_tree_refresh(self):
         total = len(self.script.actions)
-        suffix = "（仅显示前 20,000 条）" if total > MAX_TREE_ROWS else ""
-        self.record_count_var.set(f"{total} 个动作{suffix}")
+        self.record_count_var.set(f"{total} 个动作")
         if total == 0:
             self.empty_action_hint.place(relx=0.5, rely=0.45, anchor="center")
         else:
             self.empty_action_hint.place_forget()
         self._sync_global_script_marker()
         self._update_action_edit_button()
+    def _set_action_row(self, row: int) -> None:
+        """按当前数据重画一行（行号、摘要、延时）。"""
+        if not 0 <= row < len(self.script.actions):
+            return
+        iid = str(row)
+        if not self.action_tree.exists(iid):
+            return
+        values = action_row_values(self.script.actions[row], row, self._action_rows)
+        column_names = tuple(
+            column[0] if isinstance(column, (tuple, list)) else column
+            for column in ACTION_TREE_COLUMNS
+        )
+        # mark 列由片段竖条单独维护，这里不覆盖。
+        for column, value in zip(column_names, values):
+            if column != "mark":
+                self.action_tree.set(iid, column, value)
+    def _refresh_action_rows(self, rows) -> None:
+        """只重画受影响的行（默认：全部行——调用方应尽量给出小集合）。"""
+        for row in sorted(set(rows)):
+            self._set_action_row(row)
+        self._finish_action_tree_refresh()
+    def _refresh_one_action_row(self, row: int) -> None:
+        """单行编辑后的刷新：数据行号没变，只重画这一行。"""
+        self._set_action_row(row)
+        self._finish_action_tree_refresh()
+    def _sync_action_rows(self, old_ids: list[str]) -> None:
+        """按动作 ID 对齐列表与数据：只重画变化点到末尾的那一段。
+
+        ``old_ids`` 是编辑前的动作 ID 序列（旧行数由它的长度得到）。
+        """
+        index = self._action_rows
+        new_ids = [action_id_of(action) for action in self.script.actions]
+        index.refresh(self.script.actions)
+        edit = reconcile_action_rows(old_ids, new_ids)
+        if edit.structural:
+            self._apply_row_edit(edit, old_count=len(old_ids))
+            # 结构变了：行号与跳转提示整段平移，按受影响范围重画。
+            for row in edit.changed:
+                self._set_action_row(row)
+        else:
+            # 只有被替换的那一行内容变了。
+            self._set_action_row(getattr(self, "_last_edited_row", 0))
+        self._finish_action_tree_refresh()
+    def _apply_row_edit(self, edit: RowEdit, old_count: int) -> None:
+        """把 reconcile 的结果落到 Treeview 上。
+
+        iid 就是数据行号，所以插入 / 删除后，变化点之后的每一行都换了 iid——
+        直接 move 会让 iid 与行号对不上。这里清掉受影响的那一段再按新顺序插回
+        去：单行编辑（无结构变化）不会走到这里；插入、删除、移动只重画变化点
+        到末尾的那一段，不重建整个列表。
+        """
+        touched = [pos for pos, _ in edit.insert] + [pos for pos, _ in edit.move]
+        touched += [pos for _, pos in edit.move] + list(edit.delete)
+        start = max(0, min(touched) - 1) if touched else 0
+        for position in range(start, max(old_count, len(self.script.actions))):
+            iid = str(position)
+            if self.action_tree.exists(iid):
+                self.action_tree.delete(iid)
+        for new_row in range(start, len(self.script.actions)):
+            values = action_row_values(
+                self.script.actions[new_row], new_row, self._action_rows,
+            )
+            self.action_tree.insert("", new_row, iid=str(new_row), values=values)
     def _sync_global_script_marker(self):
         # v1.68 起普通脚本可内嵌全局模块行（global_detect + jump_row），
         # 它们不代表全局脚本；只有类别为全局或带触发条件才标记为全局脚本。
@@ -196,6 +311,7 @@ class ScriptsMixin:
         self._set_status("已新建脚本", "success")
     def close_script(self):
         """关闭当前脚本：保留一份快照供撤销打开恢复，然后清空编辑器。"""
+        history = self._action_history
         snapshot = {
             "script": copy.deepcopy(self.script),
             "script_path": self.script_path,
@@ -204,8 +320,8 @@ class ScriptsMixin:
             "interval": self.interval_var.get(),
             "category": self.script_category_var.get(),
             "dirty": self.dirty,
-            "action_undo_stack": copy.deepcopy(getattr(self, "action_undo_stack", [])),
-            "action_redo_stack": copy.deepcopy(getattr(self, "action_redo_stack", [])),
+            "action_undo": copy.deepcopy(history.undo),
+            "action_redo": copy.deepcopy(history.redo),
         }
         history = getattr(self, "undo_open_stack", None)
         if history is None:
@@ -231,8 +347,9 @@ class ScriptsMixin:
         self.interval_var.set(snapshot["interval"])
         self.script_category_var.set(snapshot["category"])
         self.dirty = snapshot["dirty"]
-        self.action_undo_stack = snapshot["action_undo_stack"]
-        self.action_redo_stack = snapshot.get("action_redo_stack", [])
+        history = self._action_history
+        history.undo = snapshot["action_undo"]
+        history.redo = snapshot.get("action_redo", [])
         self.rebuild_action_tree()
         self._refresh_coordinate_scale_status()
         self._sync_activation_ui_from_script()
@@ -916,7 +1033,7 @@ class ScriptsMixin:
             target = matches[(position + (1 if direction >= 0 else -1)) % len(matches)]
         else:
             target = matches[0] if direction >= 0 else matches[-1]
-        if target < MAX_TREE_ROWS:
+        if target < len(self.script.actions):
             self.action_tree.selection_set(str(target))
             self.action_tree.focus(str(target))
             self.action_tree.see(str(target))
@@ -956,10 +1073,11 @@ class ScriptsMixin:
             self.script.actions, query, state, delay, query_kind=query_kind,
         )
         self._mark_dirty()
-        self.rebuild_action_tree()
+        # 只重画延时真的改了的行。
+        for row in changed:
+            self._set_action_row(row)
         self.key_search_match_var.set(f"已统一 {len(changed)} 项为 {delay} ms")
-        # 动作树只插入前 MAX_TREE_ROWS 行，超出的行没有 iid，选中会抛 TclError。
-        if changed[0] < MAX_TREE_ROWS:
+        if changed and changed[0] < len(self.script.actions):
             self.action_tree.selection_set(str(changed[0]))
             self.action_tree.focus(str(changed[0]))
             self.action_tree.see(str(changed[0]))
@@ -975,55 +1093,53 @@ class ScriptsMixin:
     def _update_undo_button(self):
         button = getattr(self, "undo_button", None)
         if button is not None:
-            button.configure(state="normal" if getattr(self, "action_undo_stack", []) else "disabled")
+            button.configure(state="normal" if self._has_undo_steps() else "disabled")
     def _update_redo_button(self):
         button = getattr(self, "redo_button", None)
         if button is not None:
-            button.configure(state="normal" if getattr(self, "action_redo_stack", []) else "disabled")
+            button.configure(state="normal" if self._has_redo_steps() else "disabled")
     def _clear_action_undo(self):
-        self.action_undo_stack = []
-        self.action_redo_stack = []
+        self.action_edit_history = ActionEditHistory()
         self._update_undo_button()
         self._update_redo_button()
-    def _checkpoint_action_edit(self):
-        history = getattr(self, "action_undo_stack", None)
-        if history is None:
-            history = self.action_undo_stack = []
-        snapshot = copy.deepcopy(self.script.actions)
-        if not history or history[-1] != snapshot:
-            history.append(snapshot)
-            if len(history) > 100:
-                del history[:-100]
-            # 新的编辑使"重做"历史失效：撤销之后改动作，重做栈作废。
-            if getattr(self, "action_redo_stack", None):
-                self.action_redo_stack = []
-                self._update_redo_button()
+    def _checkpoint_action_edit(self, rows=None):
+        """记录一次编辑前的动作列表。
+
+        ``rows`` 给出这次只改了哪几行时用行级记录（成本与动作总数无关）；
+        不给（插入 / 删除 / 移动这类结构变化）时记录整表快照。
+        """
+        history = self._action_history
+        had_redo = bool(history.redo)
+        if rows is not None and len(rows) == 1:
+            history.checkpoint_row(self.script.actions, int(rows[0]))
+        else:
+            history.checkpoint(self.script.actions)
+        if had_redo and not history.redo:
+            # 新的编辑使“重做”历史失效：撤销之后改动作，重做栈作废。
+            self._update_redo_button()
         self._update_undo_button()
     def _undo_redo_action_edit(self, redo: bool):
-        """撤销/重做脚本编辑：redo=True 时从重做栈恢复，否则从撤销栈恢复。"""
-        source_stack = getattr(self, "action_redo_stack" if redo else "action_undo_stack", [])
-        if not source_stack:
+        """撤销/重做脚本编辑。
+
+        行级记录只装回被改动的那一行，但行号与跳转提示可能整体平移，
+        所以这里按整表重画——撤销本身是低频操作，正确性优先。
+        """
+        history = self._action_history
+        selected = self._selected_action_index()
+        step = history.step(self.script.actions, redo)
+        if step is None:
             if redo:
                 self._update_redo_button()
             else:
                 self._update_undo_button()
             return
-        selected = self._selected_action_index()
-        target_stack = getattr(self, "action_undo_stack" if redo else "action_redo_stack", None)
-        if target_stack is None:
-            if redo:
-                target_stack = self.action_undo_stack = []
-            else:
-                target_stack = self.action_redo_stack = []
-        target_stack.append(copy.deepcopy(self.script.actions))
-        self.script.actions = source_stack.pop()
+        self.script.actions = step[0]
         self._mark_dirty()
         self.rebuild_action_tree()
         if self.script.actions and selected is not None:
             restored_index = min(selected, len(self.script.actions) - 1)
-            if restored_index < MAX_TREE_ROWS:
-                self.action_tree.selection_set(str(restored_index))
-                self.action_tree.see(str(restored_index))
+            self.action_tree.selection_set(str(restored_index))
+            self.action_tree.see(str(restored_index))
         self._update_undo_button()
         self._update_redo_button()
         self._set_status("已重做上一次脚本编辑" if redo else "已撤销上一次脚本编辑", "success")
@@ -1037,13 +1153,13 @@ class ScriptsMixin:
             insert_at = len(self.script.actions) if index is None else index + 1
         action = dict(action)
         action[ACTION_ID_KEY] = new_action_id()
+        old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         self.script.actions.insert(insert_at, action)
         self._mark_dirty()
-        self.rebuild_action_tree()
-        if insert_at < MAX_TREE_ROWS:
-            self.action_tree.selection_set(str(insert_at))
-            self.action_tree.see(str(insert_at))
+        self._sync_action_rows(old_ids)
+        self.action_tree.selection_set(str(insert_at))
+        self.action_tree.see(str(insert_at))
         return insert_at
     def add_delay(self):
         value = DurationDialog(self.root, "插入延时", "延时时间：", 500).show()
@@ -1395,10 +1511,11 @@ class ScriptsMixin:
             settings={"resolution_styles": self.resolution_styles},
         )
         if updated:
-            self._checkpoint_action_edit()
+            # 只改了这一行：撤销记录也只留这一行，不动其它行、不重新测量列宽。
+            self._checkpoint_action_edit([index])
             self.script.actions[index] = updated
             self._mark_dirty()
-            self.rebuild_action_tree()
+            self._refresh_one_action_row(index)
             self.action_tree.selection_set(str(index))
     def _update_action_edit_button(self, _event=None):
         button = getattr(self, "edit_action_button", None)
@@ -1419,12 +1536,13 @@ class ScriptsMixin:
             self._notify("删除动作", "请先选择一行或多行动作。")
             return
         next_selection = min(selected)
+        old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         for index in selected:
             if index < len(self.script.actions):
                 self.script.actions.pop(index)
         self._mark_dirty()
-        self.rebuild_action_tree()
+        self._sync_action_rows(old_ids)
         if self.script.actions:
             # The original next row shifts into the deleted row's position.
             # When deleting the final row, keep the new final row selected.
@@ -1446,11 +1564,12 @@ class ScriptsMixin:
             return
         copies = clone_actions_with_new_ids(self.script.actions[selected[0]:selected[-1] + 1])
         insert_at = selected[-1] + 1
+        old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         self.script.actions[insert_at:insert_at] = copies
         self._mark_dirty()
-        self.rebuild_action_tree()
-        copied_rows = [str(index) for index in range(insert_at, insert_at + len(copies)) if index < MAX_TREE_ROWS]
+        self._sync_action_rows(old_ids)
+        copied_rows = [str(index) for index in range(insert_at, insert_at + len(copies))]
         if copied_rows:
             self.action_tree.selection_set(*copied_rows)
             self.action_tree.see(copied_rows[-1])
@@ -1520,14 +1639,13 @@ class ScriptsMixin:
                     action[field] = id_map[target]
         return actions
     def _insert_script_actions(self, insert_at: int, actions: list[dict]):
+        old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         self.script.actions[insert_at:insert_at] = actions
         self._mark_dirty()
-        self.rebuild_action_tree()
+        self._sync_action_rows(old_ids)
         selected_rows = [
-            str(index)
-            for index in range(insert_at, insert_at + len(actions))
-            if index < MAX_TREE_ROWS
+            str(index) for index in range(insert_at, insert_at + len(actions))
         ]
         if selected_rows:
             self.action_tree.selection_set(*selected_rows)
@@ -1582,12 +1700,13 @@ class ScriptsMixin:
         if target < 0 or end + offset >= len(self.script.actions):
             return
         block = self.script.actions[start:end + 1]
+        old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         del self.script.actions[start:end + 1]
         self.script.actions[target:target] = block
         self._mark_dirty()
-        self.rebuild_action_tree()
-        rows = [str(index) for index in range(target, target + len(block)) if index < MAX_TREE_ROWS]
+        self._sync_action_rows(old_ids)
+        rows = [str(index) for index in range(target, target + len(block))]
         if rows:
             self.action_tree.selection_set(*rows)
             # 上移看块首（新露出的上一行）、下移看块尾，避免整块滚出视野。

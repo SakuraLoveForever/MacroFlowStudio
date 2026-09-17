@@ -64,11 +64,18 @@ def _module_row_result_summary(action: dict, action_rows: dict[str, int] | None,
     return (f"结果 成功后{describe('on_found', 'found_jump_action_id')} / "
             f"失败后{describe('on_timeout', 'timeout_jump_action_id')}")
 def _module_ref_summary(action: dict, label: str,
-                        action_rows: dict[str, int] | None = None) -> tuple[str, str, str]:
-    """引用模块动作的实时摘要：运行时从对象仓库读属性渲染。"""
+                        action_rows: dict[str, int] | None = None,
+                        module_objects: dict | None = None) -> tuple[str, str, str]:
+    """引用模块动作的实时摘要：运行时从对象仓库读属性渲染。
+
+    ``module_objects`` 是本次刷新的模块配置快照（见 ``ActionRowIndex``）。
+    传入快照时不再逐行读盘：一个脚本里几千行引用模块只读一次配置。
+    """
     kind = str(action.get("type", "unknown"))
     key = str(action.get("module_key") or action.get("template", ""))
-    obj = registered_module_object(key)
+    obj = (module_objects or {}).get(key)
+    if obj is None and module_objects is None:
+        obj = registered_module_object(key)
     if obj is None:
         name = Path(key).name or "未设置"
         result_text = (
@@ -198,7 +205,8 @@ def set_matching_key_action_delays(
             action["delay_ms"] = delay
             changed.append(index)
     return changed
-def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> tuple[str, str, str]:
+def action_summary(action: dict, action_rows: dict[str, int] | None = None,
+                   module_objects: dict | None = None) -> tuple[str, str, str]:
     kind = action.get("type", "unknown")
     delay = f"{int(action.get('delay_ms', 1000 if kind == 'image_match' else 0))} ms"
     if kind == "delay":
@@ -254,7 +262,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         return action_kind_label(kind, "录制动作"), detail, delay
     if kind == "image_match":
         if action.get("module_ref"):
-            return _module_ref_summary(action, "识图模块", action_rows)
+            return _module_ref_summary(action, "识图模块", action_rows, module_objects)
         if action.get("on_found") == "jump":
             found_target_id = str(action.get("found_jump_action_id", "")).strip()
             found_target_row = action_rows.get(found_target_id) if action_rows and found_target_id else None
@@ -463,7 +471,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None) -> t
         )
     if kind == "global_detect":
         if action.get("module_ref"):
-            return _module_ref_summary(action, "脚本全局模块", action_rows)
+            return _module_ref_summary(action, "脚本全局模块", action_rows, module_objects)
         template_name = Path(str(action.get("template", ""))).name or "未设置"
         region_text = short_region_text(action.get("region"))
         jump_row = action.get("jump_row")

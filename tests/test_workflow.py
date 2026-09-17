@@ -8,6 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tests.common import *  # noqa: E402,F401,F403
+from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
+from tests.helpers.ui import make_edit_app  # noqa: E402
 
 
 class WorkflowInsertTests(unittest.TestCase):
@@ -396,14 +398,11 @@ class WorkflowDisplayTests(unittest.TestCase):
             self.assertEqual(app._workflow_step_name(step), "模块 可领取")
 
     def test_successful_workflow_repeat_decrements_to_zero_without_disabling(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(steps=[{
+        app = make_edit_app(steps=[{
             "script": "a.json", "repeats": 1, "enabled": True,
         }])
+        app.rebuild_workflow_tree()
         app.workflow_path = Path("flow.json")
-        app.rebuild_workflow_tree = Mock()
-        app._persist_workflow_draft = Mock()
-        app._log = Mock()
 
         with patch_app("save_workflow", return_value=Path("flow.json")) as save:
             app._consume_workflow_repeat(0)
@@ -477,17 +476,13 @@ class WorkflowDisplayTests(unittest.TestCase):
         app._persist_workflow_draft.assert_called_once()
 
     def test_editing_interval_cell_only_changes_interval(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(steps=[{
+        app = make_edit_app(steps=[{
             "script": "scripts/a.json", "repeats": 3,
             "before_ms": 250, "repeat_interval_ms": 1000,
         }])
-        app.workflow_tree = Mock()
-        app.workflow_tree.identify_row.return_value = "0"
-        app.workflow_tree.identify_column.return_value = "#6"
-        app.root = Mock()
-        app.rebuild_workflow_tree = Mock()
-        app._persist_workflow_draft = Mock()
+        app.rebuild_workflow_tree()
+        app.workflow_tree.identify_row = Mock(return_value="0")
+        app.workflow_tree.identify_column = Mock(return_value="#6")
 
         with patch_app("DurationDialog") as prompt:
             prompt.return_value.show.return_value = 2400
@@ -628,17 +623,13 @@ class WorkflowDisplayTests(unittest.TestCase):
         )
 
     def test_editing_repeat_cell_opens_workflow_repeat_dialog(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(steps=[{
+        app = make_edit_app(steps=[{
             "script": "scripts/a.json", "repeats": 2, "unlimited": False,
             "before_ms": 0, "repeat_interval_ms": 1000,
         }])
-        app.workflow_tree = Mock()
-        app.workflow_tree.identify_row.return_value = "0"
-        app.workflow_tree.identify_column.return_value = "#4"
-        app.root = Mock()
-        app.rebuild_workflow_tree = Mock()
-        app._persist_workflow_draft = Mock()
+        app.rebuild_workflow_tree()
+        app.workflow_tree.identify_row = Mock(return_value="0")
+        app.workflow_tree.identify_column = Mock(return_value="#4")
         dialog = Mock()
         dialog.show.return_value = {"repeats": 5, "unlimited": True}
 

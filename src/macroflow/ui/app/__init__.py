@@ -38,7 +38,6 @@ from .constants import (
     FONT_SUBTITLE,
     FONT_TITLE,
     GLOBAL_TREE_COLUMNS,
-    MAX_TREE_ROWS,
     MIN_MAIN_HEIGHT,
     MIN_MAIN_WIDTH,
     MODULE_CLICK_LABELS,
