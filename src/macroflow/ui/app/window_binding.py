@@ -11,24 +11,12 @@ from macroflow.input.wininput import (
     set_dark_titlebar, set_rounded_window, show_window,
     show_window_no_activate,
 )
-from macroflow.ui.dialogs import (
-    ClickDialog, GameSetupNoteDialog, GlobalDetectDialog, TurnActionDialog,
-    HotkeyScriptsDialog,
-    JsonActionDialog, JumpActionDialog, KeyActionDialog,
-    RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
-    RowListConditionClickDialog,
-    RowListDiagnosticResultDialog,
-    RowRecognitionResultDialog,
-    ModulePickerDialog,
-    MouseMoveDialog, ResolutionStylesDialog, ScheduleDialog, ScrollDialog,
-    SetResolutionActionDialog,
-    OpenAppDialog, ScriptDirectoriesDialog, TemplateRegionFormDialog,
-    TemplateRegionManagerDialog, WindowPicker,
-    WorkflowBatchSettingsDialog, WorkflowRepeatDialog,
-    DurationDialog, DurationVar, TIME_UNITS, Tooltip, edit_action,
-    key_to_vk, recorded_action_description, vk_to_key_name,
-    show_floating_notice, workflow_step_label,
-)
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
+from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
+from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
+from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
+from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
+from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
     DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,

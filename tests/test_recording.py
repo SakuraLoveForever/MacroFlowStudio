@@ -7,7 +7,18 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_recording.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import time
+import ttkbootstrap
+import unittest
+from unittest.mock import Mock, patch
+from macroflow.core.models import MacroScript
+from macroflow.input.rawinput import RawMouseListener
+from macroflow.input.recorder import MacroRecorder
+from macroflow.ui.app.base import coordinate_scale_summary, floating_notice_xy
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.summaries import action_summary
+from macroflow.ui.dialogs.helpers import recorded_action_description
+from tests.helpers.patches import package_patch
 
 
 class ScriptRecordingSafetyTests(unittest.TestCase):
@@ -41,10 +52,9 @@ class ScriptRecordingSafetyTests(unittest.TestCase):
         # 录不了，F8 没反应”。
         app = self._recording_app()
         app.dirty = True
-        with patch_app("force_english_input", return_value=True), \
-             patch_app("get_monitor_rect_for_window", return_value=None), \
-             patch_app("get_primary_screen_rect",
-                   return_value={"left": 0, "top": 0, "width": 1920, "height": 1080}):
+        with package_patch('app', 'force_english_input', return_value=True), \
+             package_patch('app', 'get_monitor_rect_for_window', return_value=None), \
+             package_patch('app', 'get_primary_screen_rect', return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
             app.start_recording()
         app._notify.assert_not_called()
         app.recorder.start.assert_called_once()
@@ -174,7 +184,7 @@ class RecordingVisibilityTests(unittest.TestCase):
         app.interval_var = Mock()
         app.interval_var.get.return_value = "100"
 
-        with patch_app("force_english_input", return_value=True):
+        with package_patch('app', 'force_english_input', return_value=True):
             app.start_recording(from_ui=True)
 
         self.assertEqual(app.script.actions, existing)
@@ -202,7 +212,7 @@ class RecordingVisibilityTests(unittest.TestCase):
         app.interval_var = Mock()
         app.interval_var.get.return_value = "100"
 
-        with patch_app("force_english_input", return_value=True):
+        with package_patch('app', 'force_english_input', return_value=True):
             app.start_recording(from_ui=True)
 
         self.assertEqual(app.script.actions, [])
@@ -246,7 +256,7 @@ class RecordingDisplayTests(unittest.TestCase):
         hidden_states = [(Mock(), "normal")]
         app._restore_macroflow_windows_after_diagnostic = Mock()
 
-        with patch_app("RowListDiagnosticResultDialog") as result_dialog:
+        with package_patch('app', 'RowListDiagnosticResultDialog') as result_dialog:
             app._finish_row_list_diagnostic(
                 ["第1行结果：左侧命中；右侧未命中"],
                 None,
@@ -272,7 +282,7 @@ class RecordingDisplayTests(unittest.TestCase):
         app.player = Mock()
         action = {"type": "row_list_condition_click"}
 
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.test_row_list_condition_click(action)
             target = thread_class.call_args.kwargs["target"]
             target()
@@ -438,7 +448,7 @@ class RecordingDisplayTests(unittest.TestCase):
         # 只在"第二次探测"才应用，于是这套配置下界面永远按两倍放大。
         app, root = self._dpi_watch_app(192 / 72.0)
         app._apply_display_dpi = Mock()
-        with patch_app("get_window_dpi", return_value=96):
+        with package_patch('app', 'get_window_dpi', return_value=96):
             app._watch_display_dpi()
         app._apply_display_dpi.assert_called_once_with(96)
         root.after.assert_called_once_with(600, app._watch_display_dpi)
@@ -446,15 +456,15 @@ class RecordingDisplayTests(unittest.TestCase):
     def test_watch_display_dpi_is_quiet_when_scaling_already_matches(self):
         app, _root = self._dpi_watch_app(96 / 72.0)
         app._apply_display_dpi = Mock()
-        with patch_app("get_window_dpi", return_value=96):
+        with package_patch('app', 'get_window_dpi', return_value=96):
             app._watch_display_dpi()
         app._apply_display_dpi.assert_not_called()
 
     def test_sync_ui_scale_uses_the_window_monitor_dpi(self):
         app, root = self._dpi_watch_app(192 / 72.0)
-        with patch_app("get_window_dpi", return_value=96), \
-             patch_app("set_ui_scale") as app_scale, \
-             patch("macroflow.ui.app.dialogs_ui.set_ui_scale") as dialog_scale, \
+        with package_patch('app', 'get_window_dpi', return_value=96), \
+             package_patch('app', 'set_ui_scale') as app_scale, \
+             patch("macroflow.ui.dialogs.set_ui_scale") as dialog_scale, \
              patch.object(MacroFlowApp, "_configure_dark_theme") as theme:
             app._sync_ui_scale_to_monitor()
         self.assertEqual(root.tk.call.call_args.args, ("tk", "scaling", 96 / 72.0))
@@ -477,7 +487,7 @@ class RecordingDisplayTests(unittest.TestCase):
             app = MacroFlowApp.__new__(MacroFlowApp)
             app.root = root
             app._configure_dark_theme()
-            with patch_app("get_window_dpi", return_value=96):
+            with package_patch('app', 'get_window_dpi', return_value=96):
                 app._sync_ui_scale_to_monitor()
             # 分隔线样式确实配过（守卫没有把这一行整个跳掉）
             self.assertTrue(root.style.lookup("TSeparator", "background"))

@@ -7,10 +7,28 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_script_editing.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import json
+from pathlib import Path
+from macroflow.core.storage import BASE_DIR
+import tempfile
+import threading
+import time
+import tkinter as tk
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.models import ACTION_ID_KEY, MacroScript, NEXT_WORKFLOW_STEP_TARGET_ID, RECORDED_INPUT_TYPE, SCRIPT_START_TARGET_ID, Workflow, ensure_action_ids
+from macroflow.core.storage import display_path, load_script
+from macroflow.ui.app.constants import RECORD_TOOLBAR_BUTTON_LABEL, SEGMENT_BAR
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.summaries import action_summary, key_action_matches, set_matching_key_action_delays
+from macroflow.ui.dialogs.actions import edit_action
+from macroflow.ui.dialogs.app_dialogs import ScriptRefDialog
+from macroflow.ui.dialogs.segments import RecordedInputDialog, SegmentEditorMixin
+from tests.helpers.core import FakeSettingVar, FakeTree, FakeVar
 from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
 from tests.helpers.ui import make_edit_app  # noqa: E402
 from macroflow.ui.app.constants import ACTION_TREE_COLUMNS  # noqa: E402
+from tests.helpers.patches import package_patch
 
 
 class ScriptEditingTests(unittest.TestCase):
@@ -286,7 +304,7 @@ class ScriptEditingTests(unittest.TestCase):
             "type": "jump", "jump_action_id": SCRIPT_START_TARGET_ID,
             "jump_row": 1, "delay_ms": 0,
         }
-        with patch_app("JumpActionDialog") as dialog_class:
+        with package_patch('app', 'JumpActionDialog') as dialog_class:
             dialog_class.return_value.show.return_value = result
             app.add_jump()
         dialog_class.assert_called_once_with(app.root, actions=app.script.actions)
@@ -294,7 +312,7 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_editing_action_preserves_stable_identity(self):
         original = {"type": "key", "action_id": "stable-target", "name": "A"}
-        with patch_dialogs("KeyActionDialog") as dialog_class:
+        with package_patch('dialogs', 'KeyActionDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "key_press", "name": "B", "vk": 66,
             }
@@ -303,7 +321,7 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_editing_text_action_uses_text_dialog(self):
         original = {"type": "text", "action_id": "stable-text", "text": "旧文本", "delay_ms": 0}
-        with patch_dialogs("TextActionDialog") as dialog_class:
+        with package_patch('dialogs', 'TextActionDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "text", "text": "新文本", "char_delay_ms": 20, "delay_ms": 1000,
             }
@@ -315,7 +333,7 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_editing_repeat_click_action_uses_repeat_click_dialog(self):
         original = {"type": "repeat_click", "action_id": "stable-repeat", "x": 1, "y": 2}
-        with patch_dialogs("RepeatClickDialog") as dialog_class:
+        with package_patch('dialogs', 'RepeatClickDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "repeat_click", "x": 9, "y": 9,
                 "count": 3, "interval_ms": 50,
@@ -327,7 +345,7 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_editing_open_app_action_uses_open_app_dialog(self):
         original = {"type": "open_app", "action_id": "stable-app", "path": "C:/old/app.exe"}
-        with patch_dialogs("OpenAppDialog") as dialog_class:
+        with package_patch('dialogs', 'OpenAppDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "open_app", "path": "C:/new/app.exe",
                 "delay_ms": 300, "after_delay_ms": 800,
@@ -356,7 +374,7 @@ class ScriptEditingTests(unittest.TestCase):
 
     def test_editing_close_app_action_uses_close_app_dialog(self):
         original = {"type": "close_app", "action_id": "stable-close", "name": "old.exe"}
-        with patch_dialogs("CloseAppDialog") as dialog_class:
+        with package_patch('dialogs', 'CloseAppDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "close_app", "name": "new.exe",
                 "graceful": False, "graceful_wait_ms": 1000,
@@ -372,7 +390,7 @@ class ScriptEditingTests(unittest.TestCase):
             "type": "jump", "action_id": "stable-jump",
             "jump_action_id": SCRIPT_START_TARGET_ID,
         }
-        with patch_dialogs("JumpActionDialog") as dialog_class:
+        with package_patch('dialogs', 'JumpActionDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "jump", "jump_action_id": NEXT_WORKFLOW_STEP_TARGET_ID,
                 "jump_row": 3,
@@ -432,8 +450,8 @@ class ScriptEditingTests(unittest.TestCase):
             "right_condition": {"type": "image"},
         }
 
-        with patch_app("RowListConditionClickDialog") as dialog_class, \
-             patch_app("new_action_id", return_value="new-row-list-id"):
+        with package_patch('app', 'RowListConditionClickDialog') as dialog_class, \
+             package_patch('app', 'new_action_id', return_value='new-row-list-id'):
             dialog_class.return_value.show.return_value = result
             app.add_row_list_condition_click()
 
@@ -452,7 +470,7 @@ class ScriptEditingTests(unittest.TestCase):
             "left_condition": {"type": "image"},
             "right_condition": {"type": "image"},
         }
-        with patch_dialogs("RowListConditionClickDialog") as dialog_class:
+        with package_patch('dialogs', 'RowListConditionClickDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "row_list_condition_click",
                 "left_condition": {"type": "text", "expected_text": "就绪"},
@@ -564,7 +582,7 @@ class ScriptEditingTests(unittest.TestCase):
         app._mark_dirty = Mock()
         app._sync_global_script_marker = Mock()
         app._set_status = Mock()
-        with patch_app("GlobalDetectDialog") as dialog_class:
+        with package_patch('app', 'GlobalDetectDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "global_detect", "template": "images/g.png",
                 "threshold": 0.85, "interval_ms": 500, "hold_ms": 1000,
@@ -585,7 +603,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.script.settings["trigger"] = {"template": "images/old.png"}
         app.root = Mock()
         app._mark_dirty = Mock()
-        with patch_app("GlobalDetectDialog") as dialog_class:
+        with package_patch('app', 'GlobalDetectDialog') as dialog_class:
             dialog_class.return_value.show.return_value = None
             app._edit_global_trigger()
         self.assertEqual(app.script.settings["trigger"]["template"], "images/old.png")
@@ -646,8 +664,8 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "comment", "text": "C1"},
             {"type": "comment", "text": "C2"},
         ])
-        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
-             patch_app("load_script", return_value=inserted):
+        with patch("tkinter.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
+             package_patch('app', 'load_script', return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 3)
         ref = app.script.actions[1]
@@ -665,9 +683,9 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_tree.selection_set("0")
         paths = ("C:/scripts/first.json", "C:/scripts/second.json")
 
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""), \
-             patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=paths), \
-             patch_app("load_script", return_value=MacroScript()):
+        with patch("tkinter.filedialog.askopenfilename", return_value=""), \
+             patch("tkinter.filedialog.askopenfilenames", return_value=paths), \
+             package_patch('app', 'load_script', return_value=MacroScript()):
             app._insert_script(False)
 
         self.assertEqual(len(app.script.actions), 3)
@@ -690,9 +708,9 @@ class ScriptEditingTests(unittest.TestCase):
             MacroScript(actions=[{"type": "comment", "text": "second"}]),
         ]
 
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""), \
-             patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=paths), \
-             patch_app("load_script", side_effect=scripts * 2):
+        with patch("tkinter.filedialog.askopenfilename", return_value=""), \
+             patch("tkinter.filedialog.askopenfilenames", return_value=paths), \
+             package_patch('app', 'load_script', side_effect=scripts * 2):
             app._insert_script(True)
 
         self.assertEqual(
@@ -705,8 +723,8 @@ class ScriptEditingTests(unittest.TestCase):
         app = make_edit_app()
         app.rebuild_action_tree()
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
-        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
-             patch_app("load_script", return_value=inserted):
+        with patch("tkinter.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
+             package_patch('app', 'load_script', return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 1)
         self.assertEqual(app.script.actions[0]["type"], "script_ref")
@@ -718,7 +736,7 @@ class ScriptEditingTests(unittest.TestCase):
     def test_insert_script_requires_selection_when_actions_exist(self):
         app = make_edit_app(actions=[{"type": "comment", "text": "A"}])
         app.rebuild_action_tree()
-        with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
+        with patch("tkinter.filedialog.askopenfilenames") as picker:
             app._insert_script(False)
         picker.assert_not_called()
         app._notify.assert_called_once()
@@ -772,8 +790,8 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var.get.return_value = "above"
         app.action_tree.selection_set("1")
         inserted = MacroScript(actions=[{"type": "comment", "text": "C"}])
-        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
-             patch_app("load_script", return_value=inserted):
+        with patch("tkinter.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
+             package_patch('app', 'load_script', return_value=inserted):
             app._insert_script(False)
         self.assertEqual(len(app.script.actions), 3)
         self.assertEqual(app.script.actions[1]["type"], "script_ref")
@@ -793,8 +811,8 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "image_match", "text": "img", "action_id": "src3",
              "timeout_jump_action_id": "src2", "found_jump_action_id": "src3"},
         ])
-        with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
-             patch_app("load_script", return_value=inserted):
+        with patch("tkinter.filedialog.askopenfilenames", return_value=("C:/scripts/C.json",)), \
+             package_patch('app', 'load_script', return_value=inserted):
             app._insert_script(True)
         self.assertEqual(len(app.script.actions), 5)
         inserted_actions = app.script.actions[1:4]
@@ -842,7 +860,7 @@ class ScriptEditingTests(unittest.TestCase):
                     {"type": "jump", "jump_row": 2},
                 ],
             }, ensure_ascii=False), encoding="utf-8")
-            with patch("macroflow.ui.app.filedialog.askopenfilenames", return_value=(str(ref),)):
+            with patch("tkinter.filedialog.askopenfilenames", return_value=(str(ref),)):
                 app._insert_script(True)
         inserted = app.script.actions[1:4]
         self.assertEqual([action.get("text") for action in inserted], ["R1", "R2", None])
@@ -859,7 +877,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ()
         app._notify = Mock()
-        with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
+        with patch("tkinter.filedialog.askopenfilenames") as picker:
             app._insert_script(True)
         picker.assert_not_called()
         app._notify.assert_called_once()
@@ -869,10 +887,10 @@ class ScriptEditingTests(unittest.TestCase):
         app._log = Mock()
         app._set_status = Mock()
         app._notify = Mock()
-        with patch("macroflow.ui.app.subprocess.Popen") as popen, \
-             patch("macroflow.ui.app.sys.executable", "C:/Python313/python.exe"), \
-             patch("macroflow.ui.app.sys.frozen", False, create=True), \
-             patch_app("__file__", "E:/proj/app.py"):
+        with patch("subprocess.Popen") as popen, \
+             patch("sys.executable", "C:/Python313/python.exe"), \
+             patch("sys.frozen", False, create=True), \
+             package_patch('app', '__file__', 'E:/proj/app.py'):
             app.open_new_window()
         popen.assert_called_once()
         args = popen.call_args.args[0]
@@ -922,7 +940,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app._insert_action = Mock()
         app._notify = Mock()
-        with patch_app("GlobalDetectDialog") as dialog_class:
+        with package_patch('app', 'GlobalDetectDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "global_detect", "template": "images/g.png",
                 "jump_row": 3, "jump_action_id": "target-a",
@@ -963,7 +981,7 @@ class ScriptEditingTests(unittest.TestCase):
             "module_ref": True, "module_category": "switch",
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_module()
         picker_class.assert_called_once_with(
@@ -987,7 +1005,7 @@ class ScriptEditingTests(unittest.TestCase):
             "type": "image_match", "template": "images/second.png",
             "module_ref": True, "module_category": "switch",
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = [first, second]
             app.add_module()
 
@@ -1013,8 +1031,8 @@ class ScriptEditingTests(unittest.TestCase):
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
         configured = dict(raw_action, jump_enabled=True, jump_row=2, jump_action_id="target")
-        with patch_app("ModulePickerDialog") as picker_class, \
-             patch_app("GlobalDetectDialog") as dialog_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class, \
+             package_patch('app', 'GlobalDetectDialog') as dialog_class:
             picker_class.return_value.show.return_value = raw_action
             dialog_class.return_value.show.return_value = configured
             app.add_module()
@@ -1042,9 +1060,9 @@ class ScriptEditingTests(unittest.TestCase):
             found_jump_action_id="target", on_timeout="jump",
             timeout_jump_action_id="target",
         )
-        with patch_app("ModulePickerDialog") as picker_class, \
-             patch_app("registered_module_object", return_value={"recognize": "number"}), \
-             patch_app("edit_action", return_value=configured) as edit:
+        with package_patch('app', 'ModulePickerDialog') as picker_class, \
+             package_patch('app', 'registered_module_object', return_value={'recognize': 'number'}), \
+             package_patch('app', 'edit_action', return_value=configured) as edit:
             picker_class.return_value.show.return_value = raw_action
             app.add_module()
         edit.assert_called_once_with(app.root, raw_action, all_actions=app.script.actions)
@@ -1064,7 +1082,7 @@ class ScriptEditingTests(unittest.TestCase):
             "module_ref": True, "module_category": "special",
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_module()
         inserted = app.script.actions[1]
@@ -1085,7 +1103,7 @@ class ScriptEditingTests(unittest.TestCase):
             "module_ref": True, "module_category": "special",
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_module()
         inserted = app.script.actions[2]
@@ -1104,7 +1122,7 @@ class ScriptEditingTests(unittest.TestCase):
             "module_ref": True, "module_category": "global",
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_module()
         app._notify.assert_called_once()
@@ -1196,7 +1214,7 @@ class ScriptEditingTests(unittest.TestCase):
                      "_switch_scripts_dir", "_global_scripts_dir"):
             setattr(app, name, lambda: Path("."))
 
-        with patch_app("save_script", return_value=Path("测试.json")):
+        with package_patch('app', 'save_script', return_value=Path('测试.json')):
             app.save_current_script()
 
         self.assertEqual(app.action_undo_stack, [])
@@ -1237,7 +1255,7 @@ class ScriptEditingTests(unittest.TestCase):
             original = level_dir / "A.json"
             original.write_text("{}", encoding="utf-8")
             app.script_path = original
-            with patch_app("save_script", return_value=level_pack_dir / "A.json") as save:
+            with package_patch('app', 'save_script', return_value=level_pack_dir / 'A.json') as save:
                 result = app.save_current_script()
         self.assertEqual(result, level_pack_dir / "A.json")
         self.assertFalse(original.exists())
@@ -1251,7 +1269,7 @@ class ScriptEditingTests(unittest.TestCase):
             original = level_dir / "A.json"
             original.write_text("{}", encoding="utf-8")
             app.script_path = original
-            with patch_app("save_script", return_value=original):
+            with package_patch('app', 'save_script', return_value=original):
                 app.save_current_script()
             self.assertTrue(original.exists())
             app._set_status.assert_called_once_with("已保存 A.json", "success")
@@ -1266,7 +1284,7 @@ class ScriptEditingTests(unittest.TestCase):
             conflict = level_pack_dir / "A.json"
             conflict.write_text("另一个脚本", encoding="utf-8")
             app.script_path = original
-            with patch_app("save_script", return_value=level_pack_dir / "A (2).json"):
+            with package_patch('app', 'save_script', return_value=level_pack_dir / 'A (2).json'):
                 result = app.save_current_script()
             self.assertEqual(result, level_pack_dir / "A (2).json")
             self.assertFalse(original.exists())
@@ -1279,7 +1297,7 @@ class ScriptEditingTests(unittest.TestCase):
             original = level_dir / "A.json"
             original.write_text("{}", encoding="utf-8")
             app.script_path = original
-            with patch_app("save_script", side_effect=RuntimeError("磁盘已满")):
+            with package_patch('app', 'save_script', side_effect=RuntimeError('磁盘已满')):
                 result = app.save_current_script()
             self.assertIsNone(result)
             self.assertTrue(original.exists())
@@ -1296,8 +1314,7 @@ class ScriptEditingTests(unittest.TestCase):
             app.script_path = old
             app.script_name_var.get.return_value = "B"
             app.dirty = False
-            with patch_app("save_script",
-                       side_effect=lambda _script, path: path) as save:
+            with package_patch('app', 'save_script', side_effect=lambda _script, path: path) as save:
                 result = app.save_current_script()
             self.assertEqual(result, level_dir / "B.json")
             self.assertFalse(old.exists())
@@ -1320,7 +1337,7 @@ class ScriptEditingTests(unittest.TestCase):
             app._refresh_hotkey_summary = Mock()
             app._persist_sidebar_settings = Mock(return_value=True)
 
-            with patch_app("save_script", side_effect=lambda _script, path: path):
+            with package_patch('app', 'save_script', side_effect=lambda _script, path: path):
                 result = app.save_current_script()
 
             new = direction_dir / "B.json"
@@ -1552,7 +1569,7 @@ class CloseScriptTests(unittest.TestCase):
             path = Path(folder) / "b.json"
             path.write_text(json.dumps({"name": "B", "actions": []}, ensure_ascii=False),
                             encoding="utf-8")
-            with patch_app("load_script", return_value=MacroScript(name="B")):
+            with package_patch('app', 'load_script', return_value=MacroScript(name='B')):
                 app.load_script_into_editor(path)
         self.assertEqual(app.undo_open_stack, [])
         self.assertEqual(app.script.name, "b")
@@ -1571,7 +1588,7 @@ class CloseScriptTests(unittest.TestCase):
             ref = Path(folder) / "ref.json"
             ref.write_text(json.dumps({"name": "Ref", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.messagebox.askyesnocancel",
+            with patch("tkinter.messagebox.askyesnocancel",
                        return_value=None) as ask:
                 self.assertFalse(app.load_script_into_editor(ref))
             ask.assert_called_once()
@@ -1592,7 +1609,7 @@ class CloseScriptTests(unittest.TestCase):
             ref = Path(folder) / "目标.json"
             ref.write_text(json.dumps({"name": "目标", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.messagebox.askyesnocancel", return_value=False):
+            with patch("tkinter.messagebox.askyesnocancel", return_value=False):
                 self.assertTrue(app.load_script_into_editor(ref))
         self.assertEqual(app.script.name, "目标")
         self.assertFalse(app.dirty)
@@ -1610,7 +1627,7 @@ class CloseScriptTests(unittest.TestCase):
             ref = Path(folder) / "目标.json"
             ref.write_text(json.dumps({"name": "目标", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.messagebox.askyesnocancel", return_value=True):
+            with patch("tkinter.messagebox.askyesnocancel", return_value=True):
                 self.assertTrue(app.load_script_into_editor(ref))
         app.save_current_script.assert_called_once()
         self.assertEqual(app.script.name, "目标")
@@ -1629,7 +1646,7 @@ class CloseScriptTests(unittest.TestCase):
             ref = Path(folder) / "目标.json"
             ref.write_text(json.dumps({"name": "目标", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.messagebox.askyesnocancel", return_value=True):
+            with patch("tkinter.messagebox.askyesnocancel", return_value=True):
                 self.assertFalse(app.load_script_into_editor(ref))
         self.assertEqual(app.script.name, "旧脚本")
         self.assertTrue(app.dirty)
@@ -1642,7 +1659,7 @@ class CloseScriptTests(unittest.TestCase):
             ref = Path(folder) / "干净.json"
             ref.write_text(json.dumps({"name": "干净", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.messagebox.askyesnocancel") as ask:
+            with patch("tkinter.messagebox.askyesnocancel") as ask:
                 self.assertTrue(app.load_script_into_editor(ref))
         ask.assert_not_called()
         self.assertEqual(app.script.name, "干净")
@@ -1655,10 +1672,10 @@ class CloseScriptTests(unittest.TestCase):
         app.script = MacroScript(name="旧脚本", actions=[{"type": "delay", "ms": 1}])
         app.dirty = True
         app.undo_open_stack = [{"x": 1}]
-        with patch("macroflow.ui.app.messagebox.askyesnocancel", return_value=None):
+        with patch("tkinter.messagebox.askyesnocancel", return_value=None):
             app.new_script()
         self.assertEqual(app.script.name, "旧脚本")
-        with patch("macroflow.ui.app.messagebox.askyesnocancel", return_value=False):
+        with patch("tkinter.messagebox.askyesnocancel", return_value=False):
             app.new_script()
         self.assertEqual(app.script.name, "未命名脚本")
         self.assertFalse(app.dirty)
@@ -1765,7 +1782,7 @@ class ScriptRefWindowTests(unittest.TestCase):
             ref = Path(folder) / "ref.json"
             ref.write_text(json.dumps({"name": "Ref", "actions": []}, ensure_ascii=False),
                            encoding="utf-8")
-            with patch("macroflow.ui.app.subprocess.Popen") as popen:
+            with patch("subprocess.Popen") as popen:
                 app.open_referenced_script_in_new_window(
                     {"type": "script_ref", "script": str(ref)})
             popen.assert_called_once()
@@ -1777,7 +1794,7 @@ class ScriptRefWindowTests(unittest.TestCase):
 
     def test_open_referenced_script_missing_file_notifies_without_launch(self):
         app = self._app()
-        with patch("macroflow.ui.app.subprocess.Popen") as popen:
+        with patch("subprocess.Popen") as popen:
             app.open_referenced_script_in_new_window(
                 {"type": "script_ref", "script": "C:/no_such_dir/ref.json"})
         popen.assert_not_called()
@@ -1785,7 +1802,7 @@ class ScriptRefWindowTests(unittest.TestCase):
 
     def test_open_referenced_script_empty_path_notifies(self):
         app = self._app()
-        with patch("macroflow.ui.app.subprocess.Popen") as popen:
+        with patch("subprocess.Popen") as popen:
             app.open_referenced_script_in_new_window({"type": "script_ref", "script": "  "})
         popen.assert_not_called()
         app._notify.assert_called_once_with("引用脚本无效", "该引用动作没有脚本路径。")
@@ -1802,7 +1819,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree.identify_row.return_value = "0"
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(event)
         menu_class.assert_called_once()
         menu = menu_class.return_value
@@ -1828,7 +1845,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree.identify_row.return_value = "1"
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(event)
         menu = menu_class.return_value
         labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
@@ -1847,7 +1864,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree.selection.return_value = ()
         app.action_tree.identify_row.return_value = "1"
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(Mock())
         app.action_tree.selection_set.assert_called_with("1")
         command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
@@ -1862,7 +1879,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree.selection.return_value = ()
         app.action_tree.identify_row.return_value = "0"
         app.run_single_action_with_count = Mock()
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(Mock())
         command = menu_class.return_value.add_command.call_args_list[1].kwargs["command"]
         command()
@@ -1873,7 +1890,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
         app.action_tree.identify_row.return_value = ""
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(Mock())
         menu_class.assert_not_called()
 
@@ -1893,7 +1910,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.run_action_segment = Mock()
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(event)
         app.action_tree.selection_set.assert_not_called()
         menu = menu_class.return_value
@@ -1917,7 +1934,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.identify_row.return_value = "0"
         app.action_tree.selection.return_value = ("0", "1")
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_action_context_menu(Mock())
         app.action_tree.selection_set.assert_not_called()
         labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
@@ -1929,7 +1946,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ("1", "3")
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=5) as ask:
+        with patch("tkinter.simpledialog.askinteger", return_value=5) as ask:
             app.run_action_segment()
         self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
         self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
@@ -1942,7 +1959,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ("1",)
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger") as ask:
+        with patch("tkinter.simpledialog.askinteger") as ask:
             app.run_action_segment()
         app._notify.assert_called_once()
         ask.assert_not_called()
@@ -1954,7 +1971,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ("0", "2")
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+        with patch("tkinter.simpledialog.askinteger", return_value=None):
             app.run_action_segment()
         app.run_current_script.assert_not_called()
 
@@ -2021,7 +2038,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app = self._app()
         app.root = Mock()
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=7) as ask:
+        with patch("tkinter.simpledialog.askinteger", return_value=7) as ask:
             app.run_single_action_with_count(3)
         self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
         self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
@@ -2033,7 +2050,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app = self._app()
         app.root = Mock()
         app.run_current_script = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+        with patch("tkinter.simpledialog.askinteger", return_value=None):
             app.run_single_action_with_count(0)
         app.run_current_script.assert_not_called()
 
@@ -2046,7 +2063,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.workflow_tree.identify_row.return_value = "0"
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_workflow_context_menu(event)
         app.workflow_tree.selection_set.assert_called_once_with("0")
         menu_class.assert_called_once()
@@ -2071,7 +2088,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.run_workflow_step_with_count = Mock()
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_workflow_context_menu(event)
         command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
         command()
@@ -2083,7 +2100,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.root = Mock()
         app.run_referenced_script_alone = Mock()
         step = {"script": "scripts/关卡/a.json", "repeats": 4}
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=7) as ask:
+        with patch("tkinter.simpledialog.askinteger", return_value=7) as ask:
             app.run_workflow_step_with_count(step)
         self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
         self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
@@ -2097,7 +2114,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app = self._app()
         app.root = Mock()
         app.run_referenced_script_alone = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+        with patch("tkinter.simpledialog.askinteger", return_value=None):
             app.run_workflow_step_with_count({"script": "scripts/关卡/a.json"})
         app.run_referenced_script_alone.assert_not_called()
 
@@ -2116,7 +2133,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.run_workflow_segment = Mock()
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_workflow_context_menu(event)
         app.workflow_tree.selection_set.assert_not_called()
         menu = menu_class.return_value
@@ -2137,7 +2154,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.workflow_tree = Mock()
         app.workflow_tree.selection.return_value = ("2", "4")
         app.run_workflow = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=6) as ask:
+        with patch("tkinter.simpledialog.askinteger", return_value=6) as ask:
             app.run_workflow_segment()
         self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
         self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
@@ -2150,7 +2167,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.workflow_tree = Mock()
         app.workflow_tree.selection.return_value = ()
         app.run_workflow = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger") as ask:
+        with patch("tkinter.simpledialog.askinteger") as ask:
             app.run_workflow_segment()
         app._notify.assert_called_once()
         ask.assert_not_called()
@@ -2163,7 +2180,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.workflow_tree = Mock()
         app.workflow_tree.selection.return_value = ()
         app.workflow_tree.identify_row.return_value = "0"
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_workflow_context_menu(Mock())
         menu_class.assert_not_called()
 
@@ -2172,7 +2189,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.workflow_tree = Mock()
         app.workflow_tree.selection.return_value = ()
         app.workflow_tree.identify_row.return_value = ""
-        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             app._show_workflow_context_menu(Mock())
         menu_class.assert_not_called()
 
@@ -2240,7 +2257,7 @@ class ScriptRefWindowTests(unittest.TestCase):
     def test_run_referenced_script_alone_starts_worker_once(self):
         app = self._app_for_referenced_script_alone()
         ref = self._write_test_script([{"type": "click", "x": 1, "y": 2, "delay_ms": 0}])
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.run_referenced_script_alone({"script": str(ref)})
         thread_class.assert_called_once()
         self.assertEqual(thread_class.call_args.kwargs["target"], app._run_script_worker)
@@ -2255,7 +2272,7 @@ class ScriptRefWindowTests(unittest.TestCase):
     def test_run_referenced_script_alone_runs_requested_repeats(self):
         app = self._app_for_referenced_script_alone()
         ref = self._write_test_script([{"type": "click", "x": 1, "y": 2, "delay_ms": 0}])
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.run_referenced_script_alone({"script": str(ref)}, 5)
         worker_args = thread_class.call_args.kwargs["args"]
         self.assertEqual(worker_args[1], 5)
@@ -2265,7 +2282,7 @@ class ScriptRefWindowTests(unittest.TestCase):
     def test_run_referenced_script_alone_clamps_repeats_to_at_least_one(self):
         app = self._app_for_referenced_script_alone()
         ref = self._write_test_script([{"type": "click", "x": 1, "y": 2, "delay_ms": 0}])
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.run_referenced_script_alone({"script": str(ref)}, 0)
         self.assertEqual(thread_class.call_args.kwargs["args"][1], 1)
 
@@ -2312,7 +2329,7 @@ class ScriptRefWindowTests(unittest.TestCase):
                 },
                 "actions": [{"type": "click", "x": 1, "y": 2, "delay_ms": 0}],
             }, ensure_ascii=False), encoding="utf-8")
-            with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            with patch("threading.Thread") as thread_class:
                 app.run_referenced_script_alone({"script": str(ref)})
         app._execution_activation_hwnd.assert_called_once_with(
             123, True, {"title": "游戏窗口", "class_name": "", "process_path": ""})
@@ -2370,7 +2387,7 @@ class SingleActionRunTests(unittest.TestCase):
 
     def test_single_action_run_passes_row_repeats_and_flag_to_worker(self):
         app = self._app()
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(start_index=2, single_action_repeats=5)
         worker_args = thread_class.call_args.kwargs["args"]
         self.assertEqual(worker_args[0], list(app.script.actions))
@@ -2385,7 +2402,7 @@ class SingleActionRunTests(unittest.TestCase):
 
     def test_segment_run_passes_the_range_and_round_count_to_worker(self):
         app = self._app()
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(segment=(1, 2), segment_repeats=4)
         worker_args = thread_class.call_args.kwargs["args"]
         self.assertEqual(worker_args[0], list(app.script.actions), "整份动作列表照旧交给播放器")
@@ -2408,14 +2425,14 @@ class SingleActionRunTests(unittest.TestCase):
             actions=[{"type": "comment", "text": "一"}, {"type": "delay", "ms": 1}],
             settings={"trigger": {}},
         )
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(segment=(0, 9), segment_repeats=2)
         self.assertEqual(thread_class.call_args.kwargs["args"][7], 0)
         self.assertEqual(thread_class.call_args.kwargs["kwargs"]["segment_end"], 1)
 
     def test_normal_run_keeps_toolbar_repeat_count(self):
         app = self._app()
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(start_index=1)
         worker_args = thread_class.call_args.kwargs["args"]
         self.assertEqual(worker_args[1], 3)
@@ -2425,14 +2442,14 @@ class SingleActionRunTests(unittest.TestCase):
 
     def test_single_action_run_clamps_repeats_to_at_least_one(self):
         app = self._app()
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(start_index=0, single_action_repeats=0)
         self.assertEqual(thread_class.call_args.kwargs["args"][1], 1)
 
     def test_single_action_run_blocked_while_worker_running(self):
         app = self._app()
         app.worker.is_alive.return_value = True
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(start_index=0, single_action_repeats=1)
         app._notify.assert_called_once_with("正在运行", "已有脚本或工作流正在执行。")
         thread_class.assert_not_called()
@@ -2656,9 +2673,7 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.app_settings = {"main_window_geometry": "1902x1039+-1919+182"}
         app.root = Mock()
 
-        with patch_app("get_virtual_screen_rect", return_value={
-            "left": 0, "top": 0, "width": 1920, "height": 1080,
-        }):
+        with package_patch('app', 'get_virtual_screen_rect', return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
             app._restore_main_window_geometry()
 
         app.root.geometry.assert_called_once_with("1902x1039+9+20")
@@ -2832,7 +2847,7 @@ class SegmentBlockMoveTests(unittest.TestCase):
     def test_non_contiguous_selection_is_rejected(self):
         self.form.segment_listbox.selection_set(0)
         self.form.segment_listbox.selection_set(2)
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             self.form._move_segment_item(-1)
 
         self.assertEqual([item["ms"] for item in self.form.segment], [0, 1, 2, 3, 4])

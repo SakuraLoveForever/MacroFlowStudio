@@ -7,7 +7,14 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_log_view.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+from pathlib import Path
+from macroflow.core.storage import BASE_DIR
+import tempfile
+import threading
+import tkinter as tk
+import unittest
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar
 
 
 class LogStreamsTests(unittest.TestCase):
@@ -164,7 +171,7 @@ class AutohideScrollbarTests(unittest.TestCase):
     def _build(self):
         from tkinter import ttk
 
-        from macroflow.ui.app import attach_autohide_scrollbar
+        from macroflow.ui.app.base import attach_autohide_scrollbar
 
         root = tk.Tk()
         # 布局尺寸要按真实（已映射）窗口算，所以不能 withdraw；用全透明代替，

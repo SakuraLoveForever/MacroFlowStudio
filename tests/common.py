@@ -38,7 +38,7 @@ import macroflow.input.wininput as wininput_module
 import macroflow.ui.dialogs as dialog_module
 
 from macroflow.core.alerts import play_alert
-from macroflow.ui.app import (
+from macroflow.ui.app.main import (
     BACKUP_INTERVAL_CHOICES, BACKUP_INTERVAL_MS, MacroFlowApp,
     RECORD_TOOLBAR_BUTTON_LABEL,
     SEGMENT_BAR,

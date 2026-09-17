@@ -7,9 +7,25 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_workflow.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import inspect
+import json
+from pathlib import Path
+from macroflow.core.storage import BASE_DIR
+import tempfile
+import threading
+import tkinter as tk
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.models import DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow
+from macroflow.core.storage import save_script, save_workflow
+from macroflow.execution.player.control import AdvanceToNextWorkflowStep
+from macroflow.ui.app.base import workflow_execution_progress, workflow_script_name
+from macroflow.ui.app.constants import SEGMENT_BAR
+from macroflow.ui.app.main import MacroFlowApp
+from tests.helpers.core import FakeBooleanVar, FakeVar
 from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
 from tests.helpers.ui import make_edit_app  # noqa: E402
+from tests.helpers.patches import package_patch
 
 
 class WorkflowInsertTests(unittest.TestCase):
@@ -34,7 +50,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "above"
         app.workflow_tree.selection.return_value = ("0",)  # 选中 a.json（全局模块在单独列表）
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/scripts/新脚本.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/scripts/新脚本.json"):
             app.insert_workflow_step()
         # 全局模块保持首位，新步骤插在 a.json 之前
         self.assertEqual(
@@ -53,7 +69,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("0",)
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/x/new.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
             app.insert_workflow_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -70,7 +86,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("1",)
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/x/new.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
             app.insert_workflow_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -94,7 +110,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("0",)
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value=""):
+        with patch("tkinter.filedialog.askopenfilename", return_value=""):
             app.insert_workflow_step()
         self.assertEqual(len(app.workflow.steps), 1)
         app._persist_workflow_draft.assert_not_called()
@@ -112,7 +128,7 @@ class WorkflowInsertTests(unittest.TestCase):
             "type": "image_match", "module_ref": True,
             "module_key": "images/switch.png", "template": "images/switch.png",
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.insert_workflow_module_step()
 
@@ -135,7 +151,7 @@ class WorkflowInsertTests(unittest.TestCase):
             {"type": "image_match", "module_ref": True, "module_key": "module:a"},
             {"type": "image_match", "module_ref": True, "module_key": "module:b"},
         ]
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = actions
             app.add_workflow_module_step()
 
@@ -159,7 +175,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("0",)
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/x/new.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
             app.add_script_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -176,7 +192,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var = Mock()
         app.workflow_insert_position_var.get.return_value = "above"
         app.workflow_tree.selection.return_value = ("1",)
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/x/new.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
             app.add_script_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -190,7 +206,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow = Workflow(steps=[{"script": "a.json", "step_id": "a"}])
         app.workflow_insert_position_var = Mock()
         app.workflow_tree.selection.return_value = ()
-        with patch("macroflow.ui.app.filedialog.askopenfilename", return_value="C:/x/new.json"):
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
             app.add_script_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -211,7 +227,7 @@ class WorkflowInsertTests(unittest.TestCase):
             "type": "image_match", "module_ref": True,
             "module_key": "images/switch.png", "template": "images/switch.png",
         }
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
             app.add_workflow_module_step()
 
@@ -236,7 +252,7 @@ class WorkflowInsertTests(unittest.TestCase):
             {"type": "image_match", "module_ref": True, "module_key": "module:a"},
             {"type": "image_match", "module_ref": True, "module_key": "module:b"},
         ]
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = actions
             app.add_workflow_module_step()
         self.assertEqual(
@@ -279,7 +295,7 @@ class WorkflowInsertTests(unittest.TestCase):
             "module_ref": True, "module_category": "workflow_global",
         }]
         app._append_global_module = Mock()
-        with patch_app("ModulePickerDialog") as picker_class:
+        with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = actions
             app.add_workflow_global_module()
         picker_class.assert_called_once_with(
@@ -301,11 +317,9 @@ class WorkflowDisplayTests(unittest.TestCase):
         self.assertIn('text="运行工作流"', source)
 
     def test_toolbar_spec_rows_keep_action_buttons_visible(self):
-        import macroflow.ui.app as app_module
+        from macroflow.ui.app.base import toolbar_spec_rows
 
         specs = tuple((f"button-{index}", None, "ScriptTool.TButton") for index in range(16))
-        toolbar_spec_rows = getattr(app_module, "toolbar_spec_rows", None)
-        self.assertIsNotNone(toolbar_spec_rows)
         rows = toolbar_spec_rows(specs, row_size=8)
 
         self.assertEqual([len(row) for row in rows], [8, 8])
@@ -383,7 +397,7 @@ class WorkflowDisplayTests(unittest.TestCase):
                 "template": "images/部分/资讯叉叉.png",
             },
         }
-        with patch_app("registered_module_object", return_value={"name": "资讯叉叉"}):
+        with package_patch('app', 'registered_module_object', return_value={'name': '资讯叉叉'}):
             self.assertEqual(app._workflow_step_name(step), "模块 资讯叉叉")
 
     def test_workflow_module_name_reads_persisted_action_name(self):
@@ -393,7 +407,7 @@ class WorkflowDisplayTests(unittest.TestCase):
                 "module_key": "module:claim", "module_name": "可领取",
             },
         }
-        with patch_app("registered_module_object", return_value=None):
+        with package_patch('app', 'registered_module_object', return_value=None):
             self.assertEqual(app._workflow_module_key(step), "module:claim")
             self.assertEqual(app._workflow_step_name(step), "模块 可领取")
 
@@ -404,7 +418,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         app.rebuild_workflow_tree()
         app.workflow_path = Path("flow.json")
 
-        with patch_app("save_workflow", return_value=Path("flow.json")) as save:
+        with package_patch('app', 'save_workflow', return_value=Path('flow.json')) as save:
             app._consume_workflow_repeat(0)
 
         self.assertEqual(app.workflow.steps[0]["repeats"], 0)
@@ -429,7 +443,7 @@ class WorkflowDisplayTests(unittest.TestCase):
             "repeats": 4, "before_ms": 1200, "repeat_interval_ms": 2300,
         }
 
-        with patch_app("WorkflowBatchSettingsDialog", return_value=dialog):
+        with package_patch('app', 'WorkflowBatchSettingsDialog', return_value=dialog):
             app.set_all_workflow_step_options()
 
         for step in app.workflow.steps:
@@ -454,7 +468,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         dialog = Mock()
         dialog.show.return_value = {"repeat_interval_ms": 3000}
 
-        with patch_app("WorkflowBatchSettingsDialog", return_value=dialog):
+        with package_patch('app', 'WorkflowBatchSettingsDialog', return_value=dialog):
             app.set_all_workflow_step_options()
 
         self.assertEqual(app.workflow.steps[0]["repeats"], 2)
@@ -484,7 +498,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         app.workflow_tree.identify_row = Mock(return_value="0")
         app.workflow_tree.identify_column = Mock(return_value="#6")
 
-        with patch_app("DurationDialog") as prompt:
+        with package_patch('app', 'DurationDialog') as prompt:
             prompt.return_value.show.return_value = 2400
             app._edit_workflow_cell(Mock(x=500, y=10))
 
@@ -498,8 +512,8 @@ class WorkflowDisplayTests(unittest.TestCase):
         app.workflow = Workflow()
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
-        with patch_app("display_path", return_value="scripts/a.json"), \
-             patch("macroflow.ui.app.simpledialog.askinteger") as prompt:
+        with package_patch('app', 'display_path', return_value='scripts/a.json'), \
+             patch("tkinter.simpledialog.askinteger") as prompt:
             app._append_workflow_step(Path("a.json"))
         step = app.workflow.steps[0]
         self.assertEqual(step["script"], "scripts/a.json")
@@ -608,7 +622,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         app._persist_workflow_draft = Mock()
         app._log = Mock()
 
-        with patch_app("save_workflow") as save:
+        with package_patch('app', 'save_workflow') as save:
             app._consume_workflow_repeat(0)
 
         self.assertEqual(app.workflow.steps[0]["repeats"], 3)
@@ -633,7 +647,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         dialog = Mock()
         dialog.show.return_value = {"repeats": 5, "unlimited": True}
 
-        with patch_app("WorkflowRepeatDialog", return_value=dialog):
+        with package_patch('app', 'WorkflowRepeatDialog', return_value=dialog):
             app._edit_workflow_cell(Mock(x=100, y=10))
 
         self.assertEqual(app.workflow.steps[0]["repeats"], 5)
@@ -655,7 +669,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         dialog = Mock()
         dialog.show.return_value = {"unlimited": True}
 
-        with patch_app("WorkflowBatchSettingsDialog", return_value=dialog):
+        with package_patch('app', 'WorkflowBatchSettingsDialog', return_value=dialog):
             app.set_all_workflow_step_options()
 
         self.assertTrue(all(step["unlimited"] for step in app.workflow.steps))
@@ -799,7 +813,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             app.log_text = Mock()
             app.session_log_path = Path(folder) / "2026-08-11" / "session.log"
             app.session_log_path.parent.mkdir(parents=True)
-            with patch_app("get_cursor_pos", return_value=(12, 34)):
+            with package_patch('app', 'get_cursor_pos', return_value=(12, 34)):
                 app._log("备份完成")
             self.assertIn("[鼠标 12,34] 备份完成", app.session_log_path.read_text(encoding="utf-8"))
 
@@ -810,7 +824,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             app.log_text = Mock()
             app.log_file_lock = threading.Lock()
             app.session_log_path = Path(folder) / "2026-08-11" / "session.log"
-            with patch_app("get_cursor_pos", return_value=(56, 78)):
+            with package_patch('app', 'get_cursor_pos', return_value=(56, 78)):
                 app._ui(app._log, "后台识别完成")
             self.assertIn(
                 "[鼠标 56,78] 后台识别完成",
@@ -855,7 +869,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app._global_module_label = Mock(return_value="◆ 模块对象 · 已禁用全局模块")
         app._autosize_tree_column = Mock()
 
-        with patch_app("registered_module_object", return_value={"enabled": False}):
+        with package_patch('app', 'registered_module_object', return_value={'enabled': False}):
             app.rebuild_global_tree()
 
         insert = app.global_tree.insert.call_args
@@ -914,9 +928,9 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         updated = {"category": "global", "name": "新模块", "template": "images/new.png"}
         form = Mock()
         form.show.return_value = ("images/old.png", "images/old.png", updated)
-        with patch_app("registered_module_object", return_value=obj), \
-             patch_app("TemplateRegionFormDialog", return_value=form) as form_class, \
-             patch_app("update_module_object") as update:
+        with package_patch('app', 'registered_module_object', return_value=obj), \
+             package_patch('app', 'TemplateRegionFormDialog', return_value=form) as form_class, \
+             package_patch('app', 'update_module_object') as update:
             app._open_module_object_editor("images/old.png", workflow_step=step)
 
         form_class.assert_called_once_with(
@@ -935,8 +949,8 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             "kind": "global_module",
             "config": {"module_ref": True, "template": "images/global.png"},
         }
-        with patch_app("registered_module_object", return_value={"category": "global"}), \
-             patch_app("spawn_new_instance") as spawn:
+        with package_patch('app', 'registered_module_object', return_value={'category': 'global'}), \
+             package_patch('app', 'spawn_new_instance') as spawn:
             app._open_workflow_global_module_in_new_window(step)
 
         args = spawn.call_args.args[0]
@@ -1241,9 +1255,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             "enabled": True, "before_ms": 0,
         }
 
-        with patch_app("registered_module_object", return_value={
-            "name": "领取", "category": "switch", "template": "images/claim.png",
-        }):
+        with package_patch('app', 'registered_module_object', return_value={'name': '领取', 'category': 'switch', 'template': 'images/claim.png'}):
             app._run_workflow_worker([step], None, None, False)
 
         app.player.play.assert_called_once()
@@ -1491,12 +1503,12 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
                 return app
 
             app = make_app()
-            with patch("macroflow.ui.app.threading.Thread"):
+            with patch("threading.Thread"):
                 app.run_workflow(suppress_start_sound=True)
             app._sound.assert_not_called()
 
             app = make_app()
-            with patch("macroflow.ui.app.threading.Thread"):
+            with patch("threading.Thread"):
                 app.run_workflow()
             app._sound.assert_called_once_with("run_start")
 
@@ -1542,7 +1554,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         # 改名保存曾直接落默认目录：与已有同名工作流文件冲突时静默覆盖
         # （数据丢失），旧文件也遗留成孤儿。修复：改名走“绝不覆盖”去重路径。
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder, \
-             patch_app("WORKFLOWS_DIR", Path(folder)):
+             package_patch('app', 'WORKFLOWS_DIR', Path(folder)):
             existing = Path(folder) / "B.json"
             existing.write_text("existing", encoding="utf-8")
             app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1563,7 +1575,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
     def test_save_workflow_rename_removes_old_file(self):
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder, \
-             patch_app("WORKFLOWS_DIR", Path(folder)):
+             package_patch('app', 'WORKFLOWS_DIR', Path(folder)):
             old = Path(folder) / "A.json"
             old.write_text("old", encoding="utf-8")
             app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1594,21 +1606,21 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
     def test_rename_workflow_applies_name_and_saves(self):
         app = self._rename_app()
-        with patch("macroflow.ui.app.simpledialog.askstring", return_value="B"):
+        with patch("tkinter.simpledialog.askstring", return_value="B"):
             app.rename_workflow()
         app.workflow_name_var.set.assert_called_once_with("B")
         app.save_current_workflow.assert_called_once()
 
     def test_rename_workflow_cancel_keeps_name(self):
         app = self._rename_app()
-        with patch("macroflow.ui.app.simpledialog.askstring", return_value=None):
+        with patch("tkinter.simpledialog.askstring", return_value=None):
             app.rename_workflow()
         app.workflow_name_var.set.assert_not_called()
         app.save_current_workflow.assert_not_called()
 
     def test_rename_workflow_rejects_empty_name(self):
         app = self._rename_app()
-        with patch("macroflow.ui.app.simpledialog.askstring", return_value="   "):
+        with patch("tkinter.simpledialog.askstring", return_value="   "):
             app.rename_workflow()
         app.workflow_name_var.set.assert_not_called()
         app.save_current_workflow.assert_not_called()
@@ -1642,7 +1654,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         # 复制后生成独立新文件：新名称、步骤 ID 重新分配、不继承定时开始时间，
         # 原工作流文件不受影响，界面立即切换到副本。
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder, \
-             patch_app("WORKFLOWS_DIR", Path(folder)):
+             package_patch('app', 'WORKFLOWS_DIR', Path(folder)):
             original = Workflow(
                 name="原流程", start_at="2026-01-01 12:00:00",
                 steps=[{"script": "a.json", "step_id": "s1"},
@@ -1653,7 +1665,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             original_snapshot = original_path.read_text(encoding="utf-8")
             app = self._duplicate_app(original)
             app.workflow_path = original_path
-            with patch("macroflow.ui.app.simpledialog.askstring", return_value="副本"):
+            with patch("tkinter.simpledialog.askstring", return_value="副本"):
                 app.duplicate_workflow()
             target = Path(folder) / "副本.json"
             self.assertTrue(target.is_file())
@@ -1674,17 +1686,17 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
     def test_duplicate_workflow_avoids_name_collision(self):
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder, \
-             patch_app("WORKFLOWS_DIR", Path(folder)):
+             package_patch('app', 'WORKFLOWS_DIR', Path(folder)):
             (Path(folder) / "副本.json").write_text("existing", encoding="utf-8")
             app = self._duplicate_app(Workflow(name="原流程", steps=[]))
-            with patch("macroflow.ui.app.simpledialog.askstring", return_value="副本"):
+            with patch("tkinter.simpledialog.askstring", return_value="副本"):
                 app.duplicate_workflow()
             self.assertEqual((Path(folder) / "副本.json").read_text(encoding="utf-8"), "existing")
             self.assertTrue((Path(folder) / "副本 (2).json").is_file())
 
     def test_duplicate_workflow_cancel_keeps_current(self):
         app = self._duplicate_app(Workflow(name="原流程", steps=[]))
-        with patch("macroflow.ui.app.simpledialog.askstring", return_value=None):
+        with patch("tkinter.simpledialog.askstring", return_value=None):
             app.duplicate_workflow()
         self.assertIsNone(app.workflow_path)
         self.assertEqual(app.workflow.name, "原流程")
@@ -1692,7 +1704,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
     def test_duplicate_workflow_rejects_empty_name(self):
         app = self._duplicate_app(Workflow(name="原流程", steps=[]))
-        with patch("macroflow.ui.app.simpledialog.askstring", return_value="  "):
+        with patch("tkinter.simpledialog.askstring", return_value="  "):
             app.duplicate_workflow()
         app._notify.assert_called_once()
         self.assertIsNone(app.workflow_path)
@@ -1825,7 +1837,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
         selected.process_path = "C:/Game/new.exe"
         selected.label = "新前置窗口（NewFront）"
         app.root = Mock()
-        with patch_app("WindowPicker") as picker, patch_app("is_window", return_value=True):
+        with package_patch('app', 'WindowPicker') as picker, package_patch('app', 'is_window', return_value=True):
             picker.return_value.show.return_value = selected
             app.choose_activation_window()
         self.assertEqual(app.saved_activation_signature["title"], "新前置窗口")
@@ -2161,7 +2173,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
 
             # 侧栏未勾选：工作流总开关关闭，步骤脚本自带前置窗口也不会执行。
             app = make_app()
-            with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            with patch("threading.Thread") as thread_class:
                 app.run_workflow()
             worker_args = thread_class.call_args.kwargs["args"]
             # 末尾三项：前置窗口总开关、片段末行、片段轮次。
@@ -2177,7 +2189,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
             app._restore_saved_activation_window = Mock(return_value=True)
             app.activation_window = Mock()
             app.activation_window.hwnd = 456
-            with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            with patch("threading.Thread") as thread_class:
                 app.run_workflow()
             worker_args = thread_class.call_args.kwargs["args"]
             self.assertTrue(worker_args[-3])
@@ -2223,7 +2235,7 @@ class WorkflowSegmentTests(unittest.TestCase):
             {"script": "c.json", "repeats": 1},
         ])
 
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.run_workflow(segment=(0, 1), segment_repeats=4)
 
         worker_args = thread_class.call_args.kwargs["args"]

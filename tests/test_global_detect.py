@@ -7,7 +7,25 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_global_detect.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import numpy as np
+from pathlib import Path
+from macroflow.core.storage import BASE_DIR
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.models import MacroScript, NEXT_WORKFLOW_STEP_TARGET_ID, Workflow, ensure_workflow_step_ids
+from macroflow.core.storage import save_script
+from macroflow.execution.detection_worker import DetectionEvaluation, DetectionResult, DetectionWorker
+from macroflow.execution.player import MacroPlayer
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.dialogs.app_dialogs import ScriptDirectoriesDialog
+from macroflow.ui.dialogs.helpers import select_jump_target_label
+from macroflow.ui.dialogs.recognition import GlobalDetectDialog
+from macroflow.ui.dialogs.screen_pickers import ScreenOffsetPicker, ScreenPointPicker, ScreenRegionPicker
+from tests.helpers.core import FakeBooleanVar
+from tests.helpers.patches import package_patch
 
 
 class GuardTestHelpers:
@@ -151,14 +169,14 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             "after_action": "click_custom", "click_point": [1129, 291],
             "button": "left", "click_count": 2,
         }
-        with patch_app("registered_module_object", return_value=module):
+        with package_patch('app', 'registered_module_object', return_value=module):
             app._refresh_guard_from_module(guard)
         self.assertEqual(guard["click"], (1129, 291))
         self.assertEqual(guard["click_count"], 2)
 
         module["click_point"] = [1200, 300]
         module["after_action"] = "click_match"
-        with patch_app("registered_module_object", return_value=module):
+        with package_patch('app', 'registered_module_object', return_value=module):
             app._refresh_guard_from_module(guard)
         # 改回「点击识别区域」后按识别位置点，自定义坐标不再生效。
         hit = app._build_guard_hit(dict(guard, match_data={
@@ -181,7 +199,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             "after_action": "click_custom", "click_point": [1129, 291],
             "button": "right", "click_count": 1, "delay_ms": 1500,
         }
-        with patch_app("registered_module_object", return_value=module):
+        with package_patch('app', 'registered_module_object', return_value=module):
             app._refresh_guard_from_module(guard)
         self.assertEqual(guard["delay_ms"], 1500)
         self.assertEqual(guard["button"], "right")
@@ -251,10 +269,10 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             fallback_obj = {"name": "备用", "template": str(fallback_path), "threshold": 0.8}
             fallback_match = {"x": 10, "y": 20, "width": 30, "height": 40,
                               "center_x": 25, "center_y": 40}
-            with patch_app("capture_bgr", return_value=(None, None)), \
-                 patch_app("registered_module_object", return_value=fallback_obj), \
-                 patch_app("find_template", side_effect=[None, fallback_match]), \
-                 patch_app("show_overlay") as overlay, \
+            with package_patch('app', 'capture_bgr', return_value=(None, None)), \
+                 package_patch('app', 'registered_module_object', return_value=fallback_obj), \
+                 package_patch('app', 'find_template', side_effect=[None, fallback_match]), \
+                 package_patch('app', 'show_overlay') as overlay, \
                  patch.object(app.player, "_click_module_point") as fallback_click:
                 evaluation = app._evaluate_global_guards_sync()
 
@@ -264,7 +282,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                          ["restore_foreground", "overlay", "fallback_click"])
         overlay.assert_not_called()
         fallback_click.assert_not_called()
-        with patch_app("show_overlay") as consumed_overlay, \
+        with package_patch('app', 'show_overlay') as consumed_overlay, \
              patch.object(app, "_restore_workflow_scan_foreground") as restore_foreground, \
              patch.object(app.player, "_click_module_point") as consumed_click:
             app._consume_detection_events(evaluation.deferred_events)
@@ -338,12 +356,8 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                               "center_x": 60, "center_y": 70, "score": 0.9}
             player = MacroPlayer()
             player._wait = Mock()
-            with patch_player("registered_module_object", side_effect=lambda key: {
-                "module:main": main_obj, "module:fallback": fallback_obj,
-            }.get(key)), patch_player("find_template", side_effect=[
-                None, fallback_match, main_match,
-            ]), patch_player("send_move_absolute") as move, patch_player("send_button") as button, \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match, main_match]), package_patch('player', 'send_move_absolute') as move, package_patch('player', 'send_button') as button, \
+                 package_patch('player', 'show_overlay'):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:main", "template": str(main_path),
@@ -367,11 +381,9 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             player._wait = Mock()
             logs: list[str] = []
             player.on_log = logs.append
-            with patch_player("registered_module_object",
-                       return_value=main_obj), \
-                    patch_player("find_template",
-                          return_value=main_match) as find, \
-                    patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', return_value=main_obj), \
+                    package_patch('player', 'find_template', return_value=main_match) as find, \
+                    package_patch('player', 'show_overlay'):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:entertain", "template": str(main_path),
@@ -400,11 +412,9 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             player._wait = Mock()
             logs: list[str] = []
             player.on_log = logs.append
-            with patch_player("registered_module_object",
-                       return_value=main_obj), \
-                    patch_player("find_template",
-                          return_value=main_match), \
-                    patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', return_value=main_obj), \
+                    package_patch('player', 'find_template', return_value=main_match), \
+                    package_patch('player', 'show_overlay'):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:lobby", "template": str(main_path),
@@ -435,12 +445,8 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                               "center_x": 60, "center_y": 70, "score": 0.9}
             player = MacroPlayer()
             player._wait = Mock()
-            with patch_player("registered_module_object", side_effect=lambda key: {
-                "module:main": main_obj, "module:fallback": fallback_obj,
-            }.get(key)), patch_player("find_template", side_effect=[
-                None, fallback_match, None, fallback_match, main_match,
-            ]), patch_player("send_move_absolute") as move, patch_player("send_button") as button, \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match, None, fallback_match, main_match]), package_patch('player', 'send_move_absolute') as move, package_patch('player', 'send_button') as button, \
+                 package_patch('player', 'show_overlay'):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:main", "template": str(main_path),
@@ -471,13 +477,9 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                               "center_x": 60, "center_y": 70, "score": 0.9}
             player = MacroPlayer()
             player._wait = Mock()
-            with patch_player("registered_module_object", side_effect=lambda key: {
-                "module:main": main_obj, "module:fallback": fallback_obj,
-            }.get(key)), patch_player("find_template", side_effect=[
-                None, fallback_match,
-            ]) as find, patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button, \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match]) as find, package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button, \
+                 package_patch('player', 'show_overlay'):
                 result = player._execute_image({
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:main", "template": str(main_path),
@@ -500,8 +502,8 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             timeout_segment=segment, not_found_since=time.perf_counter() - 1.0,
         )
         app.global_guards[guard["key"]] = guard
-        with patch_app("find_template_in_image") as find, \
-             patch_app("registered_module_object", return_value=None):
+        with package_patch('app', 'find_template_in_image') as find, \
+             package_patch('app', 'registered_module_object', return_value=None):
             hit = app._evaluate_global_guards()
         find.assert_not_called()
         self.assertIsNotNone(hit)
@@ -535,7 +537,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             },
             {"type": "notice"},
         ]
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             keys = app._enter_script_global_scope(actions)
         guard = app.global_guards[keys[0]]
         guard["jump_action_id"] = NEXT_WORKFLOW_STEP_TARGET_ID
@@ -571,11 +573,11 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         app.ocr_engine_ready = False
-        with patch_app("_get_engine", return_value=object()) as load:
+        with package_patch('app', '_get_engine', return_value=object()) as load:
             self.assertTrue(app._ensure_ocr_ready())
         load.assert_called_once()
         self.assertTrue(app.ocr_engine_ready)
-        with patch_app("_get_engine") as load_again:
+        with package_patch('app', '_get_engine') as load_again:
             self.assertTrue(app._ensure_ocr_ready())
         load_again.assert_not_called()
 
@@ -605,7 +607,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         app.ocr_engine_ready = False
-        with patch_app("_get_engine", return_value=object()):
+        with package_patch('app', '_get_engine', return_value=object()):
             self.assertFalse(app._ensure_ocr_ready())
 
     def test_wait_ocr_ready_interruptible_by_stop(self):
@@ -646,9 +648,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             {"type": "global_detect", "template": "images/b.png", "region_mode": "template"},
             {"type": "script_ref", "script": "scripts/other.json"},
         ]
-        with patch_app("resolve_path", return_value=Path("scripts/other.json")) as resolve, \
-                patch_app("load_script") as load, \
-                patch_app("registered_module_object", return_value=None) as lookup:
+        with package_patch('app', 'resolve_path', return_value=Path('scripts/other.json')) as resolve, \
+                package_patch('app', 'load_script') as load, \
+                package_patch('app', 'registered_module_object', return_value=None) as lookup:
             self.assertFalse(app._script_needs_ocr(actions))
         load.assert_not_called()
 
@@ -705,8 +707,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
     def test_module_ref_text_object_needs_ocr(self):
         # 引用模块本身是文字识别模块：命中判断走 OCR。
         app = MacroFlowApp.__new__(MacroFlowApp)
-        with patch_app("registered_module_object",
-                   return_value={"recognize": "text", "expected_text": "体力不足"}) as lookup:
+        with package_patch('app', 'registered_module_object', return_value={'recognize': 'text', 'expected_text': '体力不足'}) as lookup:
             self.assertTrue(app._script_needs_ocr(
                 [{"type": "global_detect", "module_key": "module:123", "module_ref": True}],
             ))
@@ -720,7 +721,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "on_success_actions": [{"type": "text_ocr", "region": [0, 0, 10, 10]}],
             "on_timeout_actions": [],
         }
-        with patch_app("registered_module_object", return_value=module):
+        with package_patch('app', 'registered_module_object', return_value=module):
             self.assertTrue(app._script_needs_ocr(
                 [{"type": "global_detect", "module_key": "module:123"}],
             ))
@@ -728,8 +729,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
     def test_fallback_text_module_needs_ocr(self):
         # 主模块是模板，备用识别模块是文字模块。
         app = MacroFlowApp.__new__(MacroFlowApp)
-        with patch_app("registered_module_object",
-                   side_effect=[None, {"recognize": "text"}]):
+        with package_patch('app', 'registered_module_object', side_effect=[None, {'recognize': 'text'}]):
             self.assertTrue(app._script_needs_ocr(
                 [{"type": "global_detect", "module_key": "module:main",
                   "fallback_module_key": "module:fb"}],
@@ -742,8 +742,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         path = Mock()
         path.is_file.return_value = True
         path.resolve.return_value = "C:/scripts/ref.json"
-        with patch_app("resolve_path", return_value=path) as resolve, \
-                patch_app("load_script", return_value=referenced) as load:
+        with package_patch('app', 'resolve_path', return_value=path) as resolve, \
+                package_patch('app', 'load_script', return_value=referenced) as load:
             self.assertTrue(app._script_needs_ocr(
                 [{"type": "script_ref", "script": "scripts/ref.json"}],
             ))
@@ -765,8 +765,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         def fake_load(path):
             return a if path.resolve() == "C:/a.json" else b
 
-        with patch_app("resolve_path", side_effect=fake_resolve), \
-                patch_app("load_script", side_effect=fake_load):
+        with package_patch('app', 'resolve_path', side_effect=fake_resolve), \
+                package_patch('app', 'load_script', side_effect=fake_load):
             self.assertFalse(app._script_needs_ocr(
                 [{"type": "script_ref", "script": "a.json"}],
             ))
@@ -777,8 +777,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         path = Mock()
         path.is_file.return_value = True
         path.resolve.return_value = "C:/broken.json"
-        with patch_app("resolve_path", return_value=path), \
-                patch_app("load_script", side_effect=RuntimeError("解析失败")):
+        with package_patch('app', 'resolve_path', return_value=path), \
+                package_patch('app', 'load_script', side_effect=RuntimeError('解析失败')):
             self.assertTrue(app._script_needs_ocr(
                 [{"type": "script_ref", "script": "scripts/broken.json"}],
             ))
@@ -799,8 +799,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         def fake_load(path):
             return pure if path.resolve() == "C:/pure.json" else ocr_script
 
-        with patch_app("resolve_path", side_effect=fake_resolve), \
-                patch_app("load_script", side_effect=fake_load):
+        with package_patch('app', 'resolve_path', side_effect=fake_resolve), \
+                package_patch('app', 'load_script', side_effect=fake_load):
             self.assertFalse(app._workflow_needs_ocr(
                 [{"kind": "script", "script": "pure.json"}], [],
             ))
@@ -814,7 +814,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         steps = [{"kind": "module", "action": {
             "module_key": "module:123", "type": "global_detect",
         }}]
-        with patch_app("registered_module_object", return_value={"recognize": "text"}):
+        with package_patch('app', 'registered_module_object', return_value={'recognize': 'text'}):
             self.assertTrue(app._workflow_needs_ocr(steps, []))
 
     def test_workflow_global_module_config(self):
@@ -822,7 +822,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         module = {"config": {
             "module_ref": True, "module_key": "module:g", "template": "images/g.png",
         }}
-        with patch_app("registered_module_object", return_value={"recognize": "text"}):
+        with package_patch('app', 'registered_module_object', return_value={'recognize': 'text'}):
             self.assertTrue(app._workflow_needs_ocr([], [module]))
 
     def test_activate_global_detect_from_config_configures_guard(self):
@@ -833,7 +833,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         module = {"kind": "global_module", "script": "m.json", "step_id": "m1"}
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
                 "template": "images/g.png",
@@ -868,8 +868,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "enabled": True, "category": "script_global", "template": "images/g.png",
             "start_delay_ms": 125000,
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -885,9 +885,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             guard = self._make_guard(template, interval_ms=100)
             app.global_guards[guard["key"]] = guard
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))) as capture, \
-                 patch_app("find_template_in_image", return_value=None), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))) as capture, \
+                 package_patch('app', 'find_template_in_image', return_value=None), \
+                 package_patch('app', 'show_overlay'):
                 self.assertIsNone(app._evaluate_global_guards())
                 self.assertEqual(capture.call_count, 1)
                 # 拉长间隔：下一次评估未到节流点，直接跳过，不截图。
@@ -909,9 +909,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         )
         app.global_guards[guard["key"]] = guard
         screen = np.zeros((400, 400, 3), dtype=np.uint8)
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes", return_value=("体力不足", [found])) as recognize, \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('体力不足', [found])) as recognize, \
+             package_patch('app', 'show_overlay'):
             hit = app._evaluate_global_guards()
         recognize.assert_called_once()
         self.assertIsNotNone(hit)
@@ -929,10 +929,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_guards[guard["key"]] = guard
         screen = np.zeros((400, 400, 3), dtype=np.uint8)
         # 未出现：不触发也不武装。
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes",
-                   return_value=("其他文字", [{"text": "其他文字"}])), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('其他文字', [{'text': '其他文字'}])), \
+             package_patch('app', 'show_overlay'):
             self.assertIsNone(app._evaluate_global_guards())
         self.assertFalse(guard["target_absent_armed"])
         # 出现：第一次触发成功动作，并进入持续重试状态。
@@ -941,30 +940,25 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "text": "加载中", "x": 180, "y": 80, "width": 80, "height": 30,
             "center_x": 220, "center_y": 95,
         }
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes", return_value=(
-                 "加载中",
-                 [found],
-             )), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('加载中', [found])), \
+             package_patch('app', 'show_overlay'):
             first_hit = app._evaluate_global_guards()
         self.assertIsNotNone(first_hit)
         self.assertTrue(guard["target_absent_armed"])
         # 目标仍在：下一轮继续触发，不能被 awaiting_clear 吞掉。
         guard["last_check_time"] = 0.0
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes",
-                   return_value=("加载中", [found])), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('加载中', [found])), \
+             package_patch('app', 'show_overlay'):
             second_hit = app._evaluate_global_guards()
         self.assertIsNotNone(second_hit)
         self.assertEqual(second_hit["kind"], "success")
         # 目标消失：结束本轮重试，之后再次出现可以重新触发。
         guard["last_check_time"] = 0.0
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes",
-                   return_value=("已完成", [{"text": "已完成"}])), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('已完成', [{'text': '已完成'}])), \
+             package_patch('app', 'show_overlay'):
             self.assertIsNone(app._evaluate_global_guards())
         self.assertFalse(guard["target_absent_armed"])
 
@@ -983,26 +977,26 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "center_x": 220, "center_y": 95, "score": 0.99,
             }
             screen = np.zeros((400, 400, 3), dtype=np.uint8)
-            with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-                 patch_app("find_template_in_image", return_value=found) as find, \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=found) as find, \
+                 package_patch('app', 'show_overlay'):
                 first_hit = app._evaluate_global_guards()
             self.assertIsNotNone(first_hit)
             self.assertTrue(guard["target_absent_armed"])
             self.assertEqual(find.call_count, 1)
             # 目标仍在：下一轮继续触发。
             guard["last_check_time"] = 0.0
-            with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-                 patch_app("find_template_in_image", return_value=found), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=found), \
+                 package_patch('app', 'show_overlay'):
                 second_hit = app._evaluate_global_guards()
             self.assertIsNotNone(second_hit)
             self.assertEqual(guard["match_data"]["center_x"], 220)
             # 目标消失：结束本轮重试。
             guard["last_check_time"] = 0.0
-            with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-                 patch_app("find_template_in_image", return_value=None), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=None), \
+                 package_patch('app', 'show_overlay'):
                 self.assertIsNone(app._evaluate_global_guards())
             self.assertFalse(guard["target_absent_armed"])
 
@@ -1026,9 +1020,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "center_x": 25, "center_y": 40, "score": 0.9,
             }
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))) as capture, \
-                 patch_app("find_template_in_image", return_value=match), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))) as capture, \
+                 package_patch('app', 'find_template_in_image', return_value=match), \
+                 package_patch('app', 'show_overlay'):
                 first_hit = app._evaluate_global_guards()
                 second_hit = app._evaluate_global_guards()
             self.assertIn("模块[first]", first_hit["log_subject"])
@@ -1044,10 +1038,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         )
         app.global_guards[guard["key"]] = guard
         screen = np.zeros((400, 400, 3), dtype=np.uint8)
-        with patch_app("capture_bgr", return_value=(screen, (0, 0))), \
-             patch_app("recognize_image_with_boxes",
-                   return_value=("其他文字", [{"text": "其他文字"}])), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr', return_value=(screen, (0, 0))), \
+             package_patch('app', 'recognize_image_with_boxes', return_value=('其他文字', [{'text': '其他文字'}])), \
+             package_patch('app', 'show_overlay'):
             hit = app._evaluate_global_guards()
         self.assertIsNotNone(hit)
         self.assertEqual(hit["kind"], "timeout")
@@ -1076,8 +1069,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "delay_ms": 0, "after_action": "click_match", "button": "left",
         }
 
-        with patch_app("resolve_path", return_value=resolved), \
-             patch_app("registered_module_object", return_value=obj) as lookup:
+        with package_patch('app', 'resolve_path', return_value=resolved), \
+             package_patch('app', 'registered_module_object', return_value=obj) as lookup:
             app._activate_global_detect_from_config({
                 "template": "images/点击游戏画面.png", "module_ref": True,
                 "hold_ms": 1000,
@@ -1104,10 +1097,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
 
-        with patch_app("resolve_path", return_value=Path("images/disabled.png")), \
-             patch_app("registered_module_object", return_value={
-                 "name": "已禁用模块", "enabled": False,
-             }):
+        with package_patch('app', 'resolve_path', return_value=Path('images/disabled.png')), \
+             package_patch('app', 'registered_module_object', return_value={'name': '已禁用模块', 'enabled': False}):
             app._activate_global_detect_from_config({
                 "module_ref": True, "module_key": "module:disabled",
                 "template": "images/disabled.png",
@@ -1128,7 +1119,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
                 "action_id": "global-a",
@@ -1156,7 +1147,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
                 "action_id": "global-a",
@@ -1196,8 +1187,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "ocr_offset_up": 5, "ocr_offset_down": 0,
             "ocr_offset_left": 0, "ocr_offset_right": 0,
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -1225,8 +1216,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "template": "images/g.png", "after_action": "click_custom",
             "click_point": [640, 360], "click_count": 1,
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -1248,8 +1239,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "continue",
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -1274,8 +1265,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "template": "images/g.png", "after_action": "click_match",
             "click_count": 2,
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -1303,8 +1294,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "click_match",
         }
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "module_ref": True,
                 "module_key": "module:g", "action_id": "row-g",
@@ -1329,7 +1320,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "row-g",
                 "template": "images/g.png",
@@ -1351,7 +1342,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "row-g",
                 "template": "images/g.png",
@@ -1377,7 +1368,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "global-a",
                 "template": "images/g.png",
@@ -1395,7 +1386,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._ui = lambda callback, *args: callback(*args)
         module_a = {"kind": "global_module", "script": "a.json", "step_id": "a"}
         module_b = {"kind": "global_module", "script": "b.json", "step_id": "b"}
-        with patch_app("resolve_path", side_effect=[Path("images/a.png"), Path("images/b.png")]):
+        with package_patch('app', 'resolve_path', side_effect=[Path('images/a.png'), Path('images/b.png')]):
             app._activate_global_detect_from_config(
                 {"type": "global_detect", "template": "images/a.png"}, module_a,
             )
@@ -1406,7 +1397,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app.global_guards["workflow:a"]["template"], Path("images/a.png"))
         self.assertEqual(app.global_guards["workflow:b"]["template"], Path("images/b.png"))
         # 同一个模块重新启用（工作流恢复）会替换旧守卫，而不是再开一个。
-        with patch_app("resolve_path", return_value=Path("images/a.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/a.png')):
             app._activate_global_detect_from_config(
                 {"type": "global_detect", "template": "images/a.png"}, module_a,
             )
@@ -1420,7 +1411,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
 
-        with patch_app("resolve_path", side_effect=[Path("images/mainline.png"), Path("images/init.png")]):
+        with package_patch('app', 'resolve_path', side_effect=[Path('images/mainline.png'), Path('images/init.png')]):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "mainline",
                 "template": "images/mainline.png",
@@ -1443,7 +1434,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
 
-        with patch_app("resolve_path", side_effect=[Path("images/mainline.png"), Path("images/init.png")]):
+        with package_patch('app', 'resolve_path', side_effect=[Path('images/mainline.png'), Path('images/init.png')]):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "mainline",
                 "template": "images/mainline.png",
@@ -1554,9 +1545,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             100.0, 101.0, 102.0, 103.0, 104.0,
             200.0, 201.0, 202.0, 203.0, 204.0,
         ))
-        with patch_app("registered_module_object", return_value=module_obj), \
-             patch_app("resolve_path", return_value=Path("images/g.png")), \
-             patch("macroflow.ui.app.time.perf_counter", side_effect=clock):
+        with package_patch('app', 'registered_module_object', return_value=module_obj), \
+             package_patch('app', 'resolve_path', return_value=Path('images/g.png')), \
+             patch("time.perf_counter", side_effect=clock):
             app._enter_script_global_scope(actions)
             first_starts = [
                 app.global_guards[f"script:row-{suffix}"]["start_delay_since"]
@@ -1599,14 +1590,14 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.global_detect_rearm_locks = set()
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config(
                 {"type": "global_detect", "action_id": "global-a", "template": "images/g.png"},
             )
         guard = app.global_guards["script:global-a"]
         self.assertEqual(guard["region_mode"], "screen")
         self.assertIsNone(guard["region"])
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
                 "action_id": "global-a",
@@ -1617,7 +1608,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["region_mode"], "custom")
         self.assertEqual(guard["region"], (100, 50, 300, 200))
         # 显式 window 模式：记录模式，region 无意义。
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
                 "action_id": "global-a",
@@ -1639,8 +1630,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
-        with patch_app("resolve_path", return_value=Path("images/g.png")), \
-             patch_app("registered_template_region", return_value=[100, 50, 300, 200]):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')), \
+             package_patch('app', 'registered_template_region', return_value=[100, 50, 300, 200]):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "global-a", "template": "images/g.png",
                 "region_mode": "template",
@@ -1662,8 +1653,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
-        with patch_app("resolve_path", return_value=Path("images/g.png")), \
-             patch_app("registered_template_region", return_value=None):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')), \
+             package_patch('app', 'registered_template_region', return_value=None):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "global-a", "template": "images/g.png",
                 "region_mode": "template",
@@ -1692,9 +1683,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             guard = self._make_guard(template_path, region_mode="window")
             match = {"x": 1, "y": 2, "width": 30, "height": 40, "score": 0.9,
                      "center_x": 16, "center_y": 22}
-            with patch_app("find_template", return_value=match) as find, \
-                 patch_app("get_window_rect", return_value=(1, 2, 300, 200)), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'find_template', return_value=match) as find, \
+                 package_patch('app', 'get_window_rect', return_value=(1, 2, 300, 200)), \
+                 package_patch('app', 'show_overlay'):
                 hit = app._evaluate_one_guard(guard, None, None, time.perf_counter())
             self.assertIsNotNone(hit)
             app._bound_hwnd.assert_called()
@@ -1714,7 +1705,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._trace_logs = []
         app._trace_event = Mock(side_effect=app._trace_logs.append)
         module = {"kind": "global_module", "script": "m.json", "step_id": "m1"}
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "template": "images/g.png",
             }, module)
@@ -1722,7 +1713,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         workflow_guard = app.global_guards["workflow:m1"]
         self.assertNotIn("thread", workflow_guard)
         self.assertNotIn("stop", workflow_guard)
-        with patch_app("resolve_path", return_value=Path("images/g.png")):
+        with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect", "action_id": "row-g", "template": "images/g.png",
             })
@@ -1743,9 +1734,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             match = {"x": 10, "y": 20, "width": 30, "height": 40,
                      "center_x": 25, "center_y": 40, "score": 0.9}
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))), \
-                 patch_app("find_template_in_image", return_value=match), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=match), \
+                 package_patch('app', 'show_overlay'):
                 # 第一次评估：识别到但未到持续时长 → 无 hit。
                 self.assertIsNone(app._evaluate_global_guards())
                 self.assertTrue(guard["was_detected"])
@@ -1775,17 +1766,17 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                      "center_x": 25, "center_y": 40, "score": 0.9}
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
             # 目标仍在：awaiting_clear 阻止再次触发。
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))), \
-                 patch_app("find_template_in_image", return_value=match), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=match), \
+                 package_patch('app', 'show_overlay'):
                 self.assertIsNone(app._evaluate_global_guards())
             self.assertTrue(guard["awaiting_clear"])
             self.assertIn(guard["key"], app.global_detect_rearm_locks)
             # 目标消失：解除 awaiting_clear 并重新武装，允许下次触发。
             guard["last_check_time"] = 0.0
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))), \
-                 patch_app("find_template_in_image", return_value=None), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=None), \
+                 package_patch('app', 'show_overlay'):
                 self.assertIsNone(app._evaluate_global_guards())
             self.assertFalse(guard["awaiting_clear"])
             self.assertNotIn(guard["key"], app.global_detect_rearm_locks)
@@ -1795,9 +1786,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.player.stop_event.set()
         guard = self._make_guard("images/g.png")
         app.global_guards[guard["key"]] = guard
-        with patch_app("capture_bgr") as capture, \
-             patch_app("find_template_in_image"), \
-             patch_app("show_overlay"):
+        with package_patch('app', 'capture_bgr') as capture, \
+             package_patch('app', 'find_template_in_image'), \
+             package_patch('app', 'show_overlay'):
             self.assertIsNone(app._evaluate_global_guards())
         capture.assert_not_called()
 
@@ -1817,9 +1808,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "center_x": 25, "center_y": 40,
             }
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            with patch_app("capture_bgr", return_value=(screen, (-20, 0))), \
-                 patch_app("find_template_in_image", return_value=match), \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=match), \
+                 package_patch('app', 'show_overlay'):
                 hit = app._evaluate_global_guards()
             self.assertIsNotNone(hit)
             self.assertTrue(guard["awaiting_clear"])
@@ -1846,10 +1837,10 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             match = {"x": 1, "y": 2, "width": 30, "height": 40, "score": 0.9,
                      "center_x": 16, "center_y": 22}
             screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            with patch_app("registered_module_object", return_value=obj) as obj_lookup, \
-                 patch_app("capture_bgr", return_value=(screen, (-20, 0))), \
-                 patch_app("find_template_in_image", return_value=match) as find, \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'registered_module_object', return_value=obj) as obj_lookup, \
+                 package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
+                 package_patch('app', 'find_template_in_image', return_value=match) as find, \
+                 package_patch('app', 'show_overlay'):
                 self.assertIsNone(app._evaluate_global_guards())
             obj_lookup.assert_called_once_with("module:g")
             # 阈值 / 区域来自对象，且 hold_ms 被对象值覆盖。
@@ -1865,8 +1856,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             logs = []
             app._log = Mock(side_effect=logs.append)
             guard = self._make_guard(missing)
-            with patch_app("find_template_in_image") as find, \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'find_template_in_image') as find, \
+                 package_patch('app', 'show_overlay'):
                 detected, match = app._guard_image_detect(guard, None, None)
             self.assertFalse(detected)
             self.assertIsNone(match)
@@ -1874,8 +1865,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             self.assertEqual(len(logs), 1)
             self.assertIn("模板图片不存在", logs[0])
             # 第二轮不再刷屏。
-            with patch_app("find_template_in_image") as find2, \
-                 patch_app("show_overlay"):
+            with package_patch('app', 'find_template_in_image') as find2, \
+                 package_patch('app', 'show_overlay'):
                 detected, match = app._guard_image_detect(guard, None, None)
             self.assertEqual(len(logs), 1)
             find2.assert_not_called()
@@ -2018,9 +2009,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
     def test_workflow_module_enabled_follows_registry_state(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         step = {"kind": "module", "action": {"module_key": "module:test"}}
-        with patch_app("registered_module_object", return_value={"enabled": False}):
+        with package_patch('app', 'registered_module_object', return_value={'enabled': False}):
             self.assertFalse(app._workflow_module_enabled(step))
-        with patch_app("registered_module_object", return_value={"enabled": True}):
+        with package_patch('app', 'registered_module_object', return_value={'enabled': True}):
             self.assertTrue(app._workflow_module_enabled(step))
 
     def test_record_workflow_repeat_stores_index(self):
@@ -2028,7 +2019,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app.current_workflow_repeat_index = 0
         app._set_execution_progress = Mock()
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("workflow_execution_progress", return_value="p"):
+        with package_patch('app', 'workflow_execution_progress', return_value='p'):
             app._record_workflow_repeat(3, 5, 1, 2, "脚本")
         self.assertEqual(app.current_workflow_repeat_index, 2)
         app._set_execution_progress.assert_called_once_with("p")
@@ -2269,9 +2260,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             },
         }
 
-        with patch_app("registered_module_object", return_value={
-            "name": "禁用检测", "enabled": False,
-        }):
+        with package_patch('app', 'registered_module_object', return_value={'name': '禁用检测', 'enabled': False}):
             app._run_workflow_worker(
                 [], None, None, False, global_modules=[module],
             )
@@ -2315,7 +2304,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "kind": "global_module", "script": str(script_path),
                 "enabled": True, "config": None,
             }
-            with patch_app("resolve_path", return_value=script_path):
+            with package_patch('app', 'resolve_path', return_value=script_path):
                 app._run_workflow_worker(
                     [], None, None, False, global_modules=[module],
                 )
@@ -2351,8 +2340,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             ]
             save_script(MacroScript(name="g", actions=actions), script_path)
             app = MacroFlowApp.__new__(MacroFlowApp)
-            with patch_app("resolve_path", return_value=script_path), \
-                 patch_app("load_script", return_value=MacroScript(name="g", actions=actions)):
+            with package_patch('app', 'resolve_path', return_value=script_path), \
+                 package_patch('app', 'load_script', return_value=MacroScript(name='g', actions=actions)):
                 label = app._global_module_label({
                     "kind": "global_module", "script": "scripts/g.json",
                 })
@@ -2519,11 +2508,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.region = Mock()
         dialog.template_combo = Mock()
         dialog.module_name = Mock()
-        with patch_dialogs("choose_module_binding", return_value={
-            "module_ref": True, "module_key": "module:first",
-            "template": "images/shared.png", "region_mode": "template",
-            "region": [11, 22, 333, 444],
-        }) as choose:
+        with package_patch('dialogs', 'choose_module_binding', return_value={'module_ref': True, 'module_key': 'module:first', 'template': 'images/shared.png', 'region_mode': 'template', 'region': [11, 22, 333, 444]}) as choose:
             dialog.select_image_module()
 
         choose.assert_called_once_with(
@@ -2543,11 +2528,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.region = Mock()
         dialog.template_combo = Mock()
         dialog.module_name = Mock()
-        with patch_dialogs("choose_module_binding", return_value={
-            "module_ref": True, "module_key": "module:global",
-            "template": "images/global.png", "region_mode": "template",
-            "region": [1, 2, 30, 40],
-        }) as choose:
+        with package_patch('dialogs', 'choose_module_binding', return_value={'module_ref': True, 'module_key': 'module:global', 'template': 'images/global.png', 'region_mode': 'template', 'region': [1, 2, 30, 40]}) as choose:
             dialog.select_image_module()
 
         self.assertEqual(
@@ -2571,7 +2552,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.click_point = Mock(**{"get.return_value": ""})
         dialog.restart_delay = Mock(**{"get.return_value": "0"})
         dialog.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             dialog.save()
 
         notice.assert_called_once()
@@ -2591,10 +2572,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.restart_delay = Mock(**{"get.return_value": "200"})
         dialog.require_click = True
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "workflow_global", "template": "images/shared.png",
-            "region": [11, 22, 333, 444],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'workflow_global', 'template': 'images/shared.png', 'region': [11, 22, 333, 444]}):
             dialog.save()
 
         self.assertEqual(dialog.result["module_key"], "module:first")
@@ -2622,9 +2600,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.click_point = Mock()
         dialog.click_point.get.return_value = "640,360"
         dialog.destroy = Mock()
-        with patch_dialogs("load_template_regions", return_value={
-            "images/g.png": [100, 50, 300, 200],
-        }):
+        with package_patch('dialogs', 'load_template_regions', return_value={'images/g.png': [100, 50, 300, 200]}):
             dialog.save()
         result = dialog.result
         self.assertEqual(result["template"], "images/g.png")
@@ -2653,7 +2629,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.click_point = Mock()
         dialog.click_point.get.return_value = "640,360"
         dialog.destroy = Mock()
-        with patch_dialogs("load_template_regions", return_value={}):
+        with package_patch('dialogs', 'load_template_regions', return_value={}):
             dialog.save()
         result = dialog.result
         self.assertEqual(result["region_mode"], "custom")
@@ -2711,9 +2687,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "workflow_global", "template": "images/g.png", "region": [],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'workflow_global', 'template': 'images/g.png', 'region': []}):
             dialog.save()
         result = dialog.result
         self.assertTrue(result["module_ref"])
@@ -2750,9 +2724,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row.get.return_value = "脚本结束（结束当前执行）"
         dialog.destroy = Mock()
 
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "script_global", "template": "images/g.png", "region": [],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'script_global', 'template': 'images/g.png', 'region': []}):
             dialog.save()
 
         self.assertEqual(dialog.result["jump_row"], 4)
@@ -2788,9 +2760,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.jump_enabled_var = FakeBooleanVar(False)
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "workflow_global", "template": "images/g.png", "region": [],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'workflow_global', 'template': 'images/g.png', 'region': []}):
             dialog.save()
         result = dialog.result
         self.assertFalse(result["jump_enabled"])
@@ -2820,9 +2790,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "第 5 行 · 延时"
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "workflow_global", "template": "images/g.png", "region": [],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'workflow_global', 'template': 'images/g.png', 'region': []}):
             dialog.save()
         self.assertFalse(dialog.result["jump_enabled"])
 
@@ -2848,9 +2816,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog.jump_row = Mock()
         dialog.jump_row.get.return_value = "5"
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "script_global", "template": "images/g.png", "region": [],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'script_global', 'template': 'images/g.png', 'region': []}):
             dialog.save()
         result = dialog.result
         self.assertEqual(result["jump_row"], 5)
@@ -2873,7 +2839,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
         dialog.template = Mock()
         dialog.template.get.return_value = ""
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             dialog.save()
         notice.assert_called_once()
 
@@ -2910,9 +2876,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app._switch_scripts_dir(), BASE_DIR / "my_switch")
 
     def test_script_category_key_and_dir_routing(self):
-        from macroflow.ui.app import (
-            SCRIPT_CATEGORY_VALUES, script_category_key, script_category_label,
-        )
+        from macroflow.ui.app.base import script_category_key, script_category_label
+        from macroflow.ui.app.constants import SCRIPT_CATEGORY_VALUES
         self.assertEqual(SCRIPT_CATEGORY_VALUES, ("关卡", "关卡封装", "切换", "方向"))
         self.assertEqual(script_category_key("关卡"), "level")
         self.assertEqual(script_category_key("关卡封装"), "level_pack")

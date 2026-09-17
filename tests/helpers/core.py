@@ -42,6 +42,20 @@ class FakeVar:
         self._value = value
 
 
+class FakeSettingVar(FakeVar):
+    """设置项变量替身（与 FakeVar 同语义，名字更贴近用途）。"""
+
+
+class FakeBooleanVar(FakeVar):
+    """Tk BooleanVar 替身：set 时按布尔归一。"""
+
+    def __init__(self, value: bool = False):
+        super().__init__(bool(value))
+
+    def set(self, value) -> None:
+        self._value = bool(value)
+
+
 class FakeWidget:
     """最小控件替身：吞掉 configure / pack / state 一类外观调用。
 

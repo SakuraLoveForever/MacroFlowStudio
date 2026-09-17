@@ -7,7 +7,19 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_input_and_focus.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import ctypes
+import threading
+import time
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.execution.player import MacroPlayer
+import macroflow.input.input_guard as input_guard_module
+from macroflow.input.input_guard import FocusInputGuard, InputCapturer, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, MouseCapturer, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F12, VK_F9, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_RBUTTONDOWN, should_block_keyboard, should_block_mouse
+from macroflow.input.wininput import DWMWA_WINDOW_CORNER_PREFERENCE, MACROFLOW_INPUT_TAG, WindowInfo, activate_window, force_english_input, is_cursor_near_window_center, resolve_window_signature, send_move_relative, set_dark_titlebar, set_input_dispatcher, show_window, show_window_no_activate
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.dialogs.actions import KeyActionDialog
+from macroflow.ui.dialogs.base import KEY_HINT_CAPTURING, key_to_vk, vk_to_key_name
+from tests.helpers.patches import package_patch
 
 
 class WinInputTests(unittest.TestCase):
@@ -275,7 +287,7 @@ class KeyCaptureTests(unittest.TestCase):
         app._input_search_capturer = None
         app._search_key_actions = Mock()
 
-        with patch_app("InputCapturer") as capturer_class:
+        with package_patch('app', 'InputCapturer') as capturer_class:
             capturer_class.return_value.start.return_value = True
             app.start_input_search_capture()
             on_input = capturer_class.call_args.args[0]
@@ -297,7 +309,7 @@ class KeyCaptureTests(unittest.TestCase):
         app._input_search_capturer = None
         app._search_key_actions = Mock()
 
-        with patch_app("InputCapturer") as capturer_class:
+        with package_patch('app', 'InputCapturer') as capturer_class:
             capturer_class.return_value.start.return_value = True
             app.start_input_search_capture()
             on_input = capturer_class.call_args.args[0]
@@ -353,7 +365,7 @@ class KeyCaptureTests(unittest.TestCase):
         app._input_search_capturer = None
         app._search_key_actions = Mock()
 
-        with patch_app("InputCapturer") as capturer_class:
+        with package_patch('app', 'InputCapturer') as capturer_class:
             capturer_class.return_value.start.return_value = True
             app.start_input_search_capture()
             on_cancel = capturer_class.call_args.args[1]
@@ -365,9 +377,9 @@ class KeyCaptureTests(unittest.TestCase):
 
     def test_key_dialog_can_open_for_new_action_without_existing_action(self):
         widgets = ("Frame", "Label", "Entry", "Button", "Combobox")
-        with patch("macroflow.ui.dialogs.ModalDialog.__init__", return_value=None), \
-             patch("macroflow.ui.dialogs.tk.StringVar", side_effect=lambda **_: Mock()), \
-             patch_dialogs("duration_var", return_value=Mock()), \
+        with patch("macroflow.ui.dialogs.actions.ModalDialog.__init__", return_value=None), \
+             patch("tkinter.StringVar", side_effect=lambda **_: Mock()), \
+             package_patch('dialogs', 'duration_var', return_value=Mock()), \
              patch.multiple("macroflow.ui.dialogs.ttk", **{
                  name: Mock(return_value=Mock()) for name in widgets
              }):
@@ -496,7 +508,7 @@ class KeyCaptureTests(unittest.TestCase):
         dialog.capture_button = Mock()
         dialog.capture_hint = Mock()
         dialog.capturer = None
-        with patch_dialogs("KeyCapturer") as capturer_class:
+        with package_patch('dialogs', 'KeyCapturer') as capturer_class:
             capturer_class.return_value.start.return_value = True
             dialog.start_capture()
         capturer_class.assert_called_once()
@@ -511,8 +523,8 @@ class KeyCaptureTests(unittest.TestCase):
         dialog.capture_button = Mock()
         dialog.capture_hint = Mock()
         dialog.capturer = None
-        with patch_dialogs("KeyCapturer") as capturer_class, \
-             patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'KeyCapturer') as capturer_class, \
+             package_patch('dialogs', 'show_floating_notice') as notice:
             capturer_class.return_value.start.return_value = False
             dialog.start_capture()
         notice.assert_called_once()
@@ -546,7 +558,7 @@ class KeyCaptureTests(unittest.TestCase):
         dialog = KeyActionDialog.__new__(KeyActionDialog)
         capturer = Mock()
         dialog.capturer = capturer
-        with patch("macroflow.ui.dialogs.ModalDialog.destroy", create=True) as base_destroy:
+        with patch("macroflow.ui.dialogs.actions.ModalDialog.destroy", create=True) as base_destroy:
             dialog.destroy()
         capturer.stop.assert_called_once()
         self.assertIsNone(dialog.capturer)
@@ -559,7 +571,7 @@ class FocusModeTests(unittest.TestCase):
         app.input_guard = Mock()
         app._ui = lambda callback, *args: callback(*args)
         app._log = Mock()
-        with patch_app("force_english_input", return_value=True):
+        with package_patch('app', 'force_english_input', return_value=True):
             self.assertFalse(app._enter_focus_mode(123, enabled=False))
         app.input_guard.start.assert_not_called()
         app._log.assert_called_once()
@@ -613,7 +625,7 @@ class FocusModeTests(unittest.TestCase):
         app.input_guard.block.side_effect = lambda: order.append("block") or True
         app._ui = Mock()
         app._log = Mock()
-        with patch_app("force_english_input", side_effect=lambda _hwnd: order.append("english") or True):
+        with package_patch('app', 'force_english_input', side_effect=lambda _hwnd: order.append('english') or True):
             app._enter_focus_mode(123)
         self.assertEqual(order, ["english", "guard", "block"])
 
@@ -623,7 +635,7 @@ class FocusModeTests(unittest.TestCase):
         app.input_guard = Mock()
         app.input_guard.start.return_value = True
         app.input_guard.block.return_value = False
-        with patch_app("force_english_input", return_value=True):
+        with package_patch('app', 'force_english_input', return_value=True):
             with self.assertRaisesRegex(RuntimeError, "管理员身份"):
                 app._enter_focus_mode(123)
         app.input_guard.stop.assert_called_once()
@@ -717,7 +729,7 @@ class InputGuardRestartTests(unittest.TestCase):
         # 窗口就是“这一次按键没反应”。
         player = MacroPlayer()
         player._ensure_foreground_for_input = Mock()
-        with patch_player("send_key") as send_key:
+        with package_patch('player', 'send_key') as send_key:
             player._execute_action({"type": "key", "vk": 69, "down": True}, 100)
         player._ensure_foreground_for_input.assert_called_once_with(100)
         send_key.assert_called_once_with(69, True)
@@ -742,8 +754,10 @@ class ShutdownLifecycleTests(unittest.TestCase):
     def test_packaged_exit_terminates_with_background_thread_alive(self):
         import subprocess
         import sys
+        root = str(Path(__file__).resolve().parent.parent)
         code = "\n".join([
-            "from tests.common import MacroFlowApp",
+            f"import sys; sys.path[:0] = [{root!r} + '/src', {root!r}]",
+            "from macroflow.ui.app.main import MacroFlowApp",
             "import sys, threading",
             "from unittest.mock import Mock",
             "app = MacroFlowApp.__new__(MacroFlowApp)",
@@ -780,7 +794,7 @@ class ShutdownLifecycleTests(unittest.TestCase):
         app._tray_exit = Mock()
         app._ui = Mock()
 
-        with patch("macroflow.ui.app.pystray.Icon") as icon:
+        with patch("pystray.Icon") as icon:
             self.assertFalse(app._ensure_tray())
 
         icon.assert_not_called()

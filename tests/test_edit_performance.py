@@ -31,7 +31,9 @@ from tests.helpers.core import (  # noqa: E402
 
 from macroflow.core import storage  # noqa: E402
 from macroflow.core.models import ACTION_ID_KEY, MacroScript, Workflow  # noqa: E402
-from macroflow.ui.app import HelpersMixin, ScriptsMixin, WorkflowMixin  # noqa: E402
+from macroflow.ui.app.helpers import HelpersMixin  # noqa: E402
+from macroflow.ui.app.scripts import ScriptsMixin  # noqa: E402
+from macroflow.ui.app.workflow import WorkflowMixin  # noqa: E402
 from macroflow.ui.app.constants import ACTION_TREE_COLUMNS, WORKFLOW_TREE_COLUMNS  # noqa: E402
 from macroflow.ui.app.summaries import action_summary  # noqa: E402
 

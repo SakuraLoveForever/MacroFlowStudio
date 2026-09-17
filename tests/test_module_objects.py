@@ -7,7 +7,30 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_module_objects.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import inspect
+import json
+import numpy as np
+import os
+import tempfile
+import tkinter as tk
+import tkinter.font as tkfont
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.models import ACTION_ID_KEY, MacroScript
+from macroflow.core.storage import display_path, load_module_objects, load_script, load_template_regions, registered_template_region, save_module_objects, save_script, save_template_regions, script_category_for_path
+from macroflow.input.wininput import WindowInfo
+from macroflow.ui.app.base import px
+from macroflow.ui.app.constants import FONT_FAMILY, FONT_SUBTITLE
+from macroflow.ui.app.main import MacroFlowApp
+import macroflow.ui.dialogs as dialog_module
+from macroflow.ui.dialogs.actions import ClickDialog, RepeatClickDialog, edit_action
+from macroflow.ui.dialogs.app_dialogs import RestartWorkflowTargetDialog
+from macroflow.ui.dialogs.base import ModalDialog, fit_window_to_content
+from macroflow.ui.dialogs.helpers import configure_module_tree_styles, fallback_template_options, module_manager_label, module_manager_selection_colors, module_manager_special_action_summary, module_manager_tag, pinyin_sort_key, registered_template_options, restart_workflow_row_options, segment_action_is_blocking, segment_row_label
+from macroflow.ui.dialogs.module_objects import BatchModuleScriptDialog, ModulePickerDialog, ModuleReferenceDelayDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog, prepend_module_to_scripts, remove_module_from_scripts
+from macroflow.ui.dialogs.recognition import GlobalDetectDialog
+from macroflow.ui.dialogs.segments import module_action_for_key
+from tests.helpers.patches import package_patch
 
 
 class TemplateRegionTests(unittest.TestCase):
@@ -37,10 +60,7 @@ class TemplateRegionTests(unittest.TestCase):
             "module_key": "module:first", "template": "images/stale.png",
             "region_mode": "template", "region": [1, 2, 3, 4],
         }
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "switch", "template": "images/current.png",
-            "region": [11, 22, 333, 444],
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'switch', 'template': 'images/current.png', 'region': [11, 22, 333, 444]}):
             refreshed = dialog_module.action_with_live_module_binding(stale)
 
         self.assertEqual(refreshed["template"], "images/current.png")
@@ -230,7 +250,7 @@ class TemplateRegionTests(unittest.TestCase):
         tree.selection.return_value = ("module:item",)
         dialog.trees = {"workflow_global": tree}
         dialog._update_action_buttons = Mock()
-        with patch_dialogs("save_module_objects") as save, \
+        with package_patch('dialogs', 'save_module_objects') as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees") as reload_trees:
             dialog._toggle_selected_enabled()
         self.assertFalse(obj["enabled"])
@@ -493,7 +513,7 @@ class TemplateRegionTests(unittest.TestCase):
             self.assertIsNone(registered_template_region("images/missing.png"))
 
     def test_registered_template_options_include_legacy_value(self):
-        with patch_dialogs("load_template_regions", return_value={"images/b.png": [1, 2, 3, 4]}):
+        with package_patch('dialogs', 'load_template_regions', return_value={'images/b.png': [1, 2, 3, 4]}):
             self.assertEqual(registered_template_options(), ["images/b.png"])
             # 编辑旧动作：模板不在注册表时临时加回，保证下拉显示原值。
             self.assertEqual(
@@ -502,7 +522,7 @@ class TemplateRegionTests(unittest.TestCase):
             )
 
     def test_fallback_template_options_has_disabled_first(self):
-        with patch_dialogs("load_template_regions", return_value={"images/b.png": [1, 2, 3, 4]}):
+        with package_patch('dialogs', 'load_template_regions', return_value={'images/b.png': [1, 2, 3, 4]}):
             self.assertEqual(
                 fallback_template_options("images/legacy.png"),
                 ["（不启用）", "images/legacy.png", "images/b.png"],
@@ -511,8 +531,8 @@ class TemplateRegionTests(unittest.TestCase):
 
     def test_open_template_region_manager_shows_and_refreshes(self):
         # 打开管理器（show）后刷新模板下拉；管理器里已删除的模板被清空。
-        with patch_dialogs("TemplateRegionManagerDialog") as manager_class, \
-             patch_dialogs("load_template_regions", return_value={"images/g.png": [1, 2, 3, 4]}):
+        with package_patch('dialogs', 'TemplateRegionManagerDialog') as manager_class, \
+             package_patch('dialogs', 'load_template_regions', return_value={'images/g.png': [1, 2, 3, 4]}):
             dialog = GlobalDetectDialog.__new__(GlobalDetectDialog)
             dialog.template = Mock()
             dialog.template.get.return_value = "images/g.png"
@@ -527,7 +547,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.template = Mock()
         dialog.template.get.return_value = "images/removed.png"
         dialog.template_combo = Mock()
-        with patch_dialogs("load_template_regions", return_value={"images/g.png": [1, 2, 3, 4]}):
+        with package_patch('dialogs', 'load_template_regions', return_value={'images/g.png': [1, 2, 3, 4]}):
             dialog._refresh_template_options()
         dialog.template.set.assert_called_once_with("")
         dialog.template_combo.configure.assert_called_once_with(values=["images/g.png"])
@@ -535,7 +555,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_editor_page_opens_unified_region_manager(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
-        with patch_app("TemplateRegionManagerDialog") as manager_class:
+        with package_patch('app', 'TemplateRegionManagerDialog') as manager_class:
             app.open_template_region_manager()
         manager_class.assert_called_once_with(app.root)
         manager_class.return_value.show.assert_called_once()
@@ -558,7 +578,7 @@ class TemplateRegionTests(unittest.TestCase):
             "type": "image_match", "module_ref": True,
             "module_key": "module:blocking", "template": "images/wait.png",
         }
-        with patch_dialogs("registered_module_object", return_value={"blocking": True}):
+        with package_patch('dialogs', 'registered_module_object', return_value={'blocking': True}):
             self.assertTrue(segment_action_is_blocking(action))
             self.assertEqual(segment_row_label(action), "【阻塞等待】识图 wait")
 
@@ -573,9 +593,7 @@ class TemplateRegionTests(unittest.TestCase):
             "type": "image_match", "module_ref": True,
             "module_key": "module:text", "template": "",
         }
-        with patch_dialogs("registered_module_object", return_value={
-            "blocking": False, "recognize": "text", "wait_text_absent": True,
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'blocking': False, 'recognize': 'text', 'wait_text_absent': True}):
             self.assertTrue(segment_action_is_blocking(action))
 
     def test_segment_nonblocking_module_has_no_warning_marker(self):
@@ -583,7 +601,7 @@ class TemplateRegionTests(unittest.TestCase):
             "type": "image_match", "module_ref": True,
             "module_key": "module:normal", "template": "images/next.png",
         }
-        with patch_dialogs("registered_module_object", return_value={"blocking": False}):
+        with package_patch('dialogs', 'registered_module_object', return_value={'blocking': False}):
             self.assertFalse(segment_action_is_blocking(action))
             self.assertEqual(segment_row_label(action), "识图 next")
 
@@ -600,7 +618,7 @@ class TemplateRegionTests(unittest.TestCase):
         def lookup(key):
             return {"blocking": key == "module:block"}
 
-        with patch_dialogs("registered_module_object", side_effect=lookup):
+        with package_patch('dialogs', 'registered_module_object', side_effect=lookup):
             form._reload_segment_list()
 
         form.segment_listbox.itemconfigure.assert_called_once_with(
@@ -742,7 +760,7 @@ class TemplateRegionTests(unittest.TestCase):
         # "截图新建…"：框选区域截图存为新模板图片，图片与区域两项一起填入。
         form = self._form()
         form.master = Mock()
-        with patch_dialogs("ScreenRegionPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenRegionPicker') as picker_class:
             form._capture()
         on_result = picker_class.call_args[0][2]
         self.assertEqual(picker_class.return_value.start.call_count, 1)
@@ -750,7 +768,7 @@ class TemplateRegionTests(unittest.TestCase):
             images_dir = Path(folder) / "images"
             form.images_dir = images_dir
             screen = np.zeros((40, 50, 3), dtype=np.uint8)
-            with patch_dialogs("capture_bgr", return_value=(screen, (0, 0))):
+            with package_patch('dialogs', 'capture_bgr', return_value=(screen, (0, 0))):
                 on_result([10, 20, 30, 40])
             saved = list(images_dir.glob("template_*.png"))
             self.assertEqual(len(saved), 1)
@@ -761,11 +779,11 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_capture_failure_shows_notice(self):
         form = self._form()
         form.master = Mock()
-        with patch_dialogs("ScreenRegionPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenRegionPicker') as picker_class:
             form._capture()
         on_result = picker_class.call_args[0][2]
-        with patch_dialogs("capture_bgr", side_effect=RuntimeError("boom")), \
-             patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'capture_bgr', side_effect=RuntimeError('boom')), \
+             package_patch('dialogs', 'show_floating_notice') as notice:
             on_result([10, 20, 30, 40])
         notice.assert_called_once()
         self.assertIn("截图失败", notice.call_args.args[1])
@@ -775,7 +793,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_choose_image_sets_image_var(self):
         form = self._form()
         chosen = r"C:\images\部分\勇士挑战确定.png"
-        with patch("macroflow.ui.dialogs.filedialog.askopenfilename", return_value=chosen):
+        with patch("tkinter.filedialog.askopenfilename", return_value=chosen):
             form._choose_image()
         form.image_var.set.assert_called_once_with(chosen)
         form.name_var.set.assert_called_once_with("勇士挑战确定")
@@ -783,7 +801,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_choose_image_preserves_custom_name(self):
         form = self._form()
         form.name_var.get.return_value = "手动名称"
-        with patch("macroflow.ui.dialogs.filedialog.askopenfilename", return_value=r"C:\images\new.png"):
+        with patch("tkinter.filedialog.askopenfilename", return_value=r"C:\images\new.png"):
             form._choose_image()
         form.name_var.set.assert_not_called()
 
@@ -798,7 +816,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_pick_region_fills_region_var(self):
         form = self._form()
         form.master = Mock()
-        with patch_dialogs("ScreenRegionPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenRegionPicker') as picker_class:
             form._pick_region()
         on_result = picker_class.call_args[0][2]
         on_result([1, 2, 3, 4])
@@ -806,7 +824,7 @@ class TemplateRegionTests(unittest.TestCase):
 
     def test_form_save_requires_image(self):
         form = self._form(image="", region="10,20,300,400")
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         self.assertIn("缺少模板图片", notice.call_args.args[1])
@@ -814,7 +832,7 @@ class TemplateRegionTests(unittest.TestCase):
 
     def test_form_save_requires_region(self):
         form = self._form(image="images/g.png", region="")
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         self.assertIn("缺少框选区域", notice.call_args.args[1])
@@ -823,14 +841,14 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_save_rejects_malformed_region(self):
         for region in ("1,2,3", "x,y,w,h", "1,2,-3,4"):
             form = self._form(image="images/g.png", region=region)
-            with patch_dialogs("show_floating_notice") as notice:
+            with package_patch('dialogs', 'show_floating_notice') as notice:
                 form.save()
             notice.assert_called_once()
             form.destroy.assert_not_called()
 
     def test_form_save_sets_result_and_closes(self):
         form = self._form(image="images/g.png", region="10,20,300,400")
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[0], "")
         self.assertTrue(form.result[1].startswith("module:"))
@@ -868,7 +886,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.category_var.get.return_value = "工作流全局模块"
         form.hold_enabled_var.get.return_value = False
 
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
 
         self.assertFalse(form.result[2]["hold_enabled"])
@@ -894,7 +912,7 @@ class TemplateRegionTests(unittest.TestCase):
             form = self._form(image="images/g.png", region="10,20,300,400")
             form.category_var.get.return_value = label
             form.start_delay_var.get.return_value = "125000"
-            with patch_dialogs("show_floating_notice") as notice:
+            with package_patch('dialogs', 'show_floating_notice') as notice:
                 form.save()
             self.assertEqual(form.result[2]["start_delay_ms"], 125000, label)
             notice.assert_not_called()
@@ -981,7 +999,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.fallback_module_key_var.get.return_value = "module:fallback"
         form.fallback_click_var.get.return_value = True
         form.fallback_on_match_var.get.return_value = "点击备用命中位置，继续识别主模块"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[2]["fallback_module_key"], "module:fallback")
         self.assertTrue(form.result[2]["fallback_click"])
@@ -994,7 +1012,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form(image="images/g.png", region="10,20,300,400")
         form.fallback_module_key_var.get.return_value = "module:fallback"
         form.fallback_on_match_var.get.return_value = "点击备用命中位置后退出主模块识别"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[2]["fallback_on_match"], "click_exit")
         self.assertTrue(form.result[2]["fallback_click"])
@@ -1005,12 +1023,12 @@ class TemplateRegionTests(unittest.TestCase):
             image="images/g.png", region="10,20,300,400",
             after_action="点击自定义位置",
         )
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         form.destroy.assert_not_called()
         form.click_point_var.get.return_value = "120,340"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[2]["after_action"], "click_custom")
         self.assertEqual(form.result[2]["click_point"], [120, 340])
@@ -1021,7 +1039,7 @@ class TemplateRegionTests(unittest.TestCase):
             image="images/g.png", region="10,20,300,400",
             after_action="二次识别后点击",
         )
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         self.assertIn("缺少二次识别模板", notice.call_args.args[1])
@@ -1034,13 +1052,13 @@ class TemplateRegionTests(unittest.TestCase):
         )
         form.second_template_var.get.return_value = "images/second.png"
         form.second_click_target_var.get.return_value = "自定义框选区域"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertIn("缺少自定义点击区域", notice.call_args.args[1])
         form.destroy.assert_not_called()
 
         form.second_click_region_var.get.return_value = "100,200,80,40"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         obj = form.result[2]
         self.assertEqual(obj["second_match_click_target"], "custom_region")
@@ -1050,7 +1068,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_save_enabled_post_action_code_requires_segment(self):
         form = self._form(image="images/g.png", region="10,20,300,400")
         form.run_code_after_action_var.get.return_value = True
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         self.assertIn("代码段为空", notice.call_args.args[1])
@@ -1063,7 +1081,7 @@ class TemplateRegionTests(unittest.TestCase):
         )
         form.run_code_after_action_var.get.return_value = True
         form.segment = [{"type": "restart_workflow"}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         obj = form.result[2]
         self.assertEqual(obj["after_action"], "continue")
@@ -1077,7 +1095,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.run_code_on_timeout_var.get.return_value = True
         form.not_found_timeout_var.get.return_value = "4200"
         form.timeout_segment = [{"type": "delay", "ms": 25}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         obj = form.result[2]
         self.assertTrue(obj["run_code_on_timeout"])
@@ -1091,7 +1109,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form()
         form.segment_listbox = Mock()
         selected = WindowInfo(321, "目标窗口", "GameWnd", r"C:\\Game\\game.exe")
-        with patch_dialogs("WindowPicker") as picker:
+        with patch('macroflow.ui.dialogs.app_dialogs.WindowPicker') as picker:
             picker.return_value.show.return_value = selected
             form._add_segment_activate_window()
         action = form.segment[0]
@@ -1105,7 +1123,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.winfo_pointerx = Mock(return_value=10)
         form.winfo_pointery = Mock(return_value=20)
         menu = Mock()
-        with patch("macroflow.ui.dialogs.tk.Menu", return_value=menu):
+        with patch("tkinter.Menu", return_value=menu):
             form._add_segment_item("timeout_segment", "timeout_segment_listbox")
         commands = {
             item.kwargs.get("label"): item.kwargs.get("command")
@@ -1147,7 +1165,7 @@ class TemplateRegionTests(unittest.TestCase):
             any(window is notice for window in dialog_module.ancestor_windows(module_form))
         )
 
-        with patch_dialogs("ScreenPointPicker") as picker:
+        with package_patch('dialogs', 'ScreenPointPicker') as picker:
             dialog.start_pick_position()
         self.assertIs(picker.call_args.args[0], dialog)
         self.assertIs(picker.call_args.args[1], module_form)
@@ -1181,7 +1199,7 @@ class TemplateRegionTests(unittest.TestCase):
         # 特殊模块纯动作（未选图片）：名称必填。
         form = self._form(image="")
         form.category_var.get.return_value = "特殊模块"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         self.assertIn("缺少名称", notice.call_args.args[1])
@@ -1192,7 +1210,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form(image="")
         form.category_var.get.return_value = "特殊模块"
         form.name_var.get.return_value = "重新执行工作流"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[0], "")
         self.assertEqual(form.result[1], "重新执行工作流")
@@ -1206,7 +1224,7 @@ class TemplateRegionTests(unittest.TestCase):
         # 全局模块（检测型，选了图片）：对象类别为 global，其余字段照常。
         form = self._form(image="images/g.png", region="10,20,300,400")
         form.category_var.get.return_value = "工作流全局模块"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[2]["category"], "workflow_global")
         self.assertEqual(form.result[2]["region"], [10, 20, 300, 400])
@@ -1217,7 +1235,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_save_text_mode_allows_no_image_or_region(self):
         # 识别文字方式：不需要模板图片，区域可留空（空=全屏），名称缺省"识别文字"。
         form = self._form(recognize="识别文字")
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertEqual(module["recognize"], "text")
@@ -1235,7 +1253,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.run_code_on_timeout_var.get.return_value = True
         form.segment = [{"type": "click"}]
         form.timeout_segment = [{"type": "click"}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertEqual(module["recognize"], "number")
@@ -1251,7 +1269,7 @@ class TemplateRegionTests(unittest.TestCase):
 
     def test_form_save_number_mode_rejects_missing_region(self):
         form = self._form(recognize="读取数字")
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertIn("缺少框选区域", notice.call_args.args[1])
         form.destroy.assert_not_called()
@@ -1259,7 +1277,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_form_save_number_mode_rejects_global_category(self):
         form = self._form(region="10,20,80,30", recognize="读取数字")
         form.category_var.get.return_value = "工作流全局模块"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertIn("类别不适用", notice.call_args.args[1])
         form.destroy.assert_not_called()
@@ -1268,7 +1286,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form(recognize="无需识图")
         form.run_code_after_action_var.get.return_value = True
         form.segment = [{"type": "delay", "ms": 25}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertEqual(module["recognize"], "none")
@@ -1286,7 +1304,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.category_var.get.return_value = "工作流全局模块"
         form.run_code_on_timeout_var.get.return_value = True
         form.timeout_segment = [{"type": "delay", "ms": 25}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertEqual(module["recognize"], "none")
@@ -1305,7 +1323,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.ocr_offset_left_var.get.return_value = "4"
         form.ocr_offset_right_var.get.return_value = "12"
         form.name_var.get.return_value = "体力检测"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertEqual(module["recognize"], "text")
@@ -1325,7 +1343,7 @@ class TemplateRegionTests(unittest.TestCase):
             image="images/claim.png", region="10,20,300,400", recognize="模板图片",
         )
         form.wait_text_absent_var.get.return_value = True
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]
         self.assertTrue(module["wait_text_absent"])
@@ -1337,7 +1355,7 @@ class TemplateRegionTests(unittest.TestCase):
             image="images/claim.png", region="10,20,300,400", recognize="模板图片",
         )
         form.click_count_var.get.return_value = "4"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         self.assertEqual(form.result[2]["click_count"], 4)
         notice.assert_not_called()
@@ -1442,8 +1460,8 @@ class TemplateRegionTests(unittest.TestCase):
         form = Mock()
         obj = self._object()
         form.show.return_value = ("", "images/g.png", obj)
-        with patch_dialogs("TemplateRegionFormDialog", return_value=form) as form_class, \
-             patch_dialogs("update_module_object", return_value={"images/g.png": obj}) as save, \
+        with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form) as form_class, \
+             package_patch('dialogs', 'update_module_object', return_value={'images/g.png': obj}) as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._open_add()
         form_class.assert_called_once_with(dialog, "", object_dict=None, category="switch")
@@ -1463,8 +1481,8 @@ class TemplateRegionTests(unittest.TestCase):
         form = Mock()
         obj = self._object()
         form.show.return_value = ("images/a.png", "images/b.png", obj)
-        with patch_dialogs("TemplateRegionFormDialog", return_value=form) as form_class, \
-             patch_dialogs("update_module_object", return_value={"images/b.png": obj}) as save, \
+        with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form) as form_class, \
+             package_patch('dialogs', 'update_module_object', return_value={'images/b.png': obj}) as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._open_edit()
         form_class.assert_called_once_with(
@@ -1481,9 +1499,9 @@ class TemplateRegionTests(unittest.TestCase):
         tree = Mock()
         tree.selection.return_value = ()
         dialog.trees = {"switch": tree}
-        with patch_dialogs("TemplateRegionFormDialog") as form_class, \
-             patch_dialogs("update_module_object") as save, \
-             patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
+             package_patch('dialogs', 'update_module_object') as save, \
+             package_patch('dialogs', 'show_floating_notice') as notice:
             dialog._open_edit()
         form_class.assert_not_called()
         self.assertEqual(dialog.objects, {"images/a.png": dialog.objects["images/a.png"]})
@@ -1498,8 +1516,8 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.trees = {"switch": Mock()}
         form = Mock()
         form.show.return_value = None
-        with patch_dialogs("TemplateRegionFormDialog", return_value=form), \
-             patch_dialogs("update_module_object") as save:
+        with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form), \
+             package_patch('dialogs', 'update_module_object') as save:
             dialog._open_form("images/a.png", obj)
         self.assertEqual(dialog.objects, {"images/a.png": obj})
         save.assert_not_called()
@@ -1515,8 +1533,8 @@ class TemplateRegionTests(unittest.TestCase):
         form = Mock()
         obj = self._object(region=(10, 20, 300, 400), after_action="continue")
         form.show.return_value = ("images/a.png", "images/a.png", obj)
-        with patch_dialogs("TemplateRegionFormDialog", return_value=form), \
-             patch_dialogs("update_module_object", return_value={"images/a.png": obj}) as save, \
+        with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form), \
+             package_patch('dialogs', 'update_module_object', return_value={'images/a.png': obj}) as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._open_form("images/a.png", dialog.objects["images/a.png"])
         self.assertEqual(dialog.objects, {"images/a.png": obj})
@@ -1534,8 +1552,8 @@ class TemplateRegionTests(unittest.TestCase):
         tree = Mock()
         tree.selection.return_value = ("重新执行工作流",)
         dialog.trees = {"all": tree}
-        with patch_dialogs("TemplateRegionFormDialog") as form_class, \
-             patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
+             package_patch('dialogs', 'show_floating_notice') as notice:
             dialog._open_edit()
         form_class.assert_not_called()
         notice.assert_called_once()
@@ -1549,7 +1567,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.trees = {"switch": tree}
         dialog._undo_stack = []
         dialog.undo_button = Mock()
-        with patch_dialogs("save_module_objects") as save, \
+        with package_patch('dialogs', 'save_module_objects') as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._remove_selected()
         self.assertEqual(dialog.objects, {})
@@ -1567,7 +1585,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.trees = {"switch": tree}
         dialog._undo_stack = [("images/g.png", obj)]
         dialog.undo_button = Mock()
-        with patch_dialogs("save_module_objects") as save, \
+        with package_patch('dialogs', 'save_module_objects') as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._undo_remove()
         self.assertEqual(dialog.objects, {"images/g.png": obj})
@@ -1583,7 +1601,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.current = "switch"
         dialog.trees = {"switch": Mock()}
         dialog._undo_stack = []
-        with patch_dialogs("save_module_objects") as save:
+        with package_patch('dialogs', 'save_module_objects') as save:
             dialog._undo_remove()
         save.assert_not_called()
 
@@ -1595,7 +1613,7 @@ class TemplateRegionTests(unittest.TestCase):
         tree = Mock()
         tree.selection.return_value = ()
         dialog.trees = {"switch": tree}
-        with patch_dialogs("save_module_objects") as save:
+        with package_patch('dialogs', 'save_module_objects') as save:
             dialog._remove_selected()
         self.assertEqual(dialog.objects, {"images/g.png": obj})
         save.assert_not_called()
@@ -1607,9 +1625,9 @@ class TemplateRegionTests(unittest.TestCase):
             on_success_actions=[{"type": "delay", "ms": 10}],
         )
         dialog.objects = {"module:source": original}
-        with patch("macroflow.ui.dialogs.uuid.uuid4") as uuid4, \
-             patch_dialogs("save_module_objects") as save, \
-             patch_dialogs("show_floating_notice"), \
+        with patch("uuid.uuid4") as uuid4, \
+             package_patch('dialogs', 'save_module_objects') as save, \
+             package_patch('dialogs', 'show_floating_notice'), \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             uuid4.return_value.hex = "copied"
             dialog._change_global_module_category(
@@ -1629,9 +1647,9 @@ class TemplateRegionTests(unittest.TestCase):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
         original = self._object(category="workflow_global", template="images/shared.png")
         dialog.objects = {"images/shared.png": original}
-        with patch("macroflow.ui.dialogs.uuid.uuid4") as uuid4, \
-             patch_dialogs("save_module_objects") as save, \
-             patch_dialogs("show_floating_notice"), \
+        with patch("uuid.uuid4") as uuid4, \
+             package_patch('dialogs', 'save_module_objects') as save, \
+             package_patch('dialogs', 'show_floating_notice'), \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             uuid4.return_value.hex = "copied"
             dialog._change_global_module_category(
@@ -1647,8 +1665,8 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {
             "module:source": self._object(category="workflow_global", name="全局"),
         }
-        with patch_dialogs("save_module_objects") as save, \
-             patch_dialogs("show_floating_notice"), \
+        with package_patch('dialogs', 'save_module_objects') as save, \
+             package_patch('dialogs', 'show_floating_notice'), \
              patch.object(TemplateRegionManagerDialog, "_reload_trees"):
             dialog._change_global_module_category(
                 "module:source", "script_global", copy_object=False,
@@ -1665,7 +1683,7 @@ class TemplateRegionTests(unittest.TestCase):
         tree = Mock()
         tree.identify_row.return_value = "module:source"
         event = Mock(widget=tree, y=30, x_root=100, y_root=120)
-        with patch("macroflow.ui.dialogs.tk.Menu") as menu_class:
+        with patch("tkinter.Menu") as menu_class:
             dialog._show_module_context_menu(event)
         labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
         self.assertEqual(labels, ["改成工作流全局", "复制成工作流全局"])
@@ -1700,10 +1718,7 @@ class TemplateRegionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "normal.json"
             save_script(MacroScript(name="normal", actions=[]), path)
-            with patch_dialogs(
-                "registered_module_object",
-                return_value={"enabled": False, "category": "switch"},
-            ):
+            with package_patch('dialogs', 'registered_module_object', return_value={'enabled': False, 'category': 'switch'}):
                 added, skipped, errors = prepend_module_to_scripts(
                     "module:disabled", "switch", [path],
                 )
@@ -1945,7 +1960,7 @@ class TemplateRegionTests(unittest.TestCase):
         picker.allow_number = False
         picker.objects = {"module:number": {"recognize": "number", "category": "switch"}}
         picker.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             picker._choose_key("module:number", "switch")
         notice.assert_called_once()
         picker.destroy.assert_not_called()
@@ -2039,7 +2054,7 @@ class TemplateRegionTests(unittest.TestCase):
         picker.category_keys = {"switch": [], "special": []}
         picker.listboxes = {"switch": Mock(), "special": Mock()}
         picker.listboxes["switch"].curselection.return_value = ()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             picker._choose_category("switch")
         notice.assert_called_once()
         self.assertIsNone(getattr(picker, "result", None))
@@ -2052,8 +2067,8 @@ class TemplateRegionTests(unittest.TestCase):
         obj = self._object()
         form.show.return_value = ("", "images/n.png", obj)
         picker.objects = {"images/n.png": obj}
-        with patch_dialogs("TemplateRegionFormDialog", return_value=form) as form_class, \
-             patch_dialogs("update_module_object") as save, \
+        with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form) as form_class, \
+             package_patch('dialogs', 'update_module_object') as save, \
              patch.object(ModulePickerDialog, "_refresh_lists") as refresh:
             picker._new_object("switch")
         form_class.assert_called_once_with(picker, category="switch", segment_depth=1)
@@ -2066,7 +2081,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_segment_add_module_ref_uses_nested_picker(self):
         form = self._form()
         form.segment_listbox = Mock()
-        with patch_dialogs("ModulePickerDialog") as picker_class:
+        with package_patch('dialogs', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = {
                 "type": "image_match", "template": "images/m.png", "module_ref": True,
             }
@@ -2097,9 +2112,9 @@ class TemplateRegionTests(unittest.TestCase):
     def test_edit_action_module_ref_opens_reference_result_dialog(self):
         action = {"type": "image_match", "template": "images/m.png", "module_ref": True,
                   "module_category": "switch", "action_id": "abc"}
-        with patch_dialogs("TemplateRegionFormDialog") as form_class, \
-             patch_dialogs("update_module_object") as save, \
-             patch_dialogs("ModuleReferenceDelayDialog") as delay_dialog:
+        with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
+             package_patch('dialogs', 'update_module_object') as save, \
+             package_patch('dialogs', 'ModuleReferenceDelayDialog') as delay_dialog:
             delay_dialog.return_value.show.return_value = dict(
                 action, delay_ms=500, after_delay_ms=800,
             )
@@ -2129,23 +2144,18 @@ class TemplateRegionTests(unittest.TestCase):
 
         widgets = ("Frame", "Button", "Spinbox", "Checkbutton")
         label_mock = Mock(return_value=Mock())
-        with patch("macroflow.ui.dialogs.ModalDialog.__init__", return_value=None), \
-             patch_dialogs("fit_scrollable_window_to_content"), \
-             patch_dialogs("scrollable_dialog_body",
-                   return_value=(Mock(**{"winfo_reqwidth.return_value": 1,
-                                         "winfo_reqheight.return_value": 1}),
-                                 Mock(),
-                                 Mock(**{"winfo_reqwidth.return_value": 1}))), \
-             patch_dialogs("registered_module_object", return_value={
-                 "name": "阻塞模块", "blocking": True,
-             }), \
-             patch_dialogs("image_jump_target_options", return_value=[]), \
-             patch("macroflow.ui.dialogs.tk.BooleanVar", side_effect=lambda **_: Mock()), \
-             patch("macroflow.ui.dialogs.tk.StringVar", side_effect=lambda **_: Mock()), \
-             patch_dialogs("duration_var", side_effect=fake_duration_var), \
-             patch("macroflow.ui.dialogs.ttk.Label", label_mock), \
-             patch.multiple("macroflow.ui.dialogs.ttk", **{
-                 name: Mock(return_value=Mock()) for name in widgets
+        with patch("macroflow.ui.dialogs.base.ModalDialog.__init__", return_value=None), \
+             package_patch('dialogs', 'fit_scrollable_window_to_content'), \
+             package_patch('dialogs', 'scrollable_dialog_body', return_value=(Mock(**{'winfo_reqwidth.return_value': 1, 'winfo_reqheight.return_value': 1}), Mock(), Mock(**{'winfo_reqwidth.return_value': 1}))), \
+             package_patch('dialogs', 'registered_module_object', return_value={'name': '阻塞模块', 'blocking': True}), \
+             package_patch('dialogs', 'image_jump_target_options', return_value=[]), \
+             patch("tkinter.BooleanVar", side_effect=lambda **_: Mock()), \
+             patch("tkinter.StringVar", side_effect=lambda **_: Mock()), \
+             package_patch('dialogs', 'duration_var', side_effect=fake_duration_var), \
+             patch("ttkbootstrap.Label", label_mock), \
+             patch("macroflow.ui.dialogs.module_objects.ttk", **{
+                 **{name: Mock(return_value=Mock()) for name in widgets},
+                 "Label": label_mock,
              }):
             ModuleReferenceDelayDialog(object(), {
                 "type": "module_ref", "module_ref": True,
@@ -2159,9 +2169,9 @@ class TemplateRegionTests(unittest.TestCase):
     def test_edit_action_global_module_ref_uses_global_config_dialog(self):
         action = {"type": "global_detect", "template": "images/m.png", "module_ref": True,
                   "module_category": "global", "action_id": "abc"}
-        with patch_dialogs("TemplateRegionFormDialog") as form_class, \
-             patch_dialogs("ModuleReferenceDelayDialog") as delay_dialog, \
-             patch_dialogs("GlobalDetectDialog") as global_dialog:
+        with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
+             package_patch('dialogs', 'ModuleReferenceDelayDialog') as delay_dialog, \
+             package_patch('dialogs', 'GlobalDetectDialog') as global_dialog:
             global_dialog.return_value.show.return_value = dict(action, jump_enabled=True)
             updated = edit_action(None, action)
         self.assertTrue(updated["jump_enabled"])
@@ -2243,7 +2253,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.number_routes_enabled = True
         dialog.expected_number = Mock(**{"get.return_value": "abc"})
         dialog.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             dialog.save()
         self.assertIn("比较数字无效", notice.call_args.args[1])
         dialog.destroy.assert_not_called()
@@ -2263,8 +2273,8 @@ class TemplateRegionTests(unittest.TestCase):
             "module_ref": True, "module_category": "script_global",
             "region_mode": "template", "region": [], "delay_ms": 0,
         }
-        with patch_dialogs("ModulePickerDialog") as picker_class, \
-             patch_dialogs("registered_module_object", return_value={"name": "新模块"}):
+        with package_patch('dialogs', 'ModulePickerDialog') as picker_class, \
+             package_patch('dialogs', 'registered_module_object', return_value={'name': '新模块'}):
             picker_class.return_value.show.return_value = replacement
             dialog.replace_reference()
 
@@ -2282,7 +2292,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.show.return_value = {
             "type": "restart_workflow", "restart_workflow_target_row": 5,
         }
-        with patch_dialogs("RestartWorkflowTargetDialog", return_value=dialog) as dialog_class:
+        with package_patch('dialogs', 'RestartWorkflowTargetDialog', return_value=dialog) as dialog_class:
             updated = edit_action(None, {"type": "restart_workflow"})
         dialog_class.assert_called_once()
         self.assertEqual(updated["restart_workflow_target_row"], 5)
@@ -2291,7 +2301,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_edit_action_restart_workflow_cancel_keeps_original(self):
         dialog = Mock()
         dialog.show.return_value = None
-        with patch_dialogs("RestartWorkflowTargetDialog", return_value=dialog):
+        with package_patch('dialogs', 'RestartWorkflowTargetDialog', return_value=dialog):
             updated = edit_action(None, {"type": "restart_workflow"})
         self.assertIsNone(updated)
 
@@ -2311,7 +2321,7 @@ class TemplateRegionTests(unittest.TestCase):
 
     def _patch_work_area(self, area):
         """把弹窗定位用的显示器可用区域固定成给定值（不打桩就走真实 Win32）。"""
-        patcher = patch_dialogs("monitor_work_area_for", return_value=area)
+        patcher = package_patch('dialogs', 'monitor_work_area_for', return_value=area)
         patcher.start()
         self.addCleanup(patcher.stop)
         return area
@@ -2470,8 +2480,7 @@ class TemplateRegionTests(unittest.TestCase):
         widget.winfo_width.return_value = 100
         widget.winfo_height.return_value = 80
         area = self._work_area(1260, 840)
-        with patch_dialogs("get_monitor_work_area_for_point", return_value=area,
-        ) as probe:
+        with package_patch('dialogs', 'get_monitor_work_area_for_point', return_value=area) as probe:
             self.assertEqual(dialog_module.monitor_work_area_for(widget), area)
         probe.assert_called_once_with(60, 60)
 
@@ -2483,9 +2492,7 @@ class TemplateRegionTests(unittest.TestCase):
         widget.winfo_height.return_value = 80
         widget.winfo_id.return_value = 0
         primary = self._work_area(1260, 840)
-        with patch_dialogs("get_monitor_work_area_for_point", return_value=None,
-        ), patch_dialogs("get_monitor_work_area_for_window", return_value=None,
-        ), patch_dialogs("get_primary_screen_rect", return_value=primary):
+        with package_patch('dialogs', 'get_monitor_work_area_for_point', return_value=None), package_patch('dialogs', 'get_monitor_work_area_for_window', return_value=None), package_patch('dialogs', 'get_primary_screen_rect', return_value=primary):
             self.assertEqual(dialog_module.monitor_work_area_for(widget), primary)
 
     def test_dialog_placement_never_uses_screen_metrics(self):

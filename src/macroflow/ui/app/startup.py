@@ -15,24 +15,12 @@ from macroflow.core.storage import (
 )
 from pathlib import Path
 import os
-from macroflow.ui.dialogs import (
-    ClickDialog, GameSetupNoteDialog, GlobalDetectDialog, TurnActionDialog,
-    HotkeyScriptsDialog,
-    JsonActionDialog, JumpActionDialog, KeyActionDialog,
-    RepeatClickDialog, CloseAppDialog, OcrCompareActionDialog, MultiConditionClickDialog,
-    RowListConditionClickDialog,
-    RowListDiagnosticResultDialog,
-    RowRecognitionResultDialog,
-    ModulePickerDialog,
-    MouseMoveDialog, ResolutionStylesDialog, ScheduleDialog, ScrollDialog,
-    SetResolutionActionDialog,
-    OpenAppDialog, ScriptDirectoriesDialog, TemplateRegionFormDialog,
-    TemplateRegionManagerDialog, WindowPicker,
-    WorkflowBatchSettingsDialog, WorkflowRepeatDialog,
-    DurationDialog, DurationVar, TIME_UNITS, Tooltip, edit_action,
-    key_to_vk, recorded_action_description, vk_to_key_name,
-    show_floating_notice, workflow_step_label,
-)
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
+from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
+from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
+from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
+from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
+from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
 import subprocess
 import sys
 import tkinter as tk
@@ -79,9 +67,7 @@ def spawn_new_instance(args: list[str]):
         clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     subprocess.Popen(args, cwd=str(BASE_DIR), env=clean_env)
 def main():
-    # MacroFlowApp 定义在包 __init__ 里（由各 mixin 组合），这里只能按需导入：
-    # 顶层导入会与「__init__ → startup」形成循环。
-    from macroflow.ui.app import MacroFlowApp
+    from .main import MacroFlowApp
 
     try:
         MacroFlowApp().run()

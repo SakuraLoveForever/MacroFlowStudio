@@ -7,7 +7,31 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_recognition.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import cv2
+import inspect
+import numpy as np
+import tempfile
+import tkinter as tk
+import ttkbootstrap
+import unittest
+from unittest.mock import Mock, call, patch
+import macroflow.core.image_match as image_match_module
+from macroflow.core.image_match import find_template, find_template_in_image
+from macroflow.core.models import ACTION_ID_KEY, NEXT_WORKFLOW_STEP_TARGET_ID, SCRIPT_START_TARGET_ID, SCROLL_DOWN_LABEL, SCROLL_UP_LABEL, clone_actions_with_new_ids, ensure_action_ids
+from macroflow.core.ocr import extract_ocr_integer, find_expected_match, format_ocr_observation, matches_expected, parse_ocr_number_pair, recognize_image_with_boxes
+from macroflow.core.storage import resolve_path
+from macroflow.execution.player import MacroPlayer
+from macroflow.execution.player.base import get_playback_screen_rect, screen_template_scale
+from macroflow.ui.app.summaries import action_summary
+import macroflow.ui.dialogs as dialog_module
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, JumpActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, TextActionDialog, edit_action
+from macroflow.ui.dialogs.base import show_floating_notice
+from macroflow.ui.dialogs.helpers import image_action_option_defaults, image_click_target_defaults, image_found_jump_target_options, image_jump_target_options, image_timeout_option_defaults, image_timeout_option_label, image_timeout_option_value, segment_row_label
+from macroflow.ui.dialogs.module_objects import TemplateRegionFormDialog
+from macroflow.ui.dialogs.recognition import ImageActionDialog, MultiConditionClickDialog, OcrActionDialog, OcrCompareActionDialog
+from macroflow.ui.dialogs.screen_pickers import ScreenPointPicker
+from macroflow.ui.dialogs.segments import SegmentEditorMixin
+from tests.helpers.patches import package_patch
 
 
 class ImageTests(unittest.TestCase):
@@ -19,16 +43,16 @@ class ImageTests(unittest.TestCase):
         dialog.region = Mock()
         dialog.template_combo = Mock()
         dialog._ancestors_to_hide = Mock(return_value=[])
-        with patch_dialogs("ScreenRegionPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenRegionPicker') as picker_class:
             dialog.capture_custom_template()
         picker_class.return_value.start.assert_called_once()
         on_result = picker_class.call_args.args[2]
         with tempfile.TemporaryDirectory() as folder:
             images_dir = Path(folder) / "images"
             screen = np.zeros((40, 50, 3), dtype=np.uint8)
-            with patch_dialogs("load_module_images_dir", return_value=images_dir), \
-                 patch_dialogs("capture_bgr", return_value=(screen, (10, 20))), \
-                 patch_dialogs("registered_template_options", return_value=["captured"]) as options:
+            with package_patch('dialogs', 'load_module_images_dir', return_value=images_dir), \
+                 package_patch('dialogs', 'capture_bgr', return_value=(screen, (10, 20))), \
+                 package_patch('dialogs', 'registered_template_options', return_value=['captured']) as options:
                 on_result([100, 200, 50, 40])
             saved = list(images_dir.glob("recognition_*.png"))
             self.assertEqual(len(saved), 1)
@@ -47,11 +71,11 @@ class ImageTests(unittest.TestCase):
         dialog.region = Mock()
         dialog.template_combo = Mock()
         dialog._ancestors_to_hide = Mock(return_value=[])
-        with patch_dialogs("ScreenRegionPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenRegionPicker') as picker_class:
             dialog.capture_custom_template()
         on_result = picker_class.call_args.args[2]
-        with patch_dialogs("capture_bgr", side_effect=RuntimeError("boom")), \
-             patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'capture_bgr', side_effect=RuntimeError('boom')), \
+             package_patch('dialogs', 'show_floating_notice') as notice:
             on_result([100, 200, 50, 40])
         self.assertIn("截图失败", notice.call_args.args[1])
         dialog.template.set.assert_not_called()
@@ -87,11 +111,7 @@ class ImageTests(unittest.TestCase):
         dialog.region = Mock()
         dialog.template_combo = Mock()
         dialog.module_name = Mock()
-        with patch_dialogs("choose_module_binding", return_value={
-            "module_ref": True, "module_key": "module:first",
-            "template": "images/shared.png", "region_mode": "template",
-            "region": [11, 22, 333, 444],
-        }) as choose:
+        with package_patch('dialogs', 'choose_module_binding', return_value={'module_ref': True, 'module_key': 'module:first', 'template': 'images/shared.png', 'region_mode': 'template', 'region': [11, 22, 333, 444]}) as choose:
             dialog.select_image_module()
 
         choose.assert_called_once_with(dialog, categories=("switch",))
@@ -108,11 +128,7 @@ class ImageTests(unittest.TestCase):
         dialog.condition_type = [Mock()]
         dialog.condition_ocr_mode = [Mock()]
         dialog.condition_field_widgets = [{}]
-        with patch_dialogs("choose_module_binding", return_value={
-            "module_ref": True, "module_key": "module:first",
-            "template": "images/shared.png", "region_mode": "template",
-            "region": [11, 22, 333, 444],
-        }) as choose:
+        with package_patch('dialogs', 'choose_module_binding', return_value={'module_ref': True, 'module_key': 'module:first', 'template': 'images/shared.png', 'region_mode': 'template', 'region': [11, 22, 333, 444]}) as choose:
             dialog.select_condition_module(0)
 
         choose.assert_called_once_with(dialog, categories=("switch",))
@@ -176,7 +192,7 @@ class ImageTests(unittest.TestCase):
         dialog.jump_target_ids = {}
         dialog.master = Mock()
         dialog.destroy = Mock()
-        with patch_dialogs("activate_main_after_modal"):
+        with package_patch('dialogs', 'activate_main_after_modal'):
             dialog.save()
         self.assertEqual(dialog.result["fallback_template"], "images/y.png")
         self.assertEqual(dialog.result["fallback_switch_ms"], 5000)
@@ -242,7 +258,7 @@ class ImageTests(unittest.TestCase):
         dialog.jump_target_ids = {}
         dialog.master = Mock()
         dialog.destroy = Mock()
-        with patch_dialogs("activate_main_after_modal"):
+        with package_patch('dialogs', 'activate_main_after_modal'):
             dialog.save()
         self.assertFalse(dialog.result["fallback_click"])
         self.assertEqual(dialog.result["fallback_on_match"], "直接退出识别")
@@ -339,12 +355,7 @@ class ImageTests(unittest.TestCase):
         dialog.jump_target_ids = {}
         dialog.master = Mock()
         dialog.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "switch", "template": "images/x.png",
-            "region": [10, 20, 30, 40],
-        }), patch_dialogs("load_template_regions", return_value={
-            "images/x.png": [10, 20, 30, 40],
-        }), patch_dialogs("activate_main_after_modal"):
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'switch', 'template': 'images/x.png', 'region': [10, 20, 30, 40]}), package_patch('dialogs', 'load_template_regions', return_value={'images/x.png': [10, 20, 30, 40]}), package_patch('dialogs', 'activate_main_after_modal'):
             dialog.save()
         result = dialog.result
         self.assertEqual(result["region_mode"], "template")
@@ -411,9 +422,7 @@ class ImageTests(unittest.TestCase):
         dialog.jump_target_ids = {}
         dialog.master = Mock()
         dialog.destroy = Mock()
-        with patch_dialogs("load_template_regions", return_value={
-            "images/y.png": [100, 200, 300, 400],
-        }), patch_dialogs("activate_main_after_modal"):
+        with package_patch('dialogs', 'load_template_regions', return_value={'images/y.png': [100, 200, 300, 400]}), package_patch('dialogs', 'activate_main_after_modal'):
             dialog.save()
         result = dialog.result
         self.assertEqual(result["region_mode"], "screen")
@@ -443,7 +452,7 @@ class ImageTests(unittest.TestCase):
         manager.withdraw()
         form = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         form.master = manager
-        with patch_dialogs("ScreenPointPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenPointPicker') as picker_class:
             form.start_click_point_selection()
         args, kwargs = picker_class.call_args
         self.assertIs(args[0], form)
@@ -459,7 +468,7 @@ class ImageTests(unittest.TestCase):
         manager.withdraw()
         dialog = ImageActionDialog.__new__(ImageActionDialog)
         dialog.master = manager
-        with patch_dialogs("ScreenPointPicker") as picker_class:
+        with package_patch('dialogs', 'ScreenPointPicker') as picker_class:
             dialog.start_click_point_selection()
         self.assertIn(root, picker_class.call_args.kwargs["hidden_windows"])
 
@@ -610,9 +619,8 @@ class ImageTests(unittest.TestCase):
     def test_playback_screen_uses_target_window_monitor(self):
         monitor = {"left": -1920, "top": 181, "width": 1920, "height": 1080}
         primary = {"left": 0, "top": 0, "width": 1920, "height": 1080}
-        with patch_player("get_monitor_rect_for_window",
-                   side_effect=lambda hwnd: monitor if hwnd else None), \
-             patch_player("get_primary_screen_rect", return_value=primary):
+        with package_patch('player', 'get_monitor_rect_for_window', side_effect=lambda hwnd: monitor if hwnd else None), \
+             package_patch('player', 'get_primary_screen_rect', return_value=primary):
             self.assertEqual(get_playback_screen_rect(123), monitor)
             self.assertEqual(get_playback_screen_rect(None), primary)
 
@@ -626,11 +634,11 @@ class ImageTests(unittest.TestCase):
                 "center_x": -74, "center_y": 207, "score": 0.95,
             }
             player = MacroPlayer()
-            with patch_player("get_playback_screen_rect", return_value=monitor), \
-                 patch_player("is_window", return_value=True), \
-                 patch_player("is_window_process_foreground", return_value=True), \
-                 patch_player("find_template", return_value=match) as find, \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'get_playback_screen_rect', return_value=monitor), \
+                 package_patch('player', 'is_window', return_value=True), \
+                 package_patch('player', 'is_window_process_foreground', return_value=True), \
+                 package_patch('player', 'find_template', return_value=match) as find, \
+                 package_patch('player', 'show_overlay'):
                 player.play(
                     [{"type": "image_match", "template": str(template_path),
                       "on_found": "continue"}],
@@ -929,7 +937,7 @@ class ImageTests(unittest.TestCase):
 
     def test_editing_mouse_button_action_uses_click_dialog(self):
         original = {"type": "mouse_button", "action_id": "stable-mb", "down": True}
-        with patch_dialogs("ClickDialog") as dialog_class:
+        with package_patch('dialogs', 'ClickDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "mouse_button", "button": "left", "down": False,
                 "x": 1, "y": 2,
@@ -946,7 +954,7 @@ class ImageTests(unittest.TestCase):
                     "template": "images/g.png", "jump_row": 4}
         others = [{"type": "delay", "ms": 1, "action_id": "a"},
                   {"type": "key_press", "name": "B", "action_id": "b"}]
-        with patch_dialogs("GlobalDetectDialog") as dialog_class:
+        with package_patch('dialogs', 'GlobalDetectDialog') as dialog_class:
             dialog_class.return_value.show.return_value = dict(original)
             updated = edit_action(None, original, others)
         self.assertEqual(updated["action_id"], "stable-g")
@@ -955,7 +963,7 @@ class ImageTests(unittest.TestCase):
     def test_editing_plain_global_detect_keeps_default_dialog_mode(self):
         original = {"type": "global_detect", "action_id": "stable-g",
                     "template": "images/g.png"}
-        with patch_dialogs("GlobalDetectDialog") as dialog_class:
+        with package_patch('dialogs', 'GlobalDetectDialog') as dialog_class:
             dialog_class.return_value.show.return_value = dict(original)
             updated = edit_action(None, original)
         self.assertEqual(updated["action_id"], "stable-g")
@@ -1122,7 +1130,7 @@ class ImageTests(unittest.TestCase):
     def test_edit_action_routes_scroll_to_scroll_dialog(self):
         original = {"type": "scroll", "action_id": "stable-scroll",
                     "dx": 0, "dy": -3, "x": 5, "y": 6}
-        with patch_dialogs("ScrollDialog") as dialog_class:
+        with package_patch('dialogs', 'ScrollDialog') as dialog_class:
             dialog_class.return_value.show.return_value = {
                 "type": "scroll", "dx": 0, "dy": 9, "x": 7, "y": 8,
             }
@@ -1309,7 +1317,7 @@ class OcrTests(unittest.TestCase):
         form.timeout_jump_target = Mock(); form.timeout_jump_target.get.return_value = ""
         form.show_result_notice = Mock(); form.show_result_notice.get.return_value = True
         form.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         form.destroy.assert_called_once()
@@ -1380,10 +1388,7 @@ class OcrTests(unittest.TestCase):
         form.failure_segment_enabled = Mock(); form.failure_segment_enabled.get.return_value = True
         form.failure_segment = [{"type": "notice", "text": "多条件没命中"}]
         form.destroy = Mock()
-        with patch_dialogs("registered_module_object", return_value={
-            "category": "switch", "template": "images/shared.png",
-            "region": [11, 22, 333, 444],
-        }), patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'registered_module_object', return_value={'category': 'switch', 'template': 'images/shared.png', 'region': [11, 22, 333, 444]}), package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         form.destroy.assert_called_once()
@@ -1438,9 +1443,7 @@ class OcrTests(unittest.TestCase):
     def test_module_display_name_does_not_show_stable_module_id(self):
         display_name = getattr(dialog_module, "module_display_name", None)
         self.assertIsNotNone(display_name, "缺少模块显示名称解析函数")
-        with patch_dialogs("registered_module_object", return_value={
-            "name": "右侧条件模块", "template": "images/right.png",
-        }):
+        with package_patch('dialogs', 'registered_module_object', return_value={'name': '右侧条件模块', 'template': 'images/right.png'}):
             self.assertEqual(display_name("module:68ce87a9d03541d7a9abc4a817e794d9"), "右侧条件模块")
 
     def test_row_list_condition_module_selection_displays_name_but_keeps_stable_key(self):
@@ -1451,11 +1454,7 @@ class OcrTests(unittest.TestCase):
         form.right_module_key = Mock()
         form.right_module_name = Mock()
         form.right_condition_type = Mock()
-        with patch_dialogs("choose_module_binding", return_value={
-            "module_ref": True, "module_key": "module:68ce87a9d03541d7a9abc4a817e794d9",
-        }), patch_dialogs("registered_module_object", return_value={
-            "name": "右侧条件模块", "template": "images/right.png",
-        }):
+        with package_patch('dialogs', 'choose_module_binding', return_value={'module_ref': True, 'module_key': 'module:68ce87a9d03541d7a9abc4a817e794d9'}), package_patch('dialogs', 'registered_module_object', return_value={'name': '右侧条件模块', 'template': 'images/right.png'}):
             form.select_condition_module("right")
 
         form.right_module_key.set.assert_called_once_with(
@@ -1501,7 +1500,7 @@ class OcrTests(unittest.TestCase):
 
     def test_row_list_dialog_saves_relative_regions_for_confirmed_screenshot(self):
         form = self._row_list_dialog_form()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         form.destroy.assert_called_once()
@@ -1540,7 +1539,7 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.on_test.call_args.kwargs["source"], "screen")
 
         form.on_test.reset_mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.test_recognition("image")
         form.on_test.assert_not_called()
         notice.assert_called_once()
@@ -1557,7 +1556,7 @@ class OcrTests(unittest.TestCase):
         form = self._row_list_dialog_form()
         form.failure_segment_enabled = Mock(**{"get.return_value": True})
         form.failure_segment = [{"type": "notice", "text": "列表没找到"}]
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         self.assertTrue(form.result["failure_segment_enabled"])
@@ -1628,8 +1627,7 @@ class OcrTests(unittest.TestCase):
         )
         try:
             for dialog_class, kwargs in cases:
-                with patch_dialogs("registered_module_object",
-                           return_value=module_obj):
+                with package_patch('dialogs', 'registered_module_object', return_value=module_obj):
                     dialog = dialog_class(root, **kwargs)
                 try:
                     dialog.update_idletasks()
@@ -1688,7 +1686,7 @@ class OcrTests(unittest.TestCase):
         form.on_failure.get.return_value = "结束当前最里层脚本"
         form.jump_target_ids = {"目标行": "action-target"}
 
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
 
         notice.assert_not_called()
@@ -1705,7 +1703,7 @@ class OcrTests(unittest.TestCase):
         form.row_height.get.return_value = "27"
         form.click_count.get.return_value = "3"
 
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
 
         notice.assert_not_called()
@@ -1718,7 +1716,7 @@ class OcrTests(unittest.TestCase):
         form = self._row_list_dialog_form()
         form.click_count.get.return_value = "0"
 
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
 
         notice.assert_called_once()
@@ -1731,7 +1729,7 @@ class OcrTests(unittest.TestCase):
         form.left_region.get.return_value = "-320,-180,70,26"
         form.right_region.get.return_value = "-240,-180,80,26"
         form.click_region.get.return_value = "-230,-180,60,26"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         self.assertEqual(form.result["list_region"], [-320, -180, 160, 78])
@@ -1755,7 +1753,7 @@ class OcrTests(unittest.TestCase):
         form = self._row_list_dialog_form()
         form.click_region.get.return_value = "190,200,60,341"
 
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
 
         notice.assert_called_once()
@@ -1766,7 +1764,7 @@ class OcrTests(unittest.TestCase):
         form = self._row_list_dialog_form()
         form.left_condition_type.get.return_value = "image"
         form.left_module_key.get.return_value = "module:left"
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         self.assertEqual(form.result["left_condition"], {
@@ -1787,7 +1785,7 @@ class OcrTests(unittest.TestCase):
             with self.subTest(name=name):
                 form = self._row_list_dialog_form()
                 invalidate(form)
-                with patch_dialogs("show_floating_notice") as notice:
+                with package_patch('dialogs', 'show_floating_notice') as notice:
                     form.save()
                 notice.assert_called_once()
                 self.assertIsNone(form.result)
@@ -1912,7 +1910,7 @@ class OcrTests(unittest.TestCase):
         form.show_result_notice = Mock()
         form.show_result_notice.get.return_value = True
         form.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
         form.destroy.assert_called_once()
@@ -1961,7 +1959,7 @@ class OcrTests(unittest.TestCase):
         form.show_result_notice.get.return_value = False
         form.result = None
         form.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         form.destroy.assert_not_called()
@@ -1998,7 +1996,7 @@ class OcrTests(unittest.TestCase):
         form.show_result_notice = Mock()
         form.show_result_notice.get.return_value = False
         form.destroy = Mock()
-        with patch_dialogs("show_floating_notice") as notice:
+        with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_called_once()
         form.destroy.assert_not_called()

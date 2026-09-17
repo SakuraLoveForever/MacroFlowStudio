@@ -7,7 +7,27 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_storage_and_bindings.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import ctypes
+import inspect
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.models import ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN, DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow, clone_actions_with_new_ids, ensure_action_ids, is_global_script
+from macroflow.core.resolution import DEFAULT_RESOLUTION_STYLES, build_resolution_action, normalize_resolution_styles, resolve_resolution_style
+from macroflow.core.storage import available_script_path, backup_script, display_path, load_app_settings, load_module_images_dir, load_module_objects, load_script, load_workflow, migrate_workflow_templates, module_image_inventory, registered_module_object, remap_hotkey_script_bindings, save_app_settings, save_module_images_dir, save_module_objects, save_script, save_workflow
+from macroflow.execution.player import MacroPlayer
+import macroflow.input.wininput as wininput_module
+from macroflow.input.wininput import WindowInfo, set_display_scaling_for_window
+from macroflow.ui.app.constants import BACKUP_INTERVAL_CHOICES, BACKUP_INTERVAL_MS
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.startup import windows_startup_command
+from macroflow.ui.app.summaries import action_summary
+import macroflow.ui.dialogs as dialog_module
+from macroflow.ui.dialogs.actions import SetResolutionActionDialog
+from macroflow.ui.dialogs.base import activate_main_after_modal, drag_selection_region, restore_modal_after_overlay, selectable_target_windows
+from tests.helpers.patches import package_patch
 
 
 class StorageTests(unittest.TestCase):
@@ -233,7 +253,7 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(list(backups.rglob("*.json")), [second])
 
     def test_source_startup_command_quotes_python_and_app(self):
-        with patch("macroflow.ui.app.sys.frozen", False, create=True):
+        with patch("sys.frozen", False, create=True):
             command = windows_startup_command()
         self.assertIn(Path(os.sys.executable).name, command)
         # 源码模式下指向包入口 __main__.py（拆分前是单文件 app.py）。
@@ -491,7 +511,7 @@ class BindingTests(unittest.TestCase):
         main = Mock()
         main.winfo_id.return_value = 123
         dialog = Mock()
-        with patch_dialogs("show_window_no_activate", return_value=True) as show:
+        with package_patch('dialogs', 'show_window_no_activate', return_value=True) as show:
             restored = restore_modal_after_overlay(dialog, main, "zoomed")
         self.assertTrue(restored)
         show.assert_called_once_with(123)
@@ -518,7 +538,7 @@ class BindingTests(unittest.TestCase):
             WindowInfo(20, "Game", "GameWindow"),
             WindowInfo(20, "Game duplicate", "GameWindow"),
         ]
-        with patch_dialogs("is_current_process_window", side_effect=lambda hwnd: hwnd == 10):
+        with package_patch('dialogs', 'is_current_process_window', side_effect=lambda hwnd: hwnd == 10):
             result = selectable_target_windows(windows)
         self.assertEqual([(item.hwnd, item.title) for item in result], [(20, "Game")])
 
@@ -530,8 +550,8 @@ class BindingTests(unittest.TestCase):
         app.cursor_tracking_mini_var = Mock()
         app.root = Mock()
         app.root.after.return_value = "poll-id"
-        with patch_app("get_cursor_pos", side_effect=[(30, 40), (960, 540)]), \
-             patch_app("get_virtual_screen_rect", return_value=DEFAULT_RECORDED_SCREEN):
+        with package_patch('app', 'get_cursor_pos', side_effect=[(30, 40), (960, 540)]), \
+             package_patch('app', 'get_virtual_screen_rect', return_value=DEFAULT_RECORDED_SCREEN):
             app._poll_cursor_position()
             app._poll_cursor_position()
         self.assertEqual(
@@ -547,7 +567,7 @@ class BindingTests(unittest.TestCase):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.log_text = Mock()
 
-        with patch_app("get_cursor_pos", return_value=(958, 415)):
+        with package_patch('app', 'get_cursor_pos', return_value=(958, 415)):
             app._log("全局检测已点击")
 
         inserted = app.log_text.insert.call_args.args[1]
@@ -562,7 +582,7 @@ class BindingTests(unittest.TestCase):
         app.mini_steps_text.winfo_exists.return_value = True
         app.mini_steps_text.index.return_value = "2.0"
 
-        with patch_app("get_cursor_pos", return_value=(640, 360)):
+        with package_patch('app', 'get_cursor_pos', return_value=(640, 360)):
             app._append_mini_step("工作流继续")
 
         inserted = app.mini_steps_text.insert.call_args.args[1]
@@ -578,8 +598,8 @@ class BindingTests(unittest.TestCase):
         app.bind_label_var = Mock()
         app.bound_window = None
         current = WindowInfo(222, "Game - new session", "GameWindow")
-        with patch_app("enum_windows", return_value=[current]), \
-             patch_app("get_foreground_window_info", return_value=current):
+        with package_patch('app', 'enum_windows', return_value=[current]), \
+             package_patch('app', 'get_foreground_window_info', return_value=current):
             self.assertTrue(app._restore_saved_window_binding())
         self.assertEqual(app.bound_window.hwnd, 222)
         app.bind_label_var.set.assert_called_once_with("Game - new session")
@@ -643,8 +663,8 @@ class BindingTests(unittest.TestCase):
         app.bind_label_var = Mock()
         foreground = WindowInfo(222, "当前游戏", "GameWindow", "C:/Game/game.exe")
 
-        with patch_app("get_foreground_window_info", return_value=foreground), \
-             patch_app("is_current_process_window", return_value=False):
+        with package_patch('app', 'get_foreground_window_info', return_value=foreground), \
+             package_patch('app', 'is_current_process_window', return_value=False):
             hwnd = app._bound_hwnd()
 
         self.assertEqual(hwnd, 222)
@@ -656,13 +676,13 @@ class BindingTests(unittest.TestCase):
         app.execution_started_at = 123.0
         app.mini_elapsed_var = Mock()
 
-        with patch("macroflow.ui.app.time.perf_counter", return_value=456.0):
+        with patch("time.perf_counter", return_value=456.0):
             app._reset_execution_clock_for_new_run(None)
         self.assertEqual(app.execution_started_at, 456.0)
         app.mini_elapsed_var.set.assert_called_once_with("00:00")
 
         app.mini_elapsed_var.reset_mock()
-        with patch("macroflow.ui.app.time.perf_counter", return_value=999.0):
+        with patch("time.perf_counter", return_value=999.0):
             app._reset_execution_clock_for_new_run(4)
         self.assertEqual(app.execution_started_at, 456.0)
         app.mini_elapsed_var.set.assert_not_called()
@@ -684,8 +704,8 @@ class BindingTests(unittest.TestCase):
         # 截图后的前台恢复：主绑定窗口不在前台时激活它。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app._bound_hwnd = Mock(return_value=100)
-        with patch_app("is_window_process_foreground", return_value=False) as is_fore, \
-             patch_app("activate_window") as activate:
+        with package_patch('app', 'is_window_process_foreground', return_value=False) as is_fore, \
+             package_patch('app', 'activate_window') as activate:
             app._restore_workflow_scan_foreground()
         is_fore.assert_called_once_with(100)
         activate.assert_called_once_with(100)
@@ -694,8 +714,8 @@ class BindingTests(unittest.TestCase):
         # 主绑定窗口已在前台：零开销跳过。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app._bound_hwnd = Mock(return_value=100)
-        with patch_app("is_window_process_foreground", return_value=True) as is_fore, \
-             patch_app("activate_window") as activate:
+        with package_patch('app', 'is_window_process_foreground', return_value=True) as is_fore, \
+             package_patch('app', 'activate_window') as activate:
             app._restore_workflow_scan_foreground()
         is_fore.assert_called_once_with(100)
         activate.assert_not_called()
@@ -747,13 +767,12 @@ class ResolutionActionTests(unittest.TestCase):
         }
         selected_window = WindowInfo(456, "扩展屏应用", "ExternalWindow", "C:/Apps/external.exe")
 
-        with patch_player("resolve_window_signature", return_value=selected_window) as resolve, \
-             patch_player("get_display_resolution_for_window",
-                   return_value=(2560, 1440, 60)), \
-             patch_player("get_display_scaling_for_window", return_value=100), \
-             patch_player("set_display_resolution_for_window", return_value=True) as set_mode, \
-             patch_player("set_display_scaling_for_window", return_value=True) as set_scale, \
-             patch_player("get_playback_screen_rect", return_value=after) as get_screen:
+        with package_patch('player', 'resolve_window_signature', return_value=selected_window) as resolve, \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(2560, 1440, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=100), \
+             package_patch('player', 'set_display_resolution_for_window', return_value=True) as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window', return_value=True) as set_scale, \
+             package_patch('player', 'get_playback_screen_rect', return_value=after) as get_screen:
             player._execute_action(action, None)
 
         resolve.assert_called_once_with(action["window"])
@@ -776,13 +795,12 @@ class ResolutionActionTests(unittest.TestCase):
         player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
         player._wait = Mock()
         after = {"left": 0, "top": 0, "width": 1920, "height": 1080}
-        with patch_player("is_window", return_value=True), \
-             patch_player("get_display_resolution_for_window",
-                   return_value=(1280, 720, 60)), \
-             patch_player("get_display_scaling_for_window", return_value=125), \
-             patch_player("set_display_resolution_for_window", return_value=True) as set_mode, \
-             patch_player("set_display_scaling_for_window", return_value=True) as set_scale, \
-             patch_player("get_playback_screen_rect", return_value=after) as get_screen:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(1280, 720, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=125), \
+             package_patch('player', 'set_display_resolution_for_window', return_value=True) as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window', return_value=True) as set_scale, \
+             package_patch('player', 'get_playback_screen_rect', return_value=after) as get_screen:
             player._execute_action({
                 "type": "set_resolution", "name": "1080p",
                 "width": 1920, "height": 1080, "refresh_rate": 60, "scale_percent": 100,
@@ -800,14 +818,13 @@ class ResolutionActionTests(unittest.TestCase):
         logs = []
         player.on_log = logs.append
         after = {"left": 0, "top": 0, "width": 1920, "height": 1080}
-        with patch_player("resolve_window_signature", return_value=None), \
-             patch_player("is_window", return_value=True), \
-             patch_player("get_display_resolution_for_window",
-                   return_value=(1280, 720, 60)), \
-             patch_player("get_display_scaling_for_window", return_value=100), \
-             patch_player("set_display_resolution_for_window", return_value=True) as set_mode, \
-             patch_player("set_display_scaling_for_window", return_value=True), \
-             patch_player("get_playback_screen_rect", return_value=after):
+        with package_patch('player', 'resolve_window_signature', return_value=None), \
+             package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(1280, 720, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=100), \
+             package_patch('player', 'set_display_resolution_for_window', return_value=True) as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window', return_value=True), \
+             package_patch('player', 'get_playback_screen_rect', return_value=after):
             player._execute_action({
                 "type": "set_resolution",
                 "width": 1920,
@@ -824,15 +841,12 @@ class ResolutionActionTests(unittest.TestCase):
         player._wait = Mock()
         logs = []
         player.on_log = logs.append
-        with patch_player("is_window", return_value=True), \
-             patch_player("get_display_resolution_for_window",
-                   return_value=(1920, 1080, 60)), \
-             patch_player("get_display_scaling_for_window", return_value=200), \
-             patch_player("set_display_resolution_for_window") as set_mode, \
-             patch_player("set_display_scaling_for_window",
-                   return_value=False) as set_scale, \
-             patch_player("get_playback_screen_rect",
-                   return_value={"left": 0, "top": 0, "width": 1920, "height": 1080}):
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(1920, 1080, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=200), \
+             package_patch('player', 'set_display_resolution_for_window') as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window', return_value=False) as set_scale, \
+             package_patch('player', 'get_playback_screen_rect', return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
             player._execute_action({
                 "type": "set_resolution",
                 "width": 1920, "height": 1080, "refresh_rate": 60, "scale_percent": 100,
@@ -846,7 +860,7 @@ class ResolutionActionTests(unittest.TestCase):
     def test_player_rejects_resolution_action_without_any_resolvable_monitor(self):
         player = MacroPlayer()
 
-        with patch_player("resolve_window_signature", return_value=None), \
+        with package_patch('player', 'resolve_window_signature', return_value=None), \
              self.assertRaisesRegex(RuntimeError, "无法确定要修改的显示器"):
             player._execute_action({
                 "type": "set_resolution",
@@ -982,7 +996,7 @@ class DpiScaleTests(unittest.TestCase):
     def test_dpi_scale_helpers_convert_design_pixels(self):
         # 打包版进程是 DPI 感知的：Tk 的字体按真实 DPI 放大，像素常量必须同步
         # 换算，否则高 DPI 下文字会撑破行高/列宽（被裁切或上下行重叠）。
-        from macroflow.ui import app as app_module
+        from macroflow.ui.app import base as app_module
 
         class _FakeRoot:
             class tk:
@@ -1000,7 +1014,7 @@ class DpiScaleTests(unittest.TestCase):
             app_module._UI_SCALE = previous
 
     def test_dpi_scale_is_identity_at_96_dpi(self):
-        from macroflow.ui import app as app_module
+        from macroflow.ui.app import base as app_module
 
         class _FakeRoot:
             class tk:

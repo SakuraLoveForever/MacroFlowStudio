@@ -7,7 +7,30 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_player.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import cv2
+import json
+from mss.exception import ScreenShotError
+import numpy as np
+from pathlib import Path
+from macroflow.core.storage import BASE_DIR
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import Mock, call, patch
+import macroflow.core.display_power as display_power_module
+import macroflow.core.image_match as image_match_module
+from macroflow.core.models import ACTION_ID_KEY, MacroScript, NEXT_WORKFLOW_STEP_TARGET_ID, RECORDED_INPUT_STEPS_KEY, SCRIPT_START_TARGET_ID, clone_actions_with_new_ids
+from macroflow.core.storage import resolve_path, save_script
+from macroflow.execution.player import MacroPlayer
+from macroflow.execution.player.base import CLICK_DEDUP_WINDOW_S, CLICK_SOURCE_ACTION, CLICK_SOURCE_GUARD, CLICK_SOURCE_MODULE, GUARD_SETTLE_MS, scale_screen_point
+from macroflow.execution.player.control import EndCurrentScriptRequest, GuardJumpRequest, PlaybackStopped
+from macroflow.execution.timeline import PlaybackTimeline
+from macroflow.input.wininput import WindowInfo
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.summaries import action_summary
+import macroflow.ui.dialogs as dialog_module
+from tests.helpers.patches import package_patch
 
 
 class PlayerTests(unittest.TestCase):
@@ -314,8 +337,8 @@ class PlayerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             script_path = Path(folder) / "script_b.json"
             script_path.write_text("{}", encoding="utf-8")
-            with patch_player("resolve_path", return_value=script_path), \
-                 patch_player("load_script", return_value=nested):
+            with package_patch('player', 'resolve_path', return_value=script_path), \
+                 package_patch('player', 'load_script', return_value=nested):
                 advanced = player.play([
                     {"type": "script_ref", "script": "script_b.json", "repeats": 3},
                     {"type": "notice", "text": "A继续执行"},
@@ -337,8 +360,8 @@ class PlayerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             script_path = Path(folder) / "script_b.json"
             script_path.write_text("{}", encoding="utf-8")
-            with patch_player("resolve_path", return_value=script_path), \
-                 patch_player("load_script", return_value=nested) as load:
+            with package_patch('player', 'resolve_path', return_value=script_path), \
+                 package_patch('player', 'load_script', return_value=nested) as load:
                 advanced = player.play([
                     {"type": "script_ref", "script": "script_b.json", "repeats": 3},
                 ])
@@ -438,8 +461,8 @@ class PlayerTests(unittest.TestCase):
             player.stop_event.set()
             return None
 
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template", side_effect=miss_then_stop):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', side_effect=miss_then_stop):
             player.play([{
                 "type": "image_match", "module_ref": True,
                 "module_key": "module:settlement", "region_mode": "template", "delay_ms": 0,
@@ -466,8 +489,8 @@ class PlayerTests(unittest.TestCase):
             player.stop_event.set()
             return None
 
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template", side_effect=miss_then_stop):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', side_effect=miss_then_stop):
             player.play([{
                 "type": "image_match", "module_ref": True,
                 "module_key": "module:news", "region_mode": "template", "delay_ms": 0,
@@ -479,9 +502,7 @@ class PlayerTests(unittest.TestCase):
 
     def test_missing_module_reference_does_not_run_stale_template(self):
         player = MacroPlayer()
-        with patch_player(
-            "registered_module_object", return_value=None,
-        ), patch_player("find_template", return_value=None) as find:
+        with package_patch('player', 'registered_module_object', return_value=None), package_patch('player', 'find_template', return_value=None) as find:
             with self.assertRaisesRegex(RuntimeError, "引用的模块不存在"):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
@@ -513,8 +534,8 @@ class PlayerTests(unittest.TestCase):
         player._source_screen = {"left": -1920, "top": 0, "width": 3840, "height": 2160}
         player._target_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
         player._wait = Mock()
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player._execute_action({
                 "type": "mouse_button", "mode": "absolute", "x": -960, "y": 540,
                 "button": "left", "down": True,
@@ -524,8 +545,8 @@ class PlayerTests(unittest.TestCase):
 
     def test_relative_mouse_button_does_not_teleport_cursor(self):
         player = MacroPlayer()
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player._execute_action({
                 "type": "mouse_button", "mode": "relative", "x": 100, "y": 200,
                 "button": "right", "down": True,
@@ -536,7 +557,7 @@ class PlayerTests(unittest.TestCase):
     def test_stop_during_mouse_button_hold_releases_button(self):
         player = MacroPlayer()
         player._wait = lambda _milliseconds: player.stop()
-        with patch_player("send_button") as button:
+        with package_patch('player', 'send_button') as button:
             player.play([
                 {"type": "mouse_button", "button": "left", "down": True},
                 {"type": "delay", "ms": 1},
@@ -547,7 +568,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._wait = Mock()
         player._center_cursor_for_turn = Mock()
-        with patch_player("send_move_relative"):
+        with package_patch('player', 'send_move_relative'):
             player._execute_action({
                 "type": "turn", "dx": 6, "dy": 0, "steps": 3,
                 "pulse_duration_ms": 0, "duration_ms": 10,
@@ -557,7 +578,7 @@ class PlayerTests(unittest.TestCase):
         )
 
         player._wait.reset_mock()
-        with patch_player("send_move_relative"):
+        with package_patch('player', 'send_move_relative'):
             player._execute_action({
                 "type": "turn", "dx": 6, "dy": 0, "steps": 3,
                 "pulse_duration_ms": 24,
@@ -570,7 +591,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._wait = Mock()
         player._center_cursor_for_turn = Mock()
-        with patch_player("send_move_relative"):
+        with package_patch('player', 'send_move_relative'):
             player._execute_action({
                 "type": "turn", "dx": 2, "dy": 0, "steps": 2,
                 "duration_ms": 14,
@@ -593,7 +614,7 @@ class PlayerTests(unittest.TestCase):
             100.040,                                      # mark_boundary
             100.040,                                      # play() 收尾 1
             100.040,                                      # play() 收尾 2
-        ]), patch_player("send_button"):
+        ]), package_patch('player', 'send_button'):
             player.play([
                 {"type": "mouse_button", "button": "left", "down": True},
                 {"type": "delay", "ms": 1},
@@ -604,8 +625,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._held_keys.add(65)
         player._held_buttons.add("left")
-        with patch_player("send_key", side_effect=RuntimeError("key")) as key, \
-             patch_player("send_button", side_effect=RuntimeError("button")) as button:
+        with package_patch('player', 'send_key', side_effect=RuntimeError('key')) as key, \
+             package_patch('player', 'send_button', side_effect=RuntimeError('button')) as button:
             player._release_all(None)
         key.assert_called_once_with(65, False)
         button.assert_called_once_with("left", False)
@@ -675,8 +696,8 @@ class PlayerTests(unittest.TestCase):
         player._relative_target_hwnd = 50
         player._status = Mock()
         with patch.object(player, "_input_target_hwnd", return_value=50), \
-             patch_player("is_window_process_foreground", return_value=False), \
-             patch_player("activate_window", return_value=True) as activate:
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player._ensure_foreground_for_input(None)
         activate.assert_called_once_with(50)
 
@@ -686,8 +707,8 @@ class PlayerTests(unittest.TestCase):
         player._relative_target_hwnd = 50
         player._status = Mock()
         with patch.object(player, "_input_target_hwnd", return_value=50), \
-             patch_player("is_window_process_foreground", return_value=True), \
-             patch_player("activate_window") as activate:
+             package_patch('player', 'is_window_process_foreground', return_value=True), \
+             package_patch('player', 'activate_window') as activate:
             player._ensure_foreground_for_input(None)
         activate.assert_not_called()
 
@@ -696,8 +717,8 @@ class PlayerTests(unittest.TestCase):
         player._activate_target = True
         player._status = Mock()
         with patch.object(player, "_input_target_hwnd", return_value=50), \
-             patch_player("is_window_process_foreground", return_value=False), \
-             patch_player("activate_window", return_value=True) as activate:
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player._restore_target_foreground(None)
         activate.assert_called_once_with(50)
 
@@ -835,10 +856,7 @@ class PlayerTests(unittest.TestCase):
         }
         screen = np.zeros((26, 160, 3), dtype=np.uint8)
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(screen, (100, 200)), create=True,
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200)), create=True):
             player._execute_row_list_condition_click(action, None, stack, 2)
 
         kwargs = player._row_list_result_route.call_args.kwargs
@@ -873,8 +891,8 @@ class PlayerTests(unittest.TestCase):
             "after_action": "continue", "run_code_after_action": True,
             "on_success_actions": [{"type": "delay", "ms": 25}],
         }
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template") as find, \
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template') as find, \
              patch.object(player, "_run_action_sequence") as run_segment:
             result = player._execute_image({
                 "type": "image_match", "module_ref": True,
@@ -903,9 +921,9 @@ class PlayerTests(unittest.TestCase):
             {"text": "7", "x": 130}, {"text": "1", "x": 10},
             {"text": "2", "x": 70},
         ]
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("recognize_region_with_boxes", return_value=("721", boxes)) as read, \
-             patch_player("find_template") as find:
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('721', boxes)) as read, \
+             package_patch('player', 'find_template') as find:
             result = player._execute_image(action, None)
         self.assertEqual(result, ("action_id", "equal-target"))
         read.assert_called_once_with((10, 20, 80, 30))
@@ -924,8 +942,8 @@ class PlayerTests(unittest.TestCase):
             "on_found": "jump", "found_jump_action_id": "equal-target",
             "on_timeout": "jump", "timeout_jump_action_id": "other-target",
         }
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("recognize_region_with_boxes", return_value=("4", [{"text": "4", "x": 1}])) as read:
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('4', [{'text': '4', 'x': 1}])) as read:
             result = player._execute_image(action, None)
         self.assertEqual(result, ("action_id", "other-target"))
         read.assert_called_once()
@@ -945,10 +963,8 @@ class PlayerTests(unittest.TestCase):
             "on_found": "jump", "found_jump_action_id": "equal-target",
             "on_timeout": "jump", "timeout_jump_action_id": "other-target",
         }
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("recognize_region_with_boxes", side_effect=[
-                 ("加载", []), ("００７", [{"text": "００７", "x": 1}]),
-             ]) as read:
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'recognize_region_with_boxes', side_effect=[('加载', []), ('００７', [{'text': '００７', 'x': 1}])]) as read:
             result = player._execute_image(action, None)
         self.assertEqual(result, ("action_id", "equal-target"))
         self.assertEqual(read.call_count, 2)
@@ -966,8 +982,8 @@ class PlayerTests(unittest.TestCase):
             "on_found": "jump", "found_jump_action_id": "equal-target",
             "on_timeout": "jump", "timeout_jump_action_id": "other-target",
         }
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("recognize_region_with_boxes", return_value=("加载", [])):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('加载', [])):
             result = player._execute_image(action, None)
         self.assertEqual(result, ("action_id", "other-target"))
         self.assertIn("模块 层数 读取结果：未读取到数字", logs)
@@ -979,7 +995,7 @@ class PlayerTests(unittest.TestCase):
             "name": "层数", "recognize": "number", "region": [1, 2, 30, 40],
             "blocking": False, "interval_ms": 50, "not_found_timeout_ms": 0,
         }
-        with patch_player("registered_module_object", return_value=module):
+        with package_patch('player', 'registered_module_object', return_value=module):
             with self.assertRaisesRegex(RuntimeError, "未设置比较数字"):
                 player._execute_image({
                     "type": "image_match", "module_ref": True,
@@ -988,16 +1004,10 @@ class PlayerTests(unittest.TestCase):
 
     def setUp(self):
         # 识别成功时 player 会调用检测框提醒；测试中拦截，避免创建真实窗口。
-        patcher = patch_player("show_overlay")
+        patcher = package_patch('player', 'show_overlay')
         patcher.start()
         self.addCleanup(patcher.stop)
-        self._row_list_capture = patch_player(
-            "capture_bgr",
-            side_effect=lambda region: (
-                np.zeros((region[3], region[2], 3), dtype=np.uint8),
-                (region[0], region[1]),
-            ),
-        )
+        self._row_list_capture = package_patch('player', 'capture_bgr', side_effect=lambda region: (np.zeros((region[3], region[2], 3), dtype=np.uint8), (region[0], region[1])))
         self._row_list_capture.start()
         self.addCleanup(self._row_list_capture.stop)
 
@@ -1098,7 +1108,7 @@ class PlayerTests(unittest.TestCase):
                 ACTION_ID_KEY: "target",
             },
         ]
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             player.play(actions)
         self.assertEqual(notices, [("到达目标动作", 1000)])
 
@@ -1116,7 +1126,7 @@ class PlayerTests(unittest.TestCase):
     def test_image_timeout_can_jump_to_one_based_action_row(self):
         notices = []
         player = MacroPlayer(on_notice=lambda text, duration: notices.append((text, duration)))
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -1144,7 +1154,7 @@ class PlayerTests(unittest.TestCase):
             {"type": "comment", "text": "后来插入的行", ACTION_ID_KEY: "inserted"},
             {"type": "notice", "text": "找到后跳转成功", "duration_ms": 1000, ACTION_ID_KEY: "target"},
         ]
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             player.play(actions)
         self.assertEqual(notices, [("找到后跳转成功", 1000)])
 
@@ -1155,7 +1165,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -1171,7 +1181,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             result = player._execute_image({
                 "template": "images/目标.png",
                 "timeout_ms": 0,
@@ -1187,7 +1197,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             result = player._execute_image({
                 "template": "images/目标.png",
                 "timeout_ms": 0,
@@ -1206,7 +1216,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", side_effect=[None, None, match]):
+        with package_patch('player', 'find_template', side_effect=[None, None, match]):
             result = player._execute_image({
                 "template": "images/目标.png",
                 "timeout_ms": 0,
@@ -1239,9 +1249,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None if len(calls) < 3 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button:
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button:
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -1269,9 +1279,9 @@ class PlayerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
             template_png = Path(folder) / "main.png"
             template_png.write_bytes(b"x")
-            with patch_player("find_template", return_value=match) as find, \
-                 patch_player("registered_template_region", return_value=[100, 50, 300, 200]), \
-                 patch_player("send_move_absolute"), patch_player("send_button"):
+            with package_patch('player', 'find_template', return_value=match) as find, \
+                 package_patch('player', 'registered_template_region', return_value=[100, 50, 300, 200]), \
+                 package_patch('player', 'send_move_absolute'), package_patch('player', 'send_button'):
                 player._execute_image({
                     "template": str(template_png),
                     "region_mode": "template",
@@ -1294,9 +1304,9 @@ class PlayerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
             template_png = Path(folder) / "main.png"
             template_png.write_bytes(b"x")
-            with patch_player("find_template", return_value=match) as find, \
-                 patch_player("registered_template_region", return_value=None), \
-                 patch_player("send_move_absolute"), patch_player("send_button"):
+            with package_patch('player', 'find_template', return_value=match) as find, \
+                 package_patch('player', 'registered_template_region', return_value=None), \
+                 package_patch('player', 'send_move_absolute'), package_patch('player', 'send_button'):
                 player._execute_image({
                     "template": str(template_png),
                     "region_mode": "template",
@@ -1313,7 +1323,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("recognize_region", return_value="体力不足，请补充"):
+        with package_patch('player', 'recognize_region', return_value='体力不足，请补充'):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
                 "timeout_ms": 0,
@@ -1330,10 +1340,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._wait = Mock()
         player._click_module_point = Mock()
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("12/12", []),
-        ) as recognize:
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('12/12', [])) as recognize:
             try:
                 result = player._execute_action({
                     "type": "ocr_compare",
@@ -1356,10 +1363,7 @@ class PlayerTests(unittest.TestCase):
     def test_ocr_compare_not_equal_jumps_to_selected_action(self):
         player = MacroPlayer()
         player._wait = Mock()
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("12/34", []),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('12/34', [])):
             try:
                 result = player._execute_action({
                     "type": "ocr_compare",
@@ -1379,10 +1383,7 @@ class PlayerTests(unittest.TestCase):
     def test_ocr_compare_invalid_text_uses_timeout_branch(self):
         player = MacroPlayer()
         player._wait = Mock()
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("没有有效格式", []),
-        ), patch(
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('没有有效格式', [])), patch(
             "macroflow.execution.player.time.perf_counter",
             side_effect=[100.0, 101.0],
         ):
@@ -1426,12 +1427,7 @@ class PlayerTests(unittest.TestCase):
             "button": "left", "click_count": 4,
             "timeout_ms": 0, "interval_ms": 200,
         }
-        with patch_player(
-            "find_template", return_value=image_match,
-        ) as find, patch_player(
-            "recognize_region_with_boxes",
-            side_effect=[("完成", [{"text": "完成"}]), ("8/8", [])],
-        ) as recognize:
+        with package_patch('player', 'find_template', return_value=image_match) as find, package_patch('player', 'recognize_region_with_boxes', side_effect=[('完成', [{'text': '完成'}]), ('8/8', [])]) as recognize:
             try:
                 result = player._execute_action(action, None)
             except RuntimeError as exc:
@@ -1453,12 +1449,7 @@ class PlayerTests(unittest.TestCase):
             "template": "images/shared.png", "region": [11, 22, 333, 444],
             "threshold": 0.91, "ignore_background": True,
         }
-        with patch_player(
-            "registered_module_object",
-            return_value=module_obj,
-        ), patch_player("find_template", return_value={
-            "center_x": 20, "center_y": 30,
-        }) as find:
+        with package_patch('player', 'registered_module_object', return_value=module_obj), package_patch('player', 'find_template', return_value={'center_x': 20, 'center_y': 30}) as find:
             matched = player._multi_condition_matches(condition, None)
 
         self.assertTrue(matched)
@@ -1488,11 +1479,7 @@ class PlayerTests(unittest.TestCase):
             "button": "left", "click_count": 4,
             "timeout_ms": 0, "interval_ms": 200,
         }
-        with patch_player(
-            "find_template", return_value=None,
-        ), patch_player(
-            "recognize_region_with_boxes",
-        ) as recognize:
+        with package_patch('player', 'find_template', return_value=None), package_patch('player', 'recognize_region_with_boxes') as recognize:
             try:
                 result = player._execute_action(action, None)
             except RuntimeError as exc:
@@ -1519,10 +1506,7 @@ class PlayerTests(unittest.TestCase):
             "button": "right", "click_count": 2,
             "timeout_ms": 0, "interval_ms": 200,
         }
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("5/6", []),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('5/6', [])):
             try:
                 result = player._execute_action(action, None)
             except RuntimeError as exc:
@@ -1536,10 +1520,7 @@ class PlayerTests(unittest.TestCase):
             "enabled": True, "type": "ocr", "ocr_mode": "number",
             "separator": "/", "relation": "equal", "region": [10, 20, 120, 40],
         }
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("没有数字对", []),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('没有数字对', [])):
             self.assertFalse(player._multi_condition_matches(condition, None))
 
     def test_row_list_clicks_first_matching_row_and_stops_scanning(self):
@@ -1576,10 +1557,7 @@ class PlayerTests(unittest.TestCase):
             "right_condition": {"type": "text", "expected_text": "游戏中"},
         }
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(np.zeros((78, 160, 3), dtype=np.uint8), (100, 200)),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(np.zeros((78, 160, 3), dtype=np.uint8), (100, 200))):
             player._diagnose_row_list_condition_click(action, None)
 
         self.assertEqual(player._row_list_condition_matches.call_count, 6)
@@ -1601,10 +1579,7 @@ class PlayerTests(unittest.TestCase):
             "right_condition": {"type": "text", "expected_text": "游戏中"},
         }
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(np.zeros((26, 160, 3), dtype=np.uint8), (100, 200)),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(np.zeros((26, 160, 3), dtype=np.uint8), (100, 200))):
             player._diagnose_row_list_condition_click(action, None, result_sink=results.append)
 
         self.assertEqual(results, logs)
@@ -1623,10 +1598,7 @@ class PlayerTests(unittest.TestCase):
         }
         snapshot = np.zeros((78, 160, 3), dtype=np.uint8)
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(snapshot, (100, 200)),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(snapshot, (100, 200))):
             result = player._diagnose_row_list_condition_click(action, None)
 
         self.assertEqual(result["subject"], "列表逐行")
@@ -1657,19 +1629,7 @@ class PlayerTests(unittest.TestCase):
             "left_condition": {"type": "text", "expected_text": "10/10"},
             "right_condition": {"type": "text", "expected_text": "游戏中"},
         }
-        with patch_player(
-            "load_image", return_value=image,
-        ) as load_image, patch_player(
-            "capture_bgr",
-            side_effect=AssertionError("选图测试不得重新截屏"),
-        ), patch_player(
-            "recognize_image_with_boxes",
-            side_effect=[
-                ("10/10", []), ("游戏中", []),
-                ("3/12", []), ("游戏中", []),
-                ("1/1", []), ("", []), ("", []),
-            ],
-        ):
+        with package_patch('player', 'load_image', return_value=image) as load_image, package_patch('player', 'capture_bgr', side_effect=AssertionError('选图测试不得重新截屏')), package_patch('player', 'recognize_image_with_boxes', side_effect=[('10/10', []), ('游戏中', []), ('3/12', []), ('游戏中', []), ('1/1', []), ('', []), ('', [])]):
             result = player._diagnose_row_list_condition_click(
                 action, None, image_path=image_path,
             )
@@ -1700,10 +1660,7 @@ class PlayerTests(unittest.TestCase):
             "left_condition": {"type": "text", "expected_text": "10/10"},
             "right_condition": {"type": "text", "expected_text": "游戏中"},
         }
-        with patch_player(
-            "load_image",
-            return_value=np.zeros((78, 160, 3), dtype=np.uint8),
-        ):
+        with package_patch('player', 'load_image', return_value=np.zeros((78, 160, 3), dtype=np.uint8)):
             with self.assertRaises(RuntimeError) as raised:
                 player._diagnose_row_list_condition_click(
                     action, None, image_path=image_path,
@@ -1724,7 +1681,7 @@ class PlayerTests(unittest.TestCase):
             "screenshot_path": "C:/images/list.png",
         }
 
-        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+        with patch("threading.Thread") as thread_class:
             app.test_row_list_condition_click(action, source="image")
             thread_class.call_args.kwargs["target"]()
 
@@ -1902,10 +1859,7 @@ class PlayerTests(unittest.TestCase):
             ({"type": "number", "separator": "/", "relation": "equal"}, "无效", False),
         ]
         for condition, recognized, expected in cases:
-            with self.subTest(condition=condition, recognized=recognized), patch_player(
-                "recognize_region_with_boxes",
-                return_value=(recognized, []),
-            ) as recognize:
+            with self.subTest(condition=condition, recognized=recognized), package_patch('player', 'recognize_region_with_boxes', return_value=(recognized, [])) as recognize:
                 self.assertEqual(
                     player._row_list_condition_matches(condition, (100, 200, 70, 26)),
                     expected,
@@ -1917,10 +1871,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer(on_log=logs.append)
         condition = {"type": "text", "expected_text": "刚开始", "match_mode": "equals"}
 
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("游戏中", [{"text": "游戏中"}]),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('游戏中', [{'text': '游戏中'}])):
             matched = player._row_list_condition_matches(
                 condition, (100, 200, 70, 26), "第1行左侧",
             )
@@ -1937,10 +1888,7 @@ class PlayerTests(unittest.TestCase):
     def test_row_list_logs_empty_ocr_as_not_recognized(self):
         logs = []
         player = MacroPlayer(on_log=logs.append)
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("", []),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('', [])):
             matched = player._row_list_condition_matches(
                 {"type": "number", "separator": "/", "relation": "not_equal"},
                 (100, 200, 70, 26), "第1行左侧",
@@ -1953,10 +1901,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         condition = {"type": "number", "separator": "/", "relation": "greater"}
 
-        with patch_player(
-            "recognize_region_with_boxes",
-            return_value=("11/12", []),
-        ):
+        with package_patch('player', 'recognize_region_with_boxes', return_value=('11/12', [])):
             with self.assertRaisesRegex(RuntimeError, "greater"):
                 player._row_list_condition_matches(condition, (100, 200, 70, 26))
 
@@ -1968,15 +1913,13 @@ class PlayerTests(unittest.TestCase):
             "ignore_background": True,
         }
         row_region = (100, 200, 70, 26)
-        with patch_player(
-            "registered_module_object", return_value=module,
-        ), patch_player("find_template", return_value={}) as find:
+        with package_patch('player', 'registered_module_object', return_value=module), package_patch('player', 'find_template', return_value={}) as find:
             self.assertTrue(player._row_list_condition_matches(condition, row_region))
         find.assert_called_once_with(
             resolve_path("images/live.png"), 0.91, row_region,
             ignore_background=True, scale=1.0,
         )
-        with patch_player("registered_module_object", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=None):
             with self.assertRaisesRegex(RuntimeError, "module:first"):
                 player._row_list_condition_matches(condition, row_region)
 
@@ -1992,9 +1935,7 @@ class PlayerTests(unittest.TestCase):
             "template": "images/right.png",
             "threshold": 0.9,
         }
-        with patch_player(
-            "registered_module_object", return_value=module,
-        ), patch_player("find_template", return_value={}):
+        with package_patch('player', 'registered_module_object', return_value=module), package_patch('player', 'find_template', return_value={}):
             self.assertTrue(
                 player._row_list_condition_matches(
                     condition, (100, 200, 70, 26), "第1行右侧",
@@ -2021,24 +1962,7 @@ class PlayerTests(unittest.TestCase):
             "threshold": 0.9, "ignore_background": False,
         }
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(screen, (100, 200)), create=True,
-        ) as capture, patch_player(
-            "recognize_image_with_boxes",
-            return_value=("11/12", [{"text": "11/12", "score": 0.98}]), create=True,
-        ), patch_player(
-            "find_template_in_image",
-            return_value={"center_x": 220, "center_y": 213}, create=True,
-        ), patch_player(
-            "registered_module_object", return_value=module,
-        ), patch_player(
-            "recognize_region_with_boxes",
-            side_effect=AssertionError("逐行扫描不得重新截图做 OCR"),
-        ), patch_player(
-            "find_template",
-            side_effect=AssertionError("逐行扫描不得重新截图识图"),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200)), create=True) as capture, package_patch('player', 'recognize_image_with_boxes', return_value=('11/12', [{'text': '11/12', 'score': 0.98}]), create=True), package_patch('player', 'find_template_in_image', return_value={'center_x': 220, 'center_y': 213}, create=True), package_patch('player', 'registered_module_object', return_value=module), package_patch('player', 'recognize_region_with_boxes', side_effect=AssertionError('逐行扫描不得重新截图做 OCR')), package_patch('player', 'find_template', side_effect=AssertionError('逐行扫描不得重新截图识图')):
             player._execute_row_list_condition_click(action, None)
 
         capture.assert_called_once_with((100, 200, 160, 26))
@@ -2059,22 +1983,7 @@ class PlayerTests(unittest.TestCase):
             "no_match_action": "finish",
         }
 
-        with patch_player(
-            "capture_bgr",
-            return_value=(screen, (100, 200)), create=True,
-        ), patch_player(
-            "recognize_image_with_boxes",
-            side_effect=[("", []), ("11/12", [{"text": "11/12", "score": 0.91}])],
-            create=True,
-        ) as recognize, patch_player(
-            "find_template_in_image",
-            return_value={"center_x": 220, "center_y": 213}, create=True,
-        ), patch_player("registered_module_object", return_value={
-            "name": "游戏中", "template": "images/game.png", "threshold": 0.9,
-        }), patch_player(
-            "recognize_region_with_boxes",
-            side_effect=AssertionError("不得为 OCR 重试重新截图"),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200)), create=True), package_patch('player', 'recognize_image_with_boxes', side_effect=[('', []), ('11/12', [{'text': '11/12', 'score': 0.91}])], create=True) as recognize, package_patch('player', 'find_template_in_image', return_value={'center_x': 220, 'center_y': 213}, create=True), package_patch('player', 'registered_module_object', return_value={'name': '游戏中', 'template': 'images/game.png', 'threshold': 0.9}), package_patch('player', 'recognize_region_with_boxes', side_effect=AssertionError('不得为 OCR 重试重新截图')):
             player._execute_row_list_condition_click(action, None)
 
         self.assertEqual(recognize.call_count, 2)
@@ -2195,9 +2104,7 @@ class PlayerTests(unittest.TestCase):
         for y in (25, 50, 75):
             screen[y:y + 1, :] = 190
 
-        with patch_player(
-            "capture_bgr", return_value=(screen, (100, 200)),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200))):
             player._execute_row_list_condition_click({
                 "type": "row_list_condition_click",
                 "list_region": [100, 200, 160, 78], "row_height": 26,
@@ -2224,9 +2131,7 @@ class PlayerTests(unittest.TestCase):
         for y in (23, 49, 77):
             screen[y:y + 1, :] = 190
 
-        with patch_player(
-            "capture_bgr", return_value=(screen, (100, 200)),
-        ):
+        with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200))):
             player._execute_row_list_condition_click({
                 "type": "row_list_condition_click",
                 "list_region": [100, 200, 160, 78], "row_height": 26,
@@ -2293,7 +2198,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("recognize_region", return_value="随便什么文字"):
+        with package_patch('player', 'recognize_region', return_value='随便什么文字'):
             result = player._execute_text_ocr({
                 "expected_text": "",
                 "timeout_ms": 0,
@@ -2309,7 +2214,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("recognize_region", return_value="确认购买？"):
+        with package_patch('player', 'recognize_region', return_value='确认购买？'):
             result = player._execute_text_ocr({
                 "expected_text": "确认",
                 "timeout_ms": 0,
@@ -2327,7 +2232,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("recognize_region", return_value=""), \
+        with package_patch('player', 'recognize_region', return_value=''), \
              patch("macroflow.execution.player.time.perf_counter", side_effect=[100.0, 100.05, 101.0]):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
@@ -2346,7 +2251,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("recognize_region", return_value="没有字"), \
+        with package_patch('player', 'recognize_region', return_value='没有字'), \
              patch("macroflow.execution.player.time.perf_counter", side_effect=[100.0, 101.0]):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
@@ -2363,7 +2268,7 @@ class PlayerTests(unittest.TestCase):
         # 超时后选择停止：抛出异常终止执行。
         player = MacroPlayer()
         player._wait = lambda milliseconds: None
-        with patch_player("recognize_region", return_value="没有字"), \
+        with package_patch('player', 'recognize_region', return_value='没有字'), \
              patch("macroflow.execution.player.time.perf_counter", side_effect=[100.0, 101.0]):
             with self.assertRaisesRegex(RuntimeError, "识别文字超时"):
                 player._execute_text_ocr({
@@ -2379,7 +2284,7 @@ class PlayerTests(unittest.TestCase):
         # timeout_ms=0：只识别一次，不轮询。
         player = MacroPlayer()
         player._wait = lambda milliseconds: None
-        with patch_player("recognize_region", return_value="") as recognize:
+        with package_patch('player', 'recognize_region', return_value='') as recognize:
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
                 "timeout_ms": 0,
@@ -2397,7 +2302,7 @@ class PlayerTests(unittest.TestCase):
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
         results = ["", "", "体力不足，请补充"]
-        with patch_player("recognize_region", side_effect=lambda _region: results.pop(0)), \
+        with package_patch('player', 'recognize_region', side_effect=lambda _region: results.pop(0)), \
              patch("macroflow.execution.player.time.perf_counter", side_effect=[100.0, 100.1, 100.2, 100.3]):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
@@ -2414,7 +2319,7 @@ class PlayerTests(unittest.TestCase):
         # 自定义区域经 DPI 缩放后传给截屏识别。
         player = MacroPlayer()
         player._wait = lambda milliseconds: None
-        with patch_player("recognize_region") as recognize:
+        with package_patch('player', 'recognize_region') as recognize:
             recognize.return_value = "命中文字"
             player._execute_text_ocr({
                 "region_mode": "custom",
@@ -2432,8 +2337,8 @@ class PlayerTests(unittest.TestCase):
         # 绑定窗口模式：使用目标窗口矩形做识别区域。
         player = MacroPlayer()
         player._wait = lambda milliseconds: None
-        with patch_player("recognize_region") as recognize, \
-             patch_player("get_window_rect", return_value=(1, 2, 800, 600)):
+        with package_patch('player', 'recognize_region') as recognize, \
+             package_patch('player', 'get_window_rect', return_value=(1, 2, 800, 600)):
             recognize.return_value = "命中文字"
             player._execute_text_ocr({
                 "region_mode": "window",
@@ -2466,9 +2371,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None if len(calls) < 3 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button:
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button:
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -2507,9 +2412,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button:
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button:
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -2547,9 +2452,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button:
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button:
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -2587,9 +2492,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None if len(calls) < 3 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button"):
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button'):
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -2612,8 +2517,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player._execute_action({
                 "type": "repeat_click", "button": "left",
                 "x": 100, "y": 200,
@@ -2631,8 +2536,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._execute_action({
                 "type": "repeat_click", "button": "right",
                 "x": 5, "y": 6,
@@ -2645,8 +2550,8 @@ class PlayerTests(unittest.TestCase):
     def test_repeat_click_aborts_when_stop_requested(self):
         player = MacroPlayer()
         player.stop_event.set()
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             with self.assertRaises(PlaybackStopped):
                 player._execute_action({
                     "type": "repeat_click", "x": 1, "y": 2,
@@ -2669,8 +2574,8 @@ class PlayerTests(unittest.TestCase):
         events: list[str] = []
         player.on_log = events.append
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button"):
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button'):
             player.handle_guard_hit(
                 {"click": (1129, 291), "button": "left", "click_count": 1},
             )
@@ -2686,8 +2591,8 @@ class PlayerTests(unittest.TestCase):
         traces: list[str] = []
         player.on_trace_line = traces.append
         player.on_guard_poll = lambda: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button"):
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button'):
             started = time.perf_counter()
             player.handle_guard_hit(
                 {"click": (1129, 291), "button": "left", "click_count": 1},
@@ -2707,8 +2612,8 @@ class PlayerTests(unittest.TestCase):
         player.on_trace_line = traces.append
         polls: list[int] = []
         player.on_guard_poll = lambda: polls.append(1)
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button"):
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button'):
             player.handle_guard_hit(
                 {"click": (1129, 291), "button": "left", "click_count": 1},
             )
@@ -2742,8 +2647,8 @@ class PlayerTests(unittest.TestCase):
         player.on_trace_line = traces.append
         player._wait = lambda milliseconds: None
         guard_click = {"click": (897, 462), "button": "left", "click_count": 1}
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             # 1) 全局检测守卫先点掉“退出冒险频道的确定”。
             player.handle_guard_hit(guard_click)
             self.assertEqual(len(button.call_args_list), 2)
@@ -2769,8 +2674,8 @@ class PlayerTests(unittest.TestCase):
         player.on_trace_line = lambda text: None
         player.on_guard_poll = lambda: None
         guard_click = {"click": (897, 462), "button": "left", "click_count": 1}
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player.handle_guard_hit(guard_click)
             self.assertEqual(len(button.call_args_list), 2)
             player._execute_action({
@@ -2785,8 +2690,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(897, 462, "left", 1, None)
             self.assertEqual(len(button.call_args_list), 2)
             player.handle_guard_hit(
@@ -2802,8 +2707,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(897, 462, "left", 1, None)
             player._last_click["at"] -= CLICK_DEDUP_WINDOW_S + 0.01
             player._click_module_point(897, 462, "left", 1, None)
@@ -2814,8 +2719,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(897, 462, "left", 1, None)
             player._click_module_point(1235, 491, "left", 1, None)
         self.assertEqual(len(button.call_args_list), 4)
@@ -2825,8 +2730,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(897, 462, "left", 1, None)
             player._click_module_point(897, 462, "right", 1, None)
         self.assertEqual(len(button.call_args_list), 4)
@@ -2836,8 +2741,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(120, 210, "left", 1, None)
             player._click_module_point(120, 210, "left", 1, None)
         self.assertEqual(len(button.call_args_list), 4)
@@ -2847,8 +2752,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(897, 462, "left", 1, None)
             player._execute_action({
                 "type": "repeat_click", "button": "left",
@@ -2862,8 +2767,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._execute_action({
                 "type": "repeat_click", "button": "left",
                 "x": 841, "y": 103, "count": 2, "interval_ms": 100, "hold_ms": 30,
@@ -2875,8 +2780,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player.on_trace_line = lambda text: None
         player._wait = lambda milliseconds: None
-        with patch_player("send_move_absolute"), \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute'), \
+             package_patch('player', 'send_button') as button:
             player._click_module_point(400, 300, "left", 1, None)
             player._execute_action({
                 "type": "repeat_click", "button": "left",
@@ -2906,9 +2811,9 @@ class PlayerTests(unittest.TestCase):
                 calls.append(str(template))
                 return next(sequence)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button"):
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button'):
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -2949,9 +2854,9 @@ class PlayerTests(unittest.TestCase):
                 main_attempts["count"] += 1
                 return None if main_attempts["count"] == 1 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute"), \
-                 patch_player("send_button"):
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute'), \
+                 package_patch('player', 'send_button'):
                 result = player._execute_image({
                     "template": str(main_png),
                     "region_mode": "custom", "region": [0, 0, 100, 100],
@@ -2992,9 +2897,9 @@ class PlayerTests(unittest.TestCase):
                 main_attempts["count"] += 1
                 return None if main_attempts["count"] == 1 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute"), \
-                 patch_player("send_button"):
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute'), \
+                 package_patch('player', 'send_button'):
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -3033,9 +2938,9 @@ class PlayerTests(unittest.TestCase):
                     return dict(fallback_match)
                 return None if len(calls) < 2 else dict(main_match)
 
-            with patch_player("find_template", side_effect=fake_find), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button") as button:
+            with package_patch('player', 'find_template', side_effect=fake_find), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button') as button:
                 result = player._execute_image({
                     "template": str(main_png),
                     "fallback_template": str(fallback_png),
@@ -3104,7 +3009,7 @@ class PlayerTests(unittest.TestCase):
             "template": "images/g.png", "after_action": "click_match",
             "click_count": 2,
         }
-        with patch_app("registered_module_object", return_value=module_obj):
+        with package_patch('app', 'registered_module_object', return_value=module_obj):
             kind, detail, _delay = action_summary({
                 "type": "global_detect", "template": "images/g.png",
                 "module_ref": True, "module_key": "images/g.png",
@@ -3120,7 +3025,7 @@ class PlayerTests(unittest.TestCase):
             "enabled": True, "category": "script_global", "name": "结算确定",
             "template": "images/g.png", "after_action": "click_match",
         }
-        with patch_app("registered_module_object", return_value=module_obj):
+        with package_patch('app', 'registered_module_object', return_value=module_obj):
             _kind, detail, _delay = action_summary({
                 "type": "global_detect", "template": "images/g.png",
                 "module_ref": True, "module_key": "images/g.png",
@@ -3181,7 +3086,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             result = player._execute_image({
                 "template": "images/目标.png",
                 "on_found": "jump",
@@ -3198,8 +3103,8 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match), \
-             patch_player("show_overlay"):
+        with package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'show_overlay'):
             result = player._execute_image({
                 "template": "images/目标.png",
                 "on_found": "jump",
@@ -3220,8 +3125,8 @@ class PlayerTests(unittest.TestCase):
         actions_seen = []
         statuses = []
         player.on_status = statuses.append
-        with patch_player("find_template", return_value=match) as find, \
-             patch_player("show_overlay"):
+        with package_patch('player', 'find_template', return_value=match) as find, \
+             package_patch('player', 'show_overlay'):
             player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -3258,7 +3163,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -3319,8 +3224,8 @@ class PlayerTests(unittest.TestCase):
             "module_key": "module:专注", "module_ref": True,
             "region_mode": "template", "delay_ms": 0,
         }]
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player("find_template", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'find_template', return_value=None):
             player.play(actions)
         self.assertTrue(
             any("模块 专注 连续" in text and "未识别到" in text
@@ -3343,8 +3248,8 @@ class PlayerTests(unittest.TestCase):
             "region_mode": "template", "blocking_timeout_enabled": True,
             "blocking_timeout_ms": 0,
         }
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', return_value=None):
             try:
                 result = player._execute_image(action, None)
             except PlaybackStopped:
@@ -3378,9 +3283,9 @@ class PlayerTests(unittest.TestCase):
             {"type": "notice", "text": "不应执行", "action_id": "middle"},
             {"type": "notice", "text": "目标已执行", "action_id": "target"},
         ]
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template", return_value=match), \
-             patch_player("show_overlay"):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'show_overlay'):
             player.play(actions)
 
         self.assertEqual(notices, ["目标已执行"])
@@ -3410,8 +3315,8 @@ class PlayerTests(unittest.TestCase):
             {"type": "notice", "text": "不应执行", "action_id": "middle"},
             {"type": "notice", "text": "失败目标已执行", "action_id": "target"},
         ]
-        with patch_player("registered_module_object", return_value=module), \
-             patch_player("find_template", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', return_value=None):
             player.play(actions)
 
         self.assertEqual(notices, ["失败目标已执行"])
@@ -3427,9 +3332,9 @@ class PlayerTests(unittest.TestCase):
             "blocking": False, "interval_ms": 50, "threshold": 0.85,
             "delay_ms": 0, "after_action": "continue", "run_code_after_action": False,
         }
-        with patch_player("registered_module_object", return_value=success_module), \
-             patch_player("find_template", return_value=match), \
-             patch_player("show_overlay"):
+        with package_patch('player', 'registered_module_object', return_value=success_module), \
+             package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'show_overlay'):
             ended_on_success = MacroPlayer().play([
                 {
                     "type": "image_match", "module_ref": True,
@@ -3442,8 +3347,8 @@ class PlayerTests(unittest.TestCase):
             success_module, name="失败模块", run_code_on_timeout=True,
             not_found_timeout_ms=0, on_timeout_actions=[],
         )
-        with patch_player("registered_module_object", return_value=failure_module), \
-             patch_player("find_template", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=failure_module), \
+             package_patch('player', 'find_template', return_value=None):
             ended_on_failure = MacroPlayer().play([
                 {
                     "type": "image_match", "module_ref": True,
@@ -3469,7 +3374,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("send_move_absolute"), patch_player("send_button"):
+        with package_patch('player', 'send_move_absolute'), package_patch('player', 'send_button'):
             player._after_module_success(obj, match, None, None, 0)
         self.assertTrue(
             any("模块 结算确定 已点击 (25, 40)" in text for text in logs),
@@ -3492,8 +3397,8 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player._after_module_success(obj, match, None, None, 0)
         move.assert_called_once_with(25, 40)
         self.assertEqual(button.call_count, 6)
@@ -3524,9 +3429,9 @@ class PlayerTests(unittest.TestCase):
             {"type": "notice", "text": "脚本中间动作"},
             {"type": "notice", "text": "脚本最后一行"},
         ]
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player("find_template", return_value=match), \
-             patch_player("show_overlay"):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'show_overlay'):
             player.play(actions)
 
         self.assertEqual(notices, ["脚本最后一行"])
@@ -3543,9 +3448,9 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player("find_template", return_value=match) as find, \
-             patch_player("show_overlay"):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'find_template', return_value=match) as find, \
+             package_patch('player', 'show_overlay'):
             player.play([{
                 "type": "image_match", "template": "images/module.png",
                 "module_key": "module:test", "module_ref": True,
@@ -3565,8 +3470,8 @@ class PlayerTests(unittest.TestCase):
             "run_code_after_action": True,
             "on_success_actions": [{"type": "notice", "text": "不应执行"}],
         }
-        with patch_player("registered_module_object", return_value=obj), \
-             patch_player("find_template", return_value=None):
+        with package_patch('player', 'registered_module_object', return_value=obj), \
+             package_patch('player', 'find_template', return_value=None):
             result = player._execute_image({
                 "type": "image_match", "template": "images/missing.png",
                 "module_ref": True,
@@ -3588,8 +3493,8 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("registered_module_object", return_value=obj) as lookup, \
-             patch_player("find_template", return_value=match) as find:
+        with package_patch('player', 'registered_module_object', return_value=obj) as lookup, \
+             package_patch('player', 'find_template', return_value=match) as find:
             player._execute_image({
                 "type": "image_match", "template": "images/shared.png",
                 "module_key": "module:independent", "module_ref": True,
@@ -3603,8 +3508,8 @@ class PlayerTests(unittest.TestCase):
     def test_activate_window_action_resolves_saved_signature(self):
         player = MacroPlayer()
         target = WindowInfo(456, "游戏窗口", "GameWnd", r"C:\\Game\\game.exe")
-        with patch_player("resolve_window_signature", return_value=target), \
-             patch_player("activate_window", return_value=True) as activate:
+        with package_patch('player', 'resolve_window_signature', return_value=target), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player._execute_action({
                 "type": "activate_window",
                 "window": {
@@ -3773,7 +3678,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer(on_notice=lambda text, duration: notices.append((text, duration)))
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -3790,7 +3695,7 @@ class PlayerTests(unittest.TestCase):
     def test_image_timeout_can_end_top_level_script(self):
         statuses = []
         player = MacroPlayer(on_status=statuses.append)
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             advanced = player.play([
                 {
                     "type": "image_match", "template": "images/目标.png",
@@ -3815,7 +3720,7 @@ class PlayerTests(unittest.TestCase):
                 {"type": "unknown_must_be_skipped"},
             ]), referenced_path)
             player = MacroPlayer(on_notice=lambda text, duration: notices.append(text))
-            with patch_player("find_template", return_value=None):
+            with package_patch('player', 'find_template', return_value=None):
                 advanced = player.play([
                     {"type": "script_ref", "script": str(referenced_path), "delay_ms": 0},
                     {"type": "notice", "text": "外层继续", "duration_ms": 1},
@@ -3843,7 +3748,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             player.play([{
                 "type": "image_match", "template": "images/目标.png",
                 "on_found": "continue",
@@ -3857,9 +3762,9 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.95,
         }
-        with patch_player("find_template", return_value=match), \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button"):
+        with package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
             player._execute_image({
                 "template": "images/目标.png",
                 "on_found": "click",
@@ -3877,7 +3782,7 @@ class PlayerTests(unittest.TestCase):
             "x": 10, "y": 20, "width": 30, "height": 40,
             "center_x": 25, "center_y": 40, "score": 0.936,
         }
-        with patch_player("find_template", return_value=match):
+        with package_patch('player', 'find_template', return_value=match):
             player._execute_image({
                 "template": "images/目标.png",
                 "show_result_notice": True,
@@ -3891,7 +3796,7 @@ class PlayerTests(unittest.TestCase):
     def test_image_result_notice_reports_timeout_when_continuing(self):
         notices = []
         player = MacroPlayer(on_notice=lambda text, duration: notices.append((text, duration)))
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             player._execute_image({
                 "template": "images/目标.png",
                 "timeout_ms": 0,
@@ -3918,13 +3823,10 @@ class PlayerTests(unittest.TestCase):
             "text": "当前体力不足", "x": 80, "y": 60, "width": 80, "height": 40,
             "center_x": 120, "center_y": 80, "score": 0.99,
         }
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player(
-                 "recognize_region_with_boxes",
-                 return_value=("当前体力不足", [found]),
-             ) as recognize, \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button"):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('当前体力不足', [found])) as recognize, \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
             player._execute_image({
                 "type": "image_match", "template": "", "module_ref": True,
                 "module_key": "module:text", "region_mode": "template", "delay_ms": 0,
@@ -3940,15 +3842,8 @@ class PlayerTests(unittest.TestCase):
     def test_text_module_miss_times_out_and_continues(self):
         player = MacroPlayer()
         player._wait = Mock()
-        with patch_player("registered_module_object", return_value={
-            "recognize": "text", "expected_text": "体力不足", "match_mode": "contains",
-            "template": "", "region": [], "blocking": False, "interval_ms": 250,
-            "threshold": 0.85, "after_action": "continue", "run_code_after_action": False,
-        }), \
-             patch_player(
-                 "recognize_region_with_boxes",
-                 return_value=("其他文字", [{"text": "其他文字"}]),
-             ):
+        with package_patch('player', 'registered_module_object', return_value={'recognize': 'text', 'expected_text': '体力不足', 'match_mode': 'contains', 'template': '', 'region': [], 'blocking': False, 'interval_ms': 250, 'threshold': 0.85, 'after_action': 'continue', 'run_code_after_action': False}), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('其他文字', [{'text': '其他文字'}])):
             result = player._execute_image({
                 "type": "image_match", "template": "", "module_ref": True,
                 "module_key": "module:text", "region_mode": "template",
@@ -3961,16 +3856,7 @@ class PlayerTests(unittest.TestCase):
         statuses = []
         player = MacroPlayer(on_status=statuses.append, on_log=logs.append)
         player._wait = Mock()
-        with patch_player("registered_module_object", return_value={
-            "name": "奖励可领取", "recognize": "text",
-            "expected_text": "可领取", "match_mode": "contains",
-            "template": "", "region": [], "blocking": False,
-            "interval_ms": 250, "threshold": 0.85,
-            "after_action": "continue", "run_code_after_action": False,
-        }), patch_player(
-            "recognize_region_with_boxes",
-            return_value=("可锁取", [{"text": "可锁取", "center_x": 10, "center_y": 20}]),
-        ):
+        with package_patch('player', 'registered_module_object', return_value={'name': '奖励可领取', 'recognize': 'text', 'expected_text': '可领取', 'match_mode': 'contains', 'template': '', 'region': [], 'blocking': False, 'interval_ms': 250, 'threshold': 0.85, 'after_action': 'continue', 'run_code_after_action': False}), package_patch('player', 'recognize_region_with_boxes', return_value=('可锁取', [{'text': '可锁取', 'center_x': 10, 'center_y': 20}])):
             player._execute_image({
                 "type": "image_match", "template": "", "module_ref": True,
                 "module_key": "module:text", "region_mode": "template",
@@ -3996,17 +3882,10 @@ class PlayerTests(unittest.TestCase):
             "ocr_offset_up": 2, "ocr_offset_down": 7,
             "ocr_offset_left": 3, "ocr_offset_right": 13,
         }
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player(
-                 "recognize_region_with_boxes",
-                 side_effect=[
-                     ("加载中", [{"text": "加载中", "center_x": 50, "center_y": 60}]),
-                     ("仍在加载中", [{"text": "仍在加载中", "center_x": 80, "center_y": 100}]),
-                     ("完成", [{"text": "完成", "center_x": 20, "center_y": 30}]),
-                 ],
-             ) as recognize, \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button"):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'recognize_region_with_boxes', side_effect=[('加载中', [{'text': '加载中', 'center_x': 50, 'center_y': 60}]), ('仍在加载中', [{'text': '仍在加载中', 'center_x': 80, 'center_y': 100}]), ('完成', [{'text': '完成', 'center_x': 20, 'center_y': 30}])]) as recognize, \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
             result = player._execute_image({
                 "type": "image_match", "template": "", "module_ref": True,
                 "module_key": "module:text", "region_mode": "template",
@@ -4041,11 +3920,11 @@ class PlayerTests(unittest.TestCase):
             "x": 100, "y": 200, "width": 40, "height": 20,
             "center_x": 120, "center_y": 210, "score": 0.96,
         }
-        with patch_player("registered_module_object", return_value=module_obj), \
-             patch_player("find_template", side_effect=[found, found, None]) as find, \
-             patch_player("show_overlay"), \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button"):
+        with package_patch('player', 'registered_module_object', return_value=module_obj), \
+             package_patch('player', 'find_template', side_effect=[found, found, None]) as find, \
+             package_patch('player', 'show_overlay'), \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
             result = player._execute_image({
                 "type": "image_match", "template": "images/claim.png",
                 "module_ref": True, "module_key": "module:claim",
@@ -4066,17 +3945,8 @@ class PlayerTests(unittest.TestCase):
         player._wait = Mock()
         player._run_action_sequence = Mock()
         segment = [{"type": "delay", "ms": 25}]
-        with patch_player("registered_module_object", return_value={
-            "recognize": "text", "expected_text": "体力不足", "match_mode": "contains",
-            "template": "", "region": [], "blocking": True, "interval_ms": 250,
-            "threshold": 0.85, "after_action": "continue", "run_code_after_action": False,
-            "run_code_on_timeout": True, "not_found_timeout_ms": 0,
-            "on_timeout_actions": segment,
-        }), \
-             patch_player(
-                 "recognize_region_with_boxes",
-                 return_value=("其他文字", [{"text": "其他文字"}]),
-             ):
+        with package_patch('player', 'registered_module_object', return_value={'recognize': 'text', 'expected_text': '体力不足', 'match_mode': 'contains', 'template': '', 'region': [], 'blocking': True, 'interval_ms': 250, 'threshold': 0.85, 'after_action': 'continue', 'run_code_after_action': False, 'run_code_on_timeout': True, 'not_found_timeout_ms': 0, 'on_timeout_actions': segment}), \
+             package_patch('player', 'recognize_region_with_boxes', return_value=('其他文字', [{'text': '其他文字'}])):
             result = player._execute_image({
                 "type": "image_match", "template": "", "module_ref": True,
                 "module_key": "module:text", "region_mode": "template",
@@ -4102,7 +3972,7 @@ class PlayerTests(unittest.TestCase):
         # 滚轮动作曾只传 dy：send_scroll(dx, dy) 双参数签名下直接 TypeError，
         # 且纵/横滚轮永远发不出。回归：dx、dy 必须原样传给 send_scroll。
         player = MacroPlayer()
-        with patch_player("send_scroll") as scroll:
+        with package_patch('player', 'send_scroll') as scroll:
             player.play([
                 {"type": "scroll", "dx": 3, "dy": -2, "delay_ms": 0},
             ])
@@ -4112,8 +3982,8 @@ class PlayerTests(unittest.TestCase):
         # 「鼠标在指定位置滚轮上下滑动」：滚轮只发给光标下的窗口/控件，
         # 所以必须先移到动作坐标，再滚指定的方向与格数。
         player = MacroPlayer()
-        with patch_player("send_scroll") as scroll, \
-             patch_player("send_move_absolute") as move:
+        with package_patch('player', 'send_scroll') as scroll, \
+             package_patch('player', 'send_move_absolute') as move:
             player.play([
                 {"type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360, "delay_ms": 0},
             ])
@@ -4123,8 +3993,8 @@ class PlayerTests(unittest.TestCase):
     def test_scroll_playback_without_position_keeps_current_cursor(self):
         # 手写的滚轮动作没有坐标时只在光标当前位置滚动，不能把光标甩到 (0, 0)。
         player = MacroPlayer()
-        with patch_player("send_scroll") as scroll, \
-             patch_player("send_move_absolute") as move:
+        with package_patch('player', 'send_scroll') as scroll, \
+             package_patch('player', 'send_move_absolute') as move:
             player.play([{"type": "scroll", "dx": 0, "dy": 3, "delay_ms": 0}])
         move.assert_not_called()
         scroll.assert_called_once_with(0, 3)
@@ -4148,7 +4018,7 @@ class PlayerTests(unittest.TestCase):
             template_path = Path(folder) / "t.png"
             template = np.zeros((8, 8, 3), dtype=np.uint8)
             cv2.imwrite(str(template_path), template)
-            with patch_player("find_template", return_value=None) as find:
+            with package_patch('player', 'find_template', return_value=None) as find:
                 player._execute_image({
                     "type": "image_match", "template": str(template_path),
                     "timeout_ms": 0, "interval_ms": 50, "threshold": 0.85,
@@ -4158,7 +4028,7 @@ class PlayerTests(unittest.TestCase):
 
     def test_key_press_skips_zero_vk(self):
         player = MacroPlayer()
-        with patch_player("send_key") as send:
+        with package_patch('player', 'send_key') as send:
             player.play([{"type": "key_press", "vk": 0, "hold_ms": 10}])
         send.assert_not_called()
 
@@ -4167,7 +4037,7 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         # 第一次 _wait 是动作的延时等待（0ms），第二次是按住等待：在其中停止。
         player._wait = Mock(side_effect=[None, PlaybackStopped()])
-        with patch_player("send_key") as send:
+        with package_patch('player', 'send_key') as send:
             player.play([{"type": "key_press", "vk": 65, "hold_ms": 300}])
         self.assertEqual(
             [call.args for call in send.call_args_list], [(65, True), (65, False)],
@@ -4176,8 +4046,8 @@ class PlayerTests(unittest.TestCase):
     def test_click_stop_during_hold_releases_button(self):
         player = MacroPlayer()
         player._wait = Mock(side_effect=[None, PlaybackStopped()])
-        with patch_player("send_button") as send, \
-             patch_player("send_move_absolute"):
+        with package_patch('player', 'send_button') as send, \
+             package_patch('player', 'send_move_absolute'):
             player.play([{"type": "click", "x": 10, "y": 20, "hold_ms": 300}])
         self.assertEqual(
             [call.args for call in send.call_args_list],
@@ -4199,9 +4069,9 @@ class PlayerTests(unittest.TestCase):
 
     def test_activation_window_runs_once_then_target_is_raised(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("is_window_process_foreground", return_value=True), \
-             patch_player("activate_window", return_value=True) as activate:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=True), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player.play(
                 [{"type": "comment"}], hwnd=123,
                 activation_hwnd=456, activate_target=True,
@@ -4212,9 +4082,9 @@ class PlayerTests(unittest.TestCase):
 
     def test_prepared_activation_window_is_not_activated_again_by_player(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("is_window_process_foreground", return_value=True), \
-             patch_player("activate_window", return_value=True) as activate:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=True), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player.play(
                 [{"type": "comment"}], hwnd=123,
                 activation_hwnd=456, activation_prepared=True,
@@ -4224,9 +4094,9 @@ class PlayerTests(unittest.TestCase):
 
     def test_play_start_raises_target_only_when_not_foreground(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("is_window_process_foreground", side_effect=[False, True]), \
-             patch_player("activate_window", return_value=True) as activate:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', side_effect=[False, True]), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player.play(
                 [{"type": "comment"}], hwnd=123,
                 activation_hwnd=456, activate_target=True,
@@ -4237,8 +4107,8 @@ class PlayerTests(unittest.TestCase):
 
     def test_explicit_activation_window_is_raised_when_target_activation_is_off(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("activate_window", return_value=True) as activate:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'activate_window', return_value=True) as activate:
             player.play(
                 [{"type": "comment"}], hwnd=123,
                 activation_hwnd=456, activate_target=False,
@@ -4247,18 +4117,18 @@ class PlayerTests(unittest.TestCase):
 
     def test_disabled_auto_activation_does_not_raise_target_window(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("is_window_process_foreground", return_value=False), \
-             patch_player("activate_window") as activate:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window') as activate:
             player.play([{"type": "comment"}], hwnd=123, activate_target=False)
         activate.assert_not_called()
 
     def test_stale_bound_window_does_not_stop_ordinary_actions(self):
         logs = []
         player = MacroPlayer(on_log=logs.append)
-        with patch_player("is_window", return_value=False), \
-             patch_player("activate_window") as activate, \
-             patch_player("send_move_absolute") as move:
+        with package_patch('player', 'is_window', return_value=False), \
+             package_patch('player', 'activate_window') as activate, \
+             package_patch('player', 'send_move_absolute') as move:
             player.play([
                 {"type": "mouse_move", "mode": "absolute", "x": 120, "y": 240},
             ], hwnd=123)
@@ -4272,8 +4142,8 @@ class PlayerTests(unittest.TestCase):
         # 相对移动是系统级事件（MOUSEEVENTF_MOVE），窗口失效时不再报错，
         # 直接发送到当前前台窗口（通用转向，不区分游戏/桌面窗口）。
         player = MacroPlayer()
-        with patch_player("is_window", return_value=False), \
-             patch_player("send_move_relative") as move:
+        with package_patch('player', 'is_window', return_value=False), \
+             package_patch('player', 'send_move_relative') as move:
             player.play([
                 {"type": "mouse_move", "mode": "relative", "dx": 2, "dy": 3},
             ], hwnd=123)
@@ -4281,9 +4151,9 @@ class PlayerTests(unittest.TestCase):
 
     def test_relative_action_resolves_game_window_created_after_workflow_start(self):
         player = MacroPlayer(on_target_window_request=Mock(return_value=456))
-        with patch_player("is_window", side_effect=lambda hwnd: hwnd == 456), \
-             patch_player("activate_window", return_value=True) as activate, \
-             patch_player("send_move_relative") as move:
+        with package_patch('player', 'is_window', side_effect=lambda hwnd: hwnd == 456), \
+             package_patch('player', 'activate_window', return_value=True) as activate, \
+             package_patch('player', 'send_move_relative') as move:
             player.play([
                 {"type": "mouse_move", "mode": "relative", "dx": 2, "dy": 3},
             ], hwnd=None)
@@ -4294,10 +4164,10 @@ class PlayerTests(unittest.TestCase):
     def test_relative_move_sends_when_auto_activation_off_and_not_foreground(self):
         # 关闭自动前置且目标窗口不在前台：仅提示，仍直接发送相对移动。
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("is_window_process_foreground", return_value=False), \
-             patch_player("activate_window") as activate, \
-             patch_player("send_move_relative") as move:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window') as activate, \
+             package_patch('player', 'send_move_relative') as move:
             player.play(
                 [{"type": "mouse_move", "mode": "relative", "dx": 2, "dy": 3}],
                 hwnd=123, activate_target=False,
@@ -4310,8 +4180,8 @@ class PlayerTests(unittest.TestCase):
         target = {"left": 0, "top": 0, "width": 1280, "height": 720}
         self.assertEqual(scale_screen_point(960, 540, source, target), (640, 360))
         player = MacroPlayer()
-        with patch_player("get_playback_screen_rect", return_value=target), \
-             patch_player("send_move_absolute") as move:
+        with package_patch('player', 'get_playback_screen_rect', return_value=target), \
+             package_patch('player', 'send_move_absolute') as move:
             player.play(
                 [{"type": "mouse_move", "mode": "absolute", "x": 960, "y": 540}],
                 source_screen=source,
@@ -4333,11 +4203,11 @@ class PlayerTests(unittest.TestCase):
                 "second_match_template": str(second_path),
                 "second_match_click_target": "first",
             }
-            with patch_player("registered_template_region", return_value=[5, 6, 70, 80]), \
-                 patch_player("find_template", return_value=second) as find, \
-                 patch_player("show_overlay"), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button"):
+            with package_patch('player', 'registered_template_region', return_value=[5, 6, 70, 80]), \
+                 package_patch('player', 'find_template', return_value=second) as find, \
+                 package_patch('player', 'show_overlay'), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button'):
                 player._execute_second_match(obj, None, first)
             find.assert_called_once_with(second_path, 0.85, (5, 6, 70, 80),
                                          ignore_background=False, scale=1.0)
@@ -4360,10 +4230,10 @@ class PlayerTests(unittest.TestCase):
                 "second_match_click_target": "custom_region",
                 "second_match_click_region": [100, 200, 80, 40],
             }
-            with patch_player("find_template", return_value=second), \
-                 patch_player("show_overlay"), \
-                 patch_player("send_move_absolute") as move, \
-                 patch_player("send_button"):
+            with package_patch('player', 'find_template', return_value=second), \
+                 package_patch('player', 'show_overlay'), \
+                 package_patch('player', 'send_move_absolute') as move, \
+                 package_patch('player', 'send_button'):
                 player._execute_second_match(obj, None)
             move.assert_called_once_with(140, 220)
 
@@ -4409,9 +4279,9 @@ class PlayerTests(unittest.TestCase):
     def test_play_click_current_position_uses_cursor(self):
         # 点击鼠标当前位置：不移动光标、不缩放，鼠标在哪就在哪点击。
         player = MacroPlayer()
-        with patch_player("get_cursor_pos", return_value=(777, 888)) as cursor, \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'get_cursor_pos', return_value=(777, 888)) as cursor, \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player.play(
                 [{"type": "click", "button": "left", "pos_mode": "current",
                   "hold_ms": 0, "delay_ms": 0}],
@@ -4426,8 +4296,8 @@ class PlayerTests(unittest.TestCase):
     def test_play_click_fixed_position_moves_and_scales(self):
         player = MacroPlayer()
         player._scale_point = Mock(side_effect=lambda x, y: (x * 2, y * 2))
-        with patch_player("send_move_absolute") as move, \
-             patch_player("send_button") as button:
+        with package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button') as button:
             player.play(
                 [{"type": "click", "button": "left", "x": 50, "y": 60,
                   "hold_ms": 0, "delay_ms": 0}],
@@ -4605,9 +4475,9 @@ class PlayerTests(unittest.TestCase):
 
     def test_relative_move_uses_121_compatibility_by_default(self):
         player = MacroPlayer()
-        with patch_player("is_window", return_value=True), \
-             patch_player("activate_window", return_value=True), \
-             patch_player("send_move_relative") as send_relative:
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'activate_window', return_value=True), \
+             package_patch('player', 'send_move_relative') as send_relative:
             player.play([
                 {"type": "mouse_move", "mode": "relative", "dx": 12, "dy": -4},
             ], hwnd=123)
@@ -4779,8 +4649,8 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         statuses = []
         player._status = lambda text: statuses.append(text)
-        with patch_player("is_process_running", return_value=False), \
-             patch_player("taskkill_process") as taskkill:
+        with package_patch('player', 'is_process_running', return_value=False), \
+             package_patch('player', 'taskkill_process') as taskkill:
             player._execute_close_app({
                 "type": "close_app", "name": "clash-verge.exe",
                 "graceful": True, "graceful_wait_ms": 2000,
@@ -4793,8 +4663,8 @@ class PlayerTests(unittest.TestCase):
         statuses = []
         player._status = lambda text: statuses.append(text)
         # running → graceful → still running (wait expired) → force → gone
-        with patch_player("is_process_running", side_effect=[True, True, True, True, False]), \
-             patch_player("taskkill_process", side_effect=[(0, ""), (0, "")]) as taskkill:
+        with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
+             package_patch('player', 'taskkill_process', side_effect=[(0, ''), (0, '')]) as taskkill:
             player._execute_close_app({
                 "type": "close_app", "name": "clash-verge.exe",
                 "graceful": True, "graceful_wait_ms": 0,
@@ -4807,8 +4677,8 @@ class PlayerTests(unittest.TestCase):
 
     def test_close_app_force_direct(self):
         player = MacroPlayer()
-        with patch_player("is_process_running", side_effect=[True, True, False]), \
-             patch_player("taskkill_process", side_effect=[(0, "")]) as taskkill:
+        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
+             package_patch('player', 'taskkill_process', side_effect=[(0, '')]) as taskkill:
             player._execute_close_app({
                 "type": "close_app", "name": "demo.exe",
                 "graceful": False, "graceful_wait_ms": 2000,
@@ -4817,8 +4687,8 @@ class PlayerTests(unittest.TestCase):
 
     def test_close_app_graceful_success(self):
         player = MacroPlayer()
-        with patch_player("is_process_running", side_effect=[True, True, False, False]), \
-             patch_player("taskkill_process", side_effect=[(0, "")]) as taskkill:
+        with package_patch('player', 'is_process_running', side_effect=[True, True, False, False]), \
+             package_patch('player', 'taskkill_process', side_effect=[(0, '')]) as taskkill:
             player._execute_close_app({
                 "type": "close_app", "name": "demo.exe",
                 "graceful": True, "graceful_wait_ms": 2000,
@@ -4830,8 +4700,8 @@ class PlayerTests(unittest.TestCase):
         statuses = []
         player._status = lambda text: statuses.append(text)
         # 优雅关闭请求被拒绝（如权限不足）→ 不再干等，直接强制结束
-        with patch_player("is_process_running", side_effect=[True, True, False]), \
-             patch_player("taskkill_process", side_effect=[(1, "拒绝访问"), (0, "")]) as taskkill:
+        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
+             package_patch('player', 'taskkill_process', side_effect=[(1, '拒绝访问'), (0, '')]) as taskkill:
             player._execute_close_app({
                 "type": "close_app", "name": "demo.exe",
                 "graceful": True, "graceful_wait_ms": 60000,
@@ -4847,9 +4717,9 @@ class PlayerTests(unittest.TestCase):
         statuses = []
         player._status = lambda text: statuses.append(text)
         # 普通权限反复结束失败，最终由管理员权限结束
-        with patch_player("is_process_running", side_effect=[True, True, False]), \
-             patch_player("taskkill_process", return_value=(1, "拒绝访问")), \
-             patch_player("elevated_taskkill", return_value=True) as elev:
+        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
+             package_patch('player', 'taskkill_process', return_value=(1, '拒绝访问')), \
+             package_patch('player', 'elevated_taskkill', return_value=True) as elev:
             player._execute_close_app({
                 "type": "close_app", "name": "app_launcher.exe",
                 "graceful": True, "graceful_wait_ms": 2000,
@@ -4861,9 +4731,9 @@ class PlayerTests(unittest.TestCase):
     def test_close_app_elevated_declined_raises(self):
         player = MacroPlayer()
         # UAC 授权被取消 → 最终报错
-        with patch_player("is_process_running", return_value=True), \
-             patch_player("taskkill_process", return_value=(1, "拒绝访问")), \
-             patch_player("elevated_taskkill", return_value=False) as elev:
+        with package_patch('player', 'is_process_running', return_value=True), \
+             package_patch('player', 'taskkill_process', return_value=(1, '拒绝访问')), \
+             package_patch('player', 'elevated_taskkill', return_value=False) as elev:
             with self.assertRaisesRegex(RuntimeError, "无法结束进程"):
                 player._execute_close_app({
                     "type": "close_app", "name": "demo.exe",
@@ -4923,8 +4793,8 @@ class SingleActionPlaybackTests(unittest.TestCase):
         player = MacroPlayer()
         waits = []
         player._wait = lambda milliseconds: waits.append(milliseconds)
-        with patch_player("send_button") as button, \
-             patch_player("send_move_absolute"):
+        with package_patch('player', 'send_button') as button, \
+             package_patch('player', 'send_move_absolute'):
             player.play([
                 {"type": "repeat_click", "button": "left", "x": 5, "y": 6,
                  "count": 3, "interval_ms": 10, "hold_ms": 1,
@@ -4978,9 +4848,9 @@ class SingleActionPlaybackTests(unittest.TestCase):
              "show_result_notice": False},
             {"type": "notice", "text": "第三行", "duration_ms": 1},
         ]
-        with patch_player("find_template", return_value=match), \
-             patch_player("send_move_absolute") as move, \
-             patch_player("send_button"):
+        with package_patch('player', 'find_template', return_value=match), \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
             player.play(actions, repeats=1, start_index=1, single_action=True)
         move.assert_called_once_with(700, 500)
         self.assertEqual(notices, [])
@@ -4995,7 +4865,7 @@ class SingleActionPlaybackTests(unittest.TestCase):
              "show_result_notice": False},
             {"type": "notice", "text": "目标行", "duration_ms": 1},
         ]
-        with patch_player("find_template", return_value=None):
+        with package_patch('player', 'find_template', return_value=None):
             player.play(actions, repeats=1, start_index=1, single_action=True)
         self.assertEqual(notices, [])
         self.assertTrue(any("只记录不执行" in text for text in logs))
@@ -5136,7 +5006,7 @@ class SingleActionPlaybackTests(unittest.TestCase):
     def test_stop_during_single_action_releases_held_input(self):
         player = MacroPlayer()
         player._held_keys.add(65)
-        with patch_player("send_key") as key:
+        with package_patch('player', 'send_key') as key:
             player.play(
                 [{"type": "delay", "ms": 5}, {"type": "notice", "text": "第二行"}],
                 repeats=3, start_index=0, single_action=True,
@@ -5314,13 +5184,9 @@ class CaptureFailureToleranceTests(unittest.TestCase):
         player._trace = lambda text, **_kwargs: traces.append(text)
         with tempfile.TemporaryDirectory() as folder:
             module, action = self._activity_module(folder)
-            with patch_player("registered_module_object",
-                       return_value=module), \
-                 patch_player("find_template", side_effect=[
-                     ScreenShotError("Windows graphics function failed: BitBlt: 拒绝访问"),
-                     match,
-                 ]) as find, \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', return_value=module), \
+                 package_patch('player', 'find_template', side_effect=[ScreenShotError('Windows graphics function failed: BitBlt: 拒绝访问'), match]) as find, \
+                 package_patch('player', 'show_overlay'):
                 result = player._execute_image(action, None)
         self.assertIsNone(result)
         self.assertEqual(find.call_count, 2)
@@ -5334,13 +5200,10 @@ class CaptureFailureToleranceTests(unittest.TestCase):
         player._trace = lambda *_args, **_kwargs: None
         with tempfile.TemporaryDirectory() as folder:
             module, action = self._activity_module(folder)
-            with patch_player("registered_module_object",
-                       return_value=module), \
-                 patch_player("find_template",
-                       side_effect=ScreenShotError(
-                           "Windows graphics function failed: BitBlt: 拒绝访问")), \
-                 patch_player("CAPTURE_FAILURE_GRACE_S", 0.0), \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', return_value=module), \
+                 package_patch('player', 'find_template', side_effect=ScreenShotError('Windows graphics function failed: BitBlt: 拒绝访问')), \
+                 package_patch('player', 'CAPTURE_FAILURE_GRACE_S', 0.0), \
+                 package_patch('player', 'show_overlay'):
                 with self.assertRaises(RuntimeError) as caught:
                     player._execute_image(action, None)
         self.assertIn("屏幕截图连续", str(caught.exception))
@@ -5354,13 +5217,10 @@ class CaptureFailureToleranceTests(unittest.TestCase):
         player._module_result_route = Mock(return_value=None)
         with tempfile.TemporaryDirectory() as folder:
             module, action = self._activity_module(folder, wait_text_absent=True)
-            with patch_player("registered_module_object",
-                       return_value=module), \
-                 patch_player("find_template",
-                       side_effect=ScreenShotError(
-                           "Windows graphics function failed: BitBlt: 拒绝访问")), \
-                 patch_player("CAPTURE_FAILURE_GRACE_S", 0.0), \
-                 patch_player("show_overlay"):
+            with package_patch('player', 'registered_module_object', return_value=module), \
+                 package_patch('player', 'find_template', side_effect=ScreenShotError('Windows graphics function failed: BitBlt: 拒绝访问')), \
+                 package_patch('player', 'CAPTURE_FAILURE_GRACE_S', 0.0), \
+                 package_patch('player', 'show_overlay'):
                 with self.assertRaises(RuntimeError):
                     player._execute_image(action, None)
         player._module_result_route.assert_not_called()
@@ -5412,8 +5272,8 @@ class DisplayAwakeTests(unittest.TestCase):
 
     def test_script_execution_keeps_display_awake_and_releases_it(self):
         app = self._script_worker_app()
-        with patch_app("keep_display_awake", return_value=True) as keep, \
-                patch_app("allow_display_sleep") as release:
+        with package_patch('app', 'keep_display_awake', return_value=True) as keep, \
+                package_patch('app', 'allow_display_sleep') as release:
             app._run_script_worker(
                 [{"type": "delay", "delay_ms": 1}], 1, None, None, False, None, False, 0,
                 script_name="挂机",
@@ -5425,8 +5285,8 @@ class DisplayAwakeTests(unittest.TestCase):
         app = self._script_worker_app()
         app.player.play.side_effect = RuntimeError("截图失败")
         app._handle_worker_error = Mock()
-        with patch_app("keep_display_awake", return_value=True), \
-                patch_app("allow_display_sleep") as release:
+        with package_patch('app', 'keep_display_awake', return_value=True), \
+                package_patch('app', 'allow_display_sleep') as release:
             app._run_script_worker(
                 [{"type": "delay", "delay_ms": 1}], 1, None, None, False, None, False, 0,
             )
@@ -5434,8 +5294,8 @@ class DisplayAwakeTests(unittest.TestCase):
 
     def test_unavailable_display_awake_is_logged(self):
         app = self._script_worker_app()
-        with patch_app("keep_display_awake", return_value=False), \
-                patch_app("allow_display_sleep"):
+        with package_patch('app', 'keep_display_awake', return_value=False), \
+                package_patch('app', 'allow_display_sleep'):
             app._run_script_worker(
                 [{"type": "delay", "delay_ms": 1}], 1, None, None, False, None, False, 0,
             )
@@ -5460,8 +5320,8 @@ class DisplayAwakeTests(unittest.TestCase):
         app._finish_execution_visibility = Mock()
         app.current_workflow_step_index = None
         app._ui = lambda callback, *args: callback(*args)
-        with patch_app("keep_display_awake", return_value=True) as keep, \
-                patch_app("allow_display_sleep") as release:
+        with package_patch('app', 'keep_display_awake', return_value=True) as keep, \
+                package_patch('app', 'allow_display_sleep') as release:
             app._run_workflow_worker([], None, None, False)
         keep.assert_called_once_with()
         release.assert_called_once_with()

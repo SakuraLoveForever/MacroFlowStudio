@@ -7,7 +7,18 @@ from pathlib import Path
 # 允许直接运行本文件（python tests/test_ui_shell.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tests.common import *  # noqa: E402,F401,F403
+import threading
+import tkinter as tk
+import unittest
+from unittest.mock import Mock, call, patch
+from macroflow.core.alerts import play_alert
+from macroflow.core.models import Workflow
+from macroflow.ui.app.base import disable_combobox_wheel_selection
+from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.startup import spawn_new_instance
+from macroflow.ui.dialogs.base import DurationVar
+from tests.helpers.core import FakeSettingVar
+from tests.helpers.patches import package_patch
 
 
 class ComboboxWheelTests(unittest.TestCase):
@@ -62,7 +73,7 @@ class GameSetupNoteTests(unittest.TestCase):
         dialog = Mock()
         dialog.show.return_value = "custom game setup note"
 
-        with patch_app("GameSetupNoteDialog", return_value=dialog):
+        with package_patch('app', 'GameSetupNoteDialog', return_value=dialog):
             app.open_game_setup_note()
 
         self.assertEqual(app._game_setup_note, "custom game setup note")
@@ -79,7 +90,7 @@ class GameSetupNoteTests(unittest.TestCase):
         dialog = Mock()
         dialog.show.return_value = "custom game setup note"
 
-        with patch_app("GameSetupNoteDialog", return_value=dialog):
+        with package_patch('app', 'GameSetupNoteDialog', return_value=dialog):
             app.open_game_setup_note()
 
         self.assertEqual(app._game_setup_note, "custom game setup note")
@@ -95,10 +106,7 @@ class StartupVisibilityTests(unittest.TestCase):
         app.root = Mock()
         app.root.winfo_id.return_value = 123
         app.execution_mini_position = [900, 700]
-        with patch_app(
-            "get_monitor_work_area_for_window",
-            return_value={"left": -1920, "top": 0, "width": 1000, "height": 800},
-        ), patch_app("is_window", return_value=True):
+        with package_patch('app', 'get_monitor_work_area_for_window', return_value={'left': -1920, 'top': 0, 'width': 1000, 'height': 800}), package_patch('app', 'is_window', return_value=True):
             self.assertEqual(app._execution_mini_position(420, 316), (-1340, 484))
 
     def test_spawn_new_instance_resets_pyinstaller_extraction_environment(self):
@@ -107,9 +115,9 @@ class StartupVisibilityTests(unittest.TestCase):
             "_MEIPASS2": "C:/old-mei2",
             "PATH": "C:/Windows",
         }
-        with patch.dict("macroflow.ui.app.os.environ", inherited, clear=True), \
-             patch("macroflow.ui.app.subprocess.Popen") as popen, \
-             patch("macroflow.ui.app.sys.frozen", True, create=True):
+        with patch.dict("os.environ", inherited, clear=True), \
+             patch("subprocess.Popen") as popen, \
+             patch("sys.frozen", True, create=True):
             spawn_new_instance(["MacroFlowStudio.exe", "--open-script", "x.json"])
         env = popen.call_args.kwargs["env"]
         self.assertNotIn("_MEIPASS", env)
@@ -126,8 +134,8 @@ class StartupVisibilityTests(unittest.TestCase):
         app.main_hidden_for_recording = False
         app.main_hidden_for_execution = False
         app.main_hidden_for_cursor_tracking = False
-        with patch_app("show_window", return_value=True) as show, \
-             patch_app("activate_window", return_value=True) as activate:
+        with package_patch('app', 'show_window', return_value=True) as show, \
+             package_patch('app', 'activate_window', return_value=True) as activate:
             app._ensure_startup_visible()
         app.root.deiconify.assert_called_once()
         app.root.state.assert_called_once_with("normal")
