@@ -195,6 +195,34 @@ OK
 - 正文 9pt → 至少 10pt：与「更小巧」方向相反，按交接文档保留待办。
 - 录制 / 执行 / 启动 / 备份设置收进独立设置对话框；工作流页三个工具栏收敛。
 
+### 事故与修复：padx 传元组导致启动即残
+
+工具栏重构时写成 `padx=pad(4, 0)`，`pad()` 返回元组，Tk 把它渲染成单个距离
+字符串，`ttk.Button.pack()` 抛 `TclError: bad pad value`。异常发生在
+`_build_ui()` 中途 → 主区域没建完（右侧空白），`WM_DELETE_WINDOW` 也没接上
+（点关闭没反应）。已修（`padx=px(4)`），并记下实测结论：
+
+| 选项 | 二元组 | 单值 |
+| --- | --- | --- |
+| `padx` / `pady` | 可用 | 可用 |
+| `ipadx` / `ipady` | **TclError** | 可用 |
+
+全仓已扫描确认没有 `ipadx` / `ipady` 传元组的情况。
+
+**教训**：整套测试都不建窗口，所以这类错误只能在真实构建时才暴露。交付前的
+兜底是一段隐藏窗口烟测（不进入 mainloop、构建完立刻销毁）：
+
+```python
+from macroflow.ui.app.main import MacroFlowApp
+app = MacroFlowApp()          # 建完整界面，隐藏窗口
+app.root.withdraw()
+app.root.update_idletasks()
+app.root.destroy()
+```
+
+再加上打包版实测：隐藏启动 exe → 枚举窗口 → `PostMessage(WM_CLOSE)` →
+确认标题窗口全部消失、目录里没有新的 `crash.log`。
+
 ## 未验证项（不得当作已完成）
 
 - **真实 GUI 单行编辑 < 50ms、页签切换 / 按钮反馈 < 100ms**：未测量。
