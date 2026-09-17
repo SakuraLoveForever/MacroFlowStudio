@@ -1191,15 +1191,17 @@ class ShellMixin:
             action_specs, set(PRIMARY_ACTION_COMMANDS),
         )
         for index, (text, command_name, style_name) in enumerate(primary_specs):
+            # padx 必须是单个像素值或二元组：pad(4, 0) 返回元组，Tk 会把
+            # "4 0" 当成一个距离解析并报 bad pad value，所以这里只取左间距。
             ttk.Button(
                 add_buttons, text=text, command=getattr(self, command_name),
                 style=style_name,
-            ).pack(side="left", padx=(0 if index == 0 else pad(4, 0), 0))
+            ).pack(side="left", padx=(0 if index == 0 else px(4), 0))
         self.add_action_menu_button = ttk.Button(
             add_buttons, text=ADD_ACTION_MENU_LABEL,
             command=self._show_add_action_menu, style="AccentScriptTool.TButton",
         )
-        self.add_action_menu_button.pack(side="left", padx=pad(4, 0))
+        self.add_action_menu_button.pack(side="left", padx=px(4))
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=px(8))
 
@@ -1226,7 +1228,7 @@ class ShellMixin:
         self.redo_button = ttk.Button(edit_buttons, text="↷ 重做",
                                       command=lambda: self._undo_redo_action_edit(True),
                                       style="ScriptTool.TButton", state="disabled")
-        self.redo_button.pack(side="left", padx=pad(4, 0))
+        self.redo_button.pack(side="left", padx=px(4))
         for text, command, style_name in (
             ("✎ 编辑", self.edit_selected_action, "ScriptTool.TButton"),
             ("⧉ 复制", self.copy_selected_actions_down, "ScriptTool.TButton"),
@@ -1236,7 +1238,7 @@ class ShellMixin:
             ("× 删除", self.delete_actions, "DangerScriptTool.TButton"),
         ):
             button = ttk.Button(edit_buttons, text=text, command=command, style=style_name)
-            button.pack(side="left", padx=pad(4, 0))
+            button.pack(side="left", padx=px(4))
             if text == "✎ 编辑":
                 self.edit_action_button = button
 
