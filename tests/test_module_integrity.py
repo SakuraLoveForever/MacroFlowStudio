@@ -12,7 +12,10 @@ from pathlib import Path
 
 SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
 IGNORED = {"__file__", "__name__", "__doc__", "__package__", "__spec__", "__loader__",
-           "__builtins__", "__debug__", "__annotations__"}
+           "__builtins__", "__debug__", "__annotations__",
+           # CPython 3.14 起，带注解赋值的模块会引用编译器生成的
+           # __conditional_annotations__（与 __annotations__ 同类，运行时一定存在）。
+           "__conditional_annotations__"}
 
 
 def undefined_globals(path: Path) -> dict[str, str]:

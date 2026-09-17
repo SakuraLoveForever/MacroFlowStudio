@@ -79,6 +79,7 @@ from .constants import (
     GLOBAL_TREE_COLUMNS,
     MIN_MAIN_HEIGHT,
     MIN_MAIN_WIDTH,
+    SEGMENT_BAR,
     TRACE_LOG_HEADER,
     WORKFLOW_TREE_COLUMNS,
 )
@@ -133,6 +134,46 @@ class HelpersMixin:
             tree.heading(column, text=text)
             tree.column(column, width=px(width), anchor=anchor,
                         stretch=column == stretch_column)
+    @staticmethod
+    def _selected_row_segment(tree) -> tuple[int, int] | None:
+        """列表里选中的那一段（第一行到最后一行），不足两行不算片段。
+
+        片段用两次点击定出来：点一下片段的第一行，再按住 Shift 点最后一行
+        （Ctrl 点两头的行同样可以，取的是选中范围的第一行到最后一行）。
+        """
+        rows = sorted({int(item) for item in tree.selection()})
+        if len(rows) < 2:
+            return None
+        return rows[0], rows[-1]
+    def _refresh_row_segment_bar(self, tree, painted_attr: str) -> None:
+        """把选中片段画成列表最左边那根实心竖条（只重画变化的行）。"""
+        segment = self._selected_row_segment(tree)
+        # 未经过完整窗口初始化的测试 fixture 直接按“还没画过”处理。
+        painted = getattr(self, painted_attr, None)
+        if painted == segment:
+            return
+        if painted is not None:
+            for index in range(painted[0], painted[1] + 1):
+                if segment is not None and segment[0] <= index <= segment[1]:
+                    continue
+                iid = str(index)
+                if tree.exists(iid):
+                    tree.set(iid, "mark", "")
+        if segment is not None:
+            for index in range(segment[0], segment[1] + 1):
+                iid = str(index)
+                if tree.exists(iid):
+                    tree.set(iid, "mark", SEGMENT_BAR)
+        setattr(self, painted_attr, segment)
+    def _reset_row_segment_bar(self, painted_attr: str) -> None:
+        """列表要重建：行都换成新的，竖条记号一并作废（重建后按选中重画）。"""
+        setattr(self, painted_attr, None)
+    def _ask_repeats(self, title: str, prompt: str) -> int | None:
+        """问执行次数（默认 1 次、范围 1–999999）；取消返回 None。"""
+        return simpledialog.askinteger(
+            title, prompt, parent=self.root,
+            initialvalue=1, minvalue=1, maxvalue=999999,
+        )
     def _resolution_monitor_hwnd(self) -> int | None:
         """分辨率动作未设参照窗口时改哪块屏：软件自己所在显示器。"""
         root = getattr(self, "root", None)

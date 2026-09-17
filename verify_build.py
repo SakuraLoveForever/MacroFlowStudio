@@ -38,7 +38,9 @@ EXPECT_SYMBOLS = {
             "_sync_windows_startup",
             "rename_workflow", "duplicate_workflow", "_switch_to_workflow",
             "_restore_workflow_scan_foreground",
-            "run_script_ref_with_count", "run_referenced_script_alone"],
+            "run_single_action_with_count", "run_workflow_step_with_count",
+            "run_action_segment", "run_workflow_segment",
+            "run_referenced_script_alone"],
     "macroflow.ui.dialogs": ["TemplateRegionManagerDialog", "TemplateRegionFormDialog",
                 "ScreenOffsetPicker", "ScrollDialog",
                 "ModulePickerDialog", "BatchModuleScriptDialog", "JumpActionDialog",
@@ -238,8 +240,9 @@ for module, expected_literals in {
     "macroflow.ui.app": ["关卡", "关卡封装", "切换", "workflow_global", "script_global",
             "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
             "ocr_offset_left", "ocr_offset_right",
-            "▶ 执行指定次数…"],
-    # 引用脚本行右键执行指定次数：新菜单项必须真的进了 exe。
+            "▶ 从此行开始运行", "▶ 单独执行此动作…",
+            "▶ 单独执行此步骤…", "▶ 循环执行片段…"],
+    # 动作列表 / 工作流表格右键菜单：新菜单项必须真的进了 exe。
     "macroflow.ui.dialogs": ["工作流全局模块", "脚本全局模块", "读取数字", "expected_number",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],

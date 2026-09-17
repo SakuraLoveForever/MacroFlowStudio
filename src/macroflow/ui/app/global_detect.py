@@ -36,13 +36,16 @@ class GlobalDetectMixin:
     """全局检测的注册与配置播报（脚本动作 / 工作流全局模块）。"""
 
     def _enter_script_global_scope(self, actions: list[dict],
-                                   origin_row: int = 0) -> tuple[str, ...]:
+                                   origin_row: int = 0,
+                                   last_row: int | None = None) -> tuple[str, ...]:
         """Enable the script-global actions that playback can still reach.
 
         ``origin_row`` 是本次播放的起始行（0 基）：「▶ 从此开始执行」从第 N 行起跑时，
         第 N 行之前的全局模块行不会被执行到，也就不能注册守卫——否则用户明明从第 7
         行开始跑，第 1~2 行的全局模块照样在后台识别并点击（表现为“还是从头执行”）。
-        从头播放（origin_row=0）、工作流重复与断点恢复都保持原来的“全部注册”。
+        ``last_row`` 是片段循环的末行（含）：片段之外的行本次不会执行到，同样不注册。
+        整份脚本从头播放（origin_row=0、last_row=None）、工作流重复与断点恢复都保持
+        原来的“全部注册”。
         """
         ensure_action_ids(actions)
         scope_started_at = time.perf_counter()
@@ -52,12 +55,13 @@ class GlobalDetectMixin:
             if str(action.get(ACTION_ID_KEY, "")).strip()
         )
         first_row = max(0, int(origin_row or 0))
+        last_row = None if last_row is None else max(first_row, int(last_row))
         keys: list[str] = []
         skipped_rows: list[int] = []
         for row, action in enumerate(actions):
             if str(action.get("type", "")) != "global_detect":
                 continue
-            if row < first_row:
+            if row < first_row or (last_row is not None and row > last_row):
                 skipped_rows.append(row + 1)
                 continue
             action_id = str(action.get(ACTION_ID_KEY, "")).strip()
@@ -81,10 +85,14 @@ class GlobalDetectMixin:
                             guard["scope_action_ids"] = scope_action_ids
         if skipped_rows:
             rows_text = "、".join(str(row) for row in skipped_rows)
+            scope_text = (
+                f"从第 {first_row + 1} 行开始执行" if last_row is None
+                else f"循环执行片段 第 {first_row + 1}-{last_row + 1} 行"
+            )
             self._ui(
                 self._log,
-                f"从第 {first_row + 1} 行开始执行：第 {rows_text} 行的全局模块不启用"
-                "（这些行本次不会执行到）。要从头监控请按 F9 从头执行。",
+                f"{scope_text}：第 {rows_text} 行的全局模块不启用"
+                "（这些行本次不会执行到）。要整份脚本监控请按 F9 从头执行。",
             )
         # All script-global module delays belong to the calling script's start,
         # not to the order in which individual guards finish registering.

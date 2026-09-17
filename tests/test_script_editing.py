@@ -239,6 +239,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.key_search_var.get.return_value = "E"
         app.key_search_match_var = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app._key_search_query_kind = "key"
         app._selected_action_index = Mock(return_value=None)
 
@@ -424,6 +425,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app.script = MacroScript(actions=[])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app._selected_action_index = Mock(return_value=None)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -468,6 +470,7 @@ class ScriptEditingTests(unittest.TestCase):
     def test_run_script_from_selected_action_uses_first_selected_row(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("4", "2")
         app.run_current_script = Mock()
         app._notify = Mock()
@@ -480,6 +483,7 @@ class ScriptEditingTests(unittest.TestCase):
     def test_ctrl_a_selects_all_script_actions(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.get_children.return_value = ("0", "1", "2")
 
         result = app._select_all_actions()
@@ -609,6 +613,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "comment", "text": "C"},
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("1",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -631,6 +636,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "comment", "text": "B"},
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("1",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -653,6 +659,7 @@ class ScriptEditingTests(unittest.TestCase):
         ])
         app.root = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -680,6 +687,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.script = MacroScript(actions=[{"type": "comment", "text": "A"}])
         app.root = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -708,6 +716,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
+        app.action_tree.selection.return_value = ()
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
         app.rebuild_action_tree = Mock()
@@ -734,6 +743,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
+        app.action_tree.selection.return_value = ()
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
         app.rebuild_action_tree = Mock()
@@ -755,6 +765,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.root = Mock()
         app.action_tree = Mock()
         app.action_tree.selection.return_value = ()
+        app.action_tree.selection.return_value = ()
         app._notify = Mock()
         with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
             app._insert_script(False)
@@ -770,6 +781,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("1",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -784,6 +796,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "below"
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -797,6 +810,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ()
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -814,6 +828,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("1",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -835,6 +850,7 @@ class ScriptEditingTests(unittest.TestCase):
         ])
         app.root = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -881,6 +897,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.script = MacroScript(actions=[{"type": "comment", "text": "主"}])
         app.root = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app._checkpoint_action_edit = Mock()
         app._mark_dirty = Mock()
@@ -910,6 +927,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.insert_position_var = Mock()
         app.insert_position_var.get.return_value = "above"
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ()
         app._notify = Mock()
         with patch("macroflow.ui.app.filedialog.askopenfilenames") as picker:
@@ -1116,6 +1134,7 @@ class ScriptEditingTests(unittest.TestCase):
         app._mark_dirty = Mock()
         app.rebuild_action_tree = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         action = {
             "type": "global_detect", "template": "images/g.png",
             "module_ref": True, "module_category": "special",
@@ -1141,6 +1160,7 @@ class ScriptEditingTests(unittest.TestCase):
         app._mark_dirty = Mock()
         app.rebuild_action_tree = Mock()
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         action = {
             "type": "global_detect", "template": "images/g.png",
             "module_ref": True, "module_category": "special",
@@ -1177,6 +1197,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_undo_stack = []
         app.action_redo_stack = []
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("1",)
         app.undo_button = Mock()
         app.redo_button = Mock()
@@ -1204,6 +1225,7 @@ class ScriptEditingTests(unittest.TestCase):
         app.action_undo_stack = []
         app.action_redo_stack = [[{"type": "delay", "ms": 20}]]
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0",)
         app.undo_button = Mock()
         app.redo_button = Mock()
@@ -1422,6 +1444,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "key", "vk": 66},
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0", "1")
         app.root = Mock()
         app._mark_dirty = Mock()
@@ -1446,6 +1469,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "delay", "ms": 3},
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = ("0", "2")
         app.root = Mock()
         app._notify = Mock()
@@ -1465,6 +1489,7 @@ class ScriptEditingTests(unittest.TestCase):
             {"type": "delay", "ms": index} for index in range(count)
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.selection.return_value = selected
         app._mark_dirty = Mock()
         app._checkpoint_action_edit = Mock()
@@ -1870,7 +1895,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         popen.assert_not_called()
         app._notify.assert_called_once_with("引用脚本无效", "该引用动作没有脚本路径。")
 
-    def test_context_menu_only_offered_on_script_ref_rows(self):
+    def test_context_menu_offered_on_script_ref_rows_with_open_window_item(self):
         app = self._app()
         app.root = Mock()
         app.script = MacroScript(actions=[
@@ -1878,6 +1903,7 @@ class ScriptRefWindowTests(unittest.TestCase):
             {"type": "comment", "text": "备注"},
         ])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.identify_row.return_value = "0"
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
@@ -1886,45 +1912,242 @@ class ScriptRefWindowTests(unittest.TestCase):
         menu_class.assert_called_once()
         menu = menu_class.return_value
         labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
-        self.assertEqual(labels, ["▶ 执行指定次数…", "⇪ 在新窗口打开引用的脚本"])
+        self.assertEqual(labels, [
+            "▶ 从此行开始运行",
+            "▶ 单独执行此动作…",
+            "⇪ 在新窗口打开引用的脚本",
+        ])
+        menu.add_separator.assert_called_once()
         menu.tk_popup.assert_called_once_with(100, 120)
         menu.grab_release.assert_called_once()
 
-    def test_run_script_ref_with_count_prompts_with_default_one(self):
+    def test_context_menu_offered_on_every_action_row(self):
         app = self._app()
         app.root = Mock()
-        app.run_referenced_script_alone = Mock()
-        action = {"type": "script_ref", "script": "scripts/ref.json", "repeats": 4}
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=7) as ask:
-            app.run_script_ref_with_count(action)
-        self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
-        self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
-        self.assertIs(ask.call_args.kwargs["parent"], app.root)
-        app.run_referenced_script_alone.assert_called_once_with(action, 7)
+        app.script = MacroScript(actions=[
+            {"type": "comment", "text": "备注"},
+            {"type": "delay", "ms": 100},
+        ])
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
+        app.action_tree.identify_row.return_value = "1"
+        event = Mock()
+        event.y, event.x_root, event.y_root = 20, 100, 120
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_action_context_menu(event)
+        menu = menu_class.return_value
+        labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
+        self.assertEqual(labels, ["▶ 从此行开始运行", "▶ 单独执行此动作…"])
+        # 普通动作没有“在新窗口打开引用的脚本”，也不画分隔线。
+        menu.add_separator.assert_not_called()
 
-    def test_run_script_ref_with_count_cancel_runs_nothing(self):
+    def test_context_menu_selects_the_right_clicked_row(self):
         app = self._app()
         app.root = Mock()
-        app.run_referenced_script_alone = Mock()
-        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
-            app.run_script_ref_with_count({"type": "script_ref", "script": "scripts/ref.json"})
-        app.run_referenced_script_alone.assert_not_called()
+        app.script = MacroScript(actions=[
+            {"type": "comment", "text": "备注"},
+            {"type": "delay", "ms": 100},
+        ])
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
+        app.action_tree.identify_row.return_value = "1"
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_action_context_menu(Mock())
+        app.action_tree.selection_set.assert_called_once_with("1")
+        command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
+        command()
+        app.run_current_script.assert_called_once_with(start_index=1)
 
-    def test_context_menu_skipped_for_non_ref_rows(self):
+    def test_context_menu_single_action_asks_for_count(self):
         app = self._app()
         app.root = Mock()
         app.script = MacroScript(actions=[{"type": "comment", "text": "备注"}])
         app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
         app.action_tree.identify_row.return_value = "0"
+        app.run_single_action_with_count = Mock()
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_action_context_menu(Mock())
+        command = menu_class.return_value.add_command.call_args_list[1].kwargs["command"]
+        command()
+        app.run_single_action_with_count.assert_called_once_with(0)
+
+    def test_context_menu_skipped_outside_rows(self):
+        app = self._app()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ()
+        app.action_tree.identify_row.return_value = ""
         with patch("macroflow.ui.app.tk.Menu") as menu_class:
             app._show_action_context_menu(Mock())
         menu_class.assert_not_called()
+
+    def test_context_menu_offers_segment_item_for_a_selected_range(self):
+        app = self._app()
+        app.root = Mock()
+        app.script = MacroScript(actions=[
+            {"type": "comment", "text": "一"},
+            {"type": "delay", "ms": 10},
+            {"type": "comment", "text": "三"},
+            {"type": "comment", "text": "四"},
+        ])
+        app.action_tree = Mock()
+        app.action_tree.identify_row.return_value = "2"
+        # 右键落在已选中的一段里：保留这段选中，片段就是它。
+        app.action_tree.selection.return_value = ("1", "2", "3")
+        app.run_action_segment = Mock()
+        event = Mock()
+        event.y, event.x_root, event.y_root = 20, 100, 120
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_action_context_menu(event)
+        app.action_tree.selection_set.assert_not_called()
+        menu = menu_class.return_value
+        labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
+        self.assertEqual(labels, [
+            "▶ 从此行开始运行",
+            "▶ 单独执行此动作…",
+            "▶ 循环执行片段…",
+        ])
+        command = menu.add_command.call_args_list[2].kwargs["command"]
+        command()
+        app.run_action_segment.assert_called_once_with()
+
+    def test_context_menu_keeps_the_range_when_right_clicking_inside_it(self):
+        app = self._app()
+        app.root = Mock()
+        app.script = MacroScript(actions=[
+            {"type": "comment", "text": "一"},
+            {"type": "delay", "ms": 10},
+        ])
+        app.action_tree = Mock()
+        app.action_tree.identify_row.return_value = "0"
+        app.action_tree.selection.return_value = ("0", "1")
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_action_context_menu(Mock())
+        app.action_tree.selection_set.assert_not_called()
+        labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
+        self.assertIn("▶ 循环执行片段…", labels)
+
+    def test_run_action_segment_prompts_with_default_one(self):
+        app = self._app()
+        app.root = Mock()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ("1", "3")
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=5) as ask:
+            app.run_action_segment()
+        self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["maxvalue"], 999999)
+        self.assertIs(ask.call_args.kwargs["parent"], app.root)
+        app.run_current_script.assert_called_once_with(segment=(1, 3), segment_repeats=5)
+
+    def test_run_action_segment_without_a_range_notifies(self):
+        app = self._app()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ("1",)
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger") as ask:
+            app.run_action_segment()
+        app._notify.assert_called_once()
+        ask.assert_not_called()
+        app.run_current_script.assert_not_called()
+
+    def test_run_action_segment_cancel_runs_nothing(self):
+        app = self._app()
+        app.root = Mock()
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ("0", "2")
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+            app.run_action_segment()
+        app.run_current_script.assert_not_called()
+
+    def test_action_tree_segment_bar_uses_the_left_column(self):
+        from tkinter import ttk
+
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        root.withdraw()
+        tree = ttk.Treeview(
+            root, columns=("mark", "index", "kind", "detail", "delay"),
+            show="headings", selectmode="extended",
+        )
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.action_tree = tree
+        app.action_segment_painted = None
+        app.script = MacroScript(actions=[
+            {"type": "comment", "text": "一"},
+            {"type": "delay", "ms": 10},
+            {"type": "click", "x": 1, "y": 2},
+        ])
+        app.empty_action_hint = Mock()
+        app.record_count_var = Mock()
+        app._sync_global_script_marker = Mock()
+        app._update_action_edit_button = Mock()
+
+        app.rebuild_action_tree()
+
+        self.assertEqual([tree.set(str(i), "index") for i in range(3)], ["1", "2", "3"])
+        self.assertEqual([tree.set(str(i), "mark") for i in range(3)], ["", "", ""])
+
+        tree.selection_set("0", "1")
+        app._refresh_action_segment_bar()
+
+        self.assertEqual(
+            [tree.set(str(i), "mark") for i in range(3)], [SEGMENT_BAR, SEGMENT_BAR, ""],
+        )
+
+    def test_segment_bar_paints_and_clears_the_selected_range(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.action_segment_painted = None
+        app.action_tree = Mock()
+        app.action_tree.selection.return_value = ("1", "3")
+
+        app._refresh_action_segment_bar()
+
+        self.assertEqual(
+            [call.args[0] for call in app.action_tree.set.call_args_list], ["1", "2", "3"],
+        )
+        self.assertEqual(
+            {call.args[2] for call in app.action_tree.set.call_args_list}, {SEGMENT_BAR},
+        )
+        app.action_tree.set.reset_mock()
+
+        # 又只选了一行：片段没了，原来画过的三行要擦干净。
+        app.action_tree.selection.return_value = ("1",)
+        app._refresh_action_segment_bar()
+        self.assertEqual(
+            [(call.args[0], call.args[2]) for call in app.action_tree.set.call_args_list],
+            [("1", ""), ("2", ""), ("3", "")],
+        )
+
+    def test_run_single_action_prompts_with_default_one(self):
+        app = self._app()
+        app.root = Mock()
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=7) as ask:
+            app.run_single_action_with_count(3)
+        self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["maxvalue"], 999999)
+        self.assertIs(ask.call_args.kwargs["parent"], app.root)
+        app.run_current_script.assert_called_once_with(start_index=3, single_action_repeats=7)
+
+    def test_run_single_action_cancel_runs_nothing(self):
+        app = self._app()
+        app.root = Mock()
+        app.run_current_script = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+            app.run_single_action_with_count(0)
+        app.run_current_script.assert_not_called()
 
     def test_workflow_context_menu_offers_open_script_items(self):
         app = self._app()
         app.root = Mock()
         app.workflow = Workflow(steps=[{"script": "scripts/关卡/a.json"}])
         app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ()
         app.workflow_tree.identify_row.return_value = "0"
         event = Mock()
         event.y, event.x_root, event.y_root = 20, 100, 120
@@ -1935,17 +2158,115 @@ class ScriptRefWindowTests(unittest.TestCase):
         menu = menu_class.return_value
         self.assertEqual(menu.add_command.call_count, 3)
         labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
-        self.assertIn("▶ 单独执行一次测试", labels)
-        self.assertIn("⇪ 在新窗口打开脚本", labels)
-        self.assertIn("✎ 在当前编辑器打开", labels)
+        self.assertEqual(labels, [
+            "▶ 单独执行此步骤…",
+            "⇪ 在新窗口打开脚本",
+            "✎ 在当前编辑器打开",
+        ])
         menu.tk_popup.assert_called_once_with(100, 120)
         menu.grab_release.assert_called_once()
+
+    def test_workflow_context_menu_run_item_asks_for_count(self):
+        app = self._app()
+        app.root = Mock()
+        app.workflow = Workflow(steps=[{"script": "scripts/关卡/a.json"}])
+        app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ()
+        app.workflow_tree.identify_row.return_value = "0"
+        app.run_workflow_step_with_count = Mock()
+        event = Mock()
+        event.y, event.x_root, event.y_root = 20, 100, 120
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_workflow_context_menu(event)
+        command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
+        command()
+        app.run_workflow_step_with_count.assert_called_once_with(
+            {"script": "scripts/关卡/a.json"})
+
+    def test_run_workflow_step_prompts_with_default_one(self):
+        app = self._app()
+        app.root = Mock()
+        app.run_referenced_script_alone = Mock()
+        step = {"script": "scripts/关卡/a.json", "repeats": 4}
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=7) as ask:
+            app.run_workflow_step_with_count(step)
+        self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["maxvalue"], 999999)
+        self.assertIs(ask.call_args.kwargs["parent"], app.root)
+        # 指定的次数只作用于这一次单独执行，行里保存的剩余次数不动。
+        self.assertEqual(step["repeats"], 4)
+        app.run_referenced_script_alone.assert_called_once_with(step, 7)
+
+    def test_run_workflow_step_cancel_runs_nothing(self):
+        app = self._app()
+        app.root = Mock()
+        app.run_referenced_script_alone = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=None):
+            app.run_workflow_step_with_count({"script": "scripts/关卡/a.json"})
+        app.run_referenced_script_alone.assert_not_called()
+
+    def test_workflow_context_menu_offers_segment_item_for_a_selected_range(self):
+        app = self._app()
+        app.root = Mock()
+        app.workflow = Workflow(steps=[
+            {"script": "scripts/关卡/a.json"},
+            {"script": "scripts/关卡/b.json"},
+            {"script": "scripts/关卡/c.json"},
+        ])
+        app.workflow_tree = Mock()
+        # 右键落在已选中的一段里：保留这段选中，片段 = 第 1~3 行。
+        app.workflow_tree.selection.return_value = ("0", "1", "2")
+        app.workflow_tree.identify_row.return_value = "1"
+        app.run_workflow_segment = Mock()
+        event = Mock()
+        event.y, event.x_root, event.y_root = 20, 100, 120
+        with patch("macroflow.ui.app.tk.Menu") as menu_class:
+            app._show_workflow_context_menu(event)
+        app.workflow_tree.selection_set.assert_not_called()
+        menu = menu_class.return_value
+        labels = [call.kwargs["label"] for call in menu.add_command.call_args_list]
+        self.assertEqual(labels, [
+            "▶ 单独执行此步骤…",
+            "▶ 循环执行片段…",
+            "⇪ 在新窗口打开脚本",
+            "✎ 在当前编辑器打开",
+        ])
+        command = menu.add_command.call_args_list[1].kwargs["command"]
+        command()
+        app.run_workflow_segment.assert_called_once_with()
+
+    def test_run_workflow_segment_prompts_with_default_one(self):
+        app = self._app()
+        app.root = Mock()
+        app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ("2", "4")
+        app.run_workflow = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger", return_value=6) as ask:
+            app.run_workflow_segment()
+        self.assertEqual(ask.call_args.kwargs["initialvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["minvalue"], 1)
+        self.assertEqual(ask.call_args.kwargs["maxvalue"], 999999)
+        self.assertIs(ask.call_args.kwargs["parent"], app.root)
+        app.run_workflow.assert_called_once_with(segment=(2, 4), segment_repeats=6)
+
+    def test_run_workflow_segment_without_a_range_notifies(self):
+        app = self._app()
+        app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ()
+        app.run_workflow = Mock()
+        with patch("macroflow.ui.app.simpledialog.askinteger") as ask:
+            app.run_workflow_segment()
+        app._notify.assert_called_once()
+        ask.assert_not_called()
+        app.run_workflow.assert_not_called()
 
     def test_workflow_context_menu_skipped_for_row_without_script(self):
         app = self._app()
         app.root = Mock()
         app.workflow = Workflow(steps=[{"kind": "global_module", "module": "m"}])
         app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ()
         app.workflow_tree.identify_row.return_value = "0"
         with patch("macroflow.ui.app.tk.Menu") as menu_class:
             app._show_workflow_context_menu(Mock())
@@ -1954,6 +2275,7 @@ class ScriptRefWindowTests(unittest.TestCase):
     def test_workflow_context_menu_skipped_outside_row(self):
         app = self._app()
         app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = ()
         app.workflow_tree.identify_row.return_value = ""
         with patch("macroflow.ui.app.tk.Menu") as menu_class:
             app._show_workflow_context_menu(Mock())
@@ -2120,6 +2442,112 @@ class ScriptRefWindowTests(unittest.TestCase):
         app._load_startup_script(missing)
         app.load_script_into_editor.assert_not_called()
         app._notify.assert_called_once()
+
+
+class SingleActionRunTests(unittest.TestCase):
+    """右键「单独执行此动作…」：把单动作模式与次数交给执行线程。"""
+
+    def _app(self) -> MacroFlowApp:
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.recorder = Mock(running=False)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = False
+        app.script = MacroScript(
+            actions=[{"type": "comment", "text": "一"}, {"type": "delay", "ms": 10},
+                     {"type": "click", "x": 1, "y": 2}, {"type": "comment", "text": "四"}],
+            settings={"trigger": {}},
+        )
+        app.repeat_var = Mock()
+        app.repeat_var.get.return_value = 3
+        app._begin_detection_run = Mock()
+        app._ensure_detection_worker = Mock()
+        app._bound_hwnd = Mock(return_value=123)
+        app._activation_settings_from_script = Mock(return_value=(False, None))
+        for name in ("focus_mode_enabled_var", "activate_target_enabled_var"):
+            variable = Mock()
+            variable.get.return_value = False
+            setattr(app, name, variable)
+        app.workflow_stop = Mock()
+        for name in ("_sound", "_hide_main_for_execution", "_show_execution_mini",
+                     "_append_mini_step", "_set_execution_progress", "_notify", "_log"):
+            setattr(app, name, Mock())
+        return app
+
+    def test_single_action_run_passes_row_repeats_and_flag_to_worker(self):
+        app = self._app()
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(start_index=2, single_action_repeats=5)
+        worker_args = thread_class.call_args.kwargs["args"]
+        self.assertEqual(worker_args[0], list(app.script.actions))
+        self.assertEqual(worker_args[1], 5)
+        self.assertEqual(worker_args[7], 2)
+        self.assertIs(thread_class.call_args.kwargs["kwargs"]["single_action"], True)
+        self.assertIn("单独执行第 3/4 行", app._set_execution_progress.call_args.args[0])
+        self.assertIn("共 5 次", app._set_execution_progress.call_args.args[0])
+        self.assertIn("单独执行第 3/4 行动作，共 5 次", app._append_mini_step.call_args.args[0])
+        thread_class.return_value.start.assert_called_once()
+        app._notify.assert_not_called()
+
+    def test_segment_run_passes_the_range_and_round_count_to_worker(self):
+        app = self._app()
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(segment=(1, 2), segment_repeats=4)
+        worker_args = thread_class.call_args.kwargs["args"]
+        self.assertEqual(worker_args[0], list(app.script.actions), "整份动作列表照旧交给播放器")
+        self.assertEqual(worker_args[1], 4, "次数是片段的轮数")
+        self.assertEqual(worker_args[7], 1, "从片段首行起跑")
+        kwargs = thread_class.call_args.kwargs["kwargs"]
+        self.assertEqual(kwargs["segment_end"], 2)
+        self.assertIs(kwargs["single_action"], False, "片段与单独执行互斥")
+        progress = app._set_execution_progress.call_args.args[0]
+        self.assertIn("循环执行片段 第 2-3/4 行", progress)
+        self.assertIn("共 4 次", progress)
+        self.assertIn(
+            "循环执行片段 第 2-3/4 行，共 4 次。",
+            app._append_mini_step.call_args.args[0],
+        )
+
+    def test_segment_run_clamps_the_range_to_the_action_list(self):
+        app = self._app()
+        app.script = MacroScript(
+            actions=[{"type": "comment", "text": "一"}, {"type": "delay", "ms": 1}],
+            settings={"trigger": {}},
+        )
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(segment=(0, 9), segment_repeats=2)
+        self.assertEqual(thread_class.call_args.kwargs["args"][7], 0)
+        self.assertEqual(thread_class.call_args.kwargs["kwargs"]["segment_end"], 1)
+
+    def test_normal_run_keeps_toolbar_repeat_count(self):
+        app = self._app()
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(start_index=1)
+        worker_args = thread_class.call_args.kwargs["args"]
+        self.assertEqual(worker_args[1], 3)
+        self.assertIs(thread_class.call_args.kwargs["kwargs"]["single_action"], False)
+        self.assertIn("从第 2/4 行开始 · 共执行 3 次",
+                      app._set_execution_progress.call_args.args[0])
+
+    def test_single_action_run_clamps_repeats_to_at_least_one(self):
+        app = self._app()
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(start_index=0, single_action_repeats=0)
+        self.assertEqual(thread_class.call_args.kwargs["args"][1], 1)
+
+    def test_single_action_run_blocked_while_worker_running(self):
+        app = self._app()
+        app.worker.is_alive.return_value = True
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app._run_current_script_impl(start_index=0, single_action_repeats=1)
+        app._notify.assert_called_once_with("正在运行", "已有脚本或工作流正在执行。")
+        thread_class.assert_not_called()
+
+    def test_entrypoint_forwards_single_action_repeats(self):
+        app = self._app()
+        app._run_current_script_impl = Mock()
+        app.run_current_script(start_index=1, single_action_repeats=4)
+        app._run_current_script_impl.assert_called_once_with(
+            1, 4, segment=None, segment_repeats=1)
 
 
 class LastScriptRestoreTests(unittest.TestCase):

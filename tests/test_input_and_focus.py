@@ -375,7 +375,7 @@ class KeyCaptureTests(unittest.TestCase):
 
         self.assertIsNone(dialog.capturer)
 
-    def _install_capturer(self, events, release):
+    def _install_capturer(self, events, release, allow_escape=False):
         captured = {}
 
         def fake_set_hook(_kind, proc, _inst, _tid):
@@ -396,7 +396,11 @@ class KeyCaptureTests(unittest.TestCase):
         post = patch_post.start()
         patch_next.start()
         patch_unhook.start()
-        capturer = KeyCapturer(on_key=events.append, on_cancel=lambda: events.append("cancel"))
+        capturer = KeyCapturer(
+            on_key=events.append,
+            on_cancel=lambda: events.append("cancel"),
+            allow_escape=allow_escape,
+        )
         self.assertTrue(capturer.start(timeout=1.0))
         return capturer, captured, post, (patch_set, patch_get, patch_post, patch_next, patch_unhook)
 
@@ -431,6 +435,18 @@ class KeyCaptureTests(unittest.TestCase):
         finally:
             self._finish(capturer, patches, release)
         self.assertEqual(events, ["cancel"])
+
+    def test_key_capturer_can_capture_esc_when_allowed(self):
+        events, release = [], threading.Event()
+        capturer, captured, post, patches = self._install_capturer(
+            events, release, allow_escape=True,
+        )
+        try:
+            self.assertEqual(self._press(captured["proc"], VK_ESCAPE), 1)
+            post.assert_called_once()
+        finally:
+            self._finish(capturer, patches, release)
+        self.assertEqual(events, [VK_ESCAPE])
 
     def test_key_capturer_lets_reserved_hotkeys_pass(self):
         events, release = [], threading.Event()
@@ -484,6 +500,7 @@ class KeyCaptureTests(unittest.TestCase):
             capturer_class.return_value.start.return_value = True
             dialog.start_capture()
         capturer_class.assert_called_once()
+        self.assertTrue(capturer_class.call_args.kwargs["allow_escape"])
         dialog.capture_button.configure.assert_called_with(state="disabled")
         dialog.capture_hint.set.assert_called_with(KEY_HINT_CAPTURING)
         dialog.capturer.start.assert_called_once()

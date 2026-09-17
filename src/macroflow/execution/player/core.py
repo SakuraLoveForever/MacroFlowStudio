@@ -111,6 +111,8 @@ class CoreMixin:
         self._workflow_repeat_number = 0
         self._active_script_name = ""
         self._script_scope_managed = False
+        # 单独执行单个动作（play(single_action=True) 期间才为真）。
+        self._single_action = False
         # 守卫处理段执行深度：处理段内不再评估守卫（与旧模型"模块执行期间
         # 其它检测暂停"一致），同一时刻只允许一个处理段。
         self._handler_depth = 0
@@ -274,7 +276,9 @@ class CoreMixin:
              repeat_start_action_id: str | None = None,
              on_action: Callable[[int, int], None] | None = None,
              propagate_current_script_jump: bool = False,
-             workflow_context: bool = False) -> bool | str:
+             workflow_context: bool = False,
+             single_action: bool = False,
+             segment_end: int | None = None) -> bool | str:
         if self.running:
             raise RuntimeError("已有脚本正在执行")
         self.running = True
@@ -298,6 +302,9 @@ class CoreMixin:
         self._activation_hwnd = int(activation_hwnd) if activation_hwnd else None
         self._activation_prepared = bool(activation_prepared and self._activation_hwnd)
         self._workflow_context = bool(workflow_context)
+        # 单独执行单个动作：动作列表仍是完整脚本（动作ID、跳转目标、脚本上下文
+        # 都在），但每次重复只执行所选的那一个顶层动作，控制流不逃出这一行。
+        self._single_action = bool(single_action)
         self._workflow_repeat_number = 0
         self._advance_reason = ""
         advanced_to_next_workflow_step = False
@@ -345,6 +352,10 @@ class CoreMixin:
             repeat_total = max(1, int(repeats))
             repeat_interval = max(0, int(repeat_interval_ms))
             first_action_index = max(0, min(int(start_index), max(0, len(actions) - 1)))
+            # 片段循环：只跑 [start_index, segment_end] 这一段（None = 整份脚本）。
+            segment_last = None if segment_end is None else max(
+                first_action_index, min(int(segment_end), max(0, len(actions) - 1)),
+            )
             start_repeat = max(0, min(int(start_repeat), max(0, repeat_total - 1)))
             resume_action = resume_action_index
             if resume_action is not None and int(resume_action) >= len(actions):
@@ -393,7 +404,9 @@ class CoreMixin:
                 # 监控，超时等计时从本次重复开始重新计算。起始行一并告诉应用层：
                 # 「▶ 从此开始执行」时，本次重复之前那些全局模块行并不会被执行到。
                 if self.on_script_scope_enter:
-                    script_scope = self._enter_script_scope(actions, action_start)
+                    script_scope = self._enter_script_scope(
+                        actions, action_start, segment_last,
+                    )
                     self._script_scope_managed = True
                 if repeat_start_idx is not None and repeat_index >= 1:
                     self._status(
@@ -405,22 +418,38 @@ class CoreMixin:
                 try:
                     self._run_action_sequence(
                         actions, hwnd, start_index=action_start, on_action=on_action,
+                        single_action=self._single_action, segment_end=segment_last,
                     )
                 except JumpToCurrentScriptLastAction as request:
-                    if propagate_current_script_jump:
+                    if self._single_action:
+                        self._log_event(
+                            "单独执行：目标为当前脚本最后一行，只记录不执行。"
+                        )
+                    elif segment_last is not None:
+                        self._log_event(
+                            "循环执行片段：目标为当前脚本最后一行，在片段之外，"
+                            "本次片段执行结束。"
+                        )
+                    elif propagate_current_script_jump:
                         jump_current_script_last = True
                         self._status("模块代码段要求跳转到当前脚本最后一行")
                         break
-                    last_index = len(actions) - 1
-                    if last_index >= 0 and last_index != request.current_index \
-                            and str(actions[last_index].get("type")) \
-                            != "jump_current_script_last":
-                        self._status(f"模块代码段跳转到当前脚本第 {last_index + 1} 行")
-                        self._run_action_sequence(
-                            actions, hwnd, start_index=last_index,
-                            on_action=on_action,
-                        )
+                    else:
+                        last_index = len(actions) - 1
+                        if last_index >= 0 and last_index != request.current_index \
+                                and str(actions[last_index].get("type")) \
+                                != "jump_current_script_last":
+                            self._status(f"模块代码段跳转到当前脚本第 {last_index + 1} 行")
+                            self._run_action_sequence(
+                                actions, hwnd, start_index=last_index,
+                                on_action=on_action,
+                            )
                 except EndCurrentScriptRequest as request:
+                    if self._single_action:
+                        self._log_event(
+                            f"单独执行：已{END_CURRENT_SCRIPT_LABEL}，本次单独执行结束。"
+                        )
+                        break
                     if request.repeat_only:
                         self._log_event(
                             f"已{END_CURRENT_SCRIPT_LABEL}本次执行；"
@@ -524,6 +553,7 @@ class CoreMixin:
             self._workflow_repeat_number = 0
             self._active_script_name = ""
             self._script_scope_managed = False
+            self._single_action = False
             self.running = False
         if jump_current_script_last:
             return JUMP_CURRENT_SCRIPT_LAST_RESULT
@@ -532,7 +562,9 @@ class CoreMixin:
                              start_index: int = 0,
                              script_stack: set[str] | None = None,
                              depth: int = 0,
-                             on_action: Callable[[int, int], None] | None = None) -> None:
+                             on_action: Callable[[int, int], None] | None = None,
+                             single_action: bool = False,
+                             segment_end: int | None = None) -> None:
         """Execute an action sequence (a script or a referenced script) in order."""
         nested_timeline_state = None
         if depth > 0:
@@ -552,6 +584,7 @@ class CoreMixin:
         try:
             self._run_action_sequence_body(
                 actions, hwnd, start_index, script_stack, depth, on_action,
+                single_action, segment_end,
             )
         finally:
             if nested_timeline_state is not None:
@@ -587,7 +620,9 @@ class CoreMixin:
                                   start_index: int,
                                   script_stack: set[str] | None,
                                   depth: int,
-                                  on_action: Callable[[int, int], None] | None) -> None:
+                                  on_action: Callable[[int, int], None] | None,
+                                  single_action: bool = False,
+                                  segment_end: int | None = None) -> None:
         """Execute a sequence after its caller has established timeline ownership."""
         action_indices_by_id = {
             str(action.get("action_id")): index
@@ -596,7 +631,14 @@ class CoreMixin:
         }
         index = max(0, min(int(start_index), max(0, len(actions) - 1)))
         total = len(actions)
-        while index < len(actions):
+        # 片段循环：这一趟只跑 [片段首行, 片段末行]；跳转目标落到片段之外就结束
+        # 本次片段（不追出去），否则“只跑这一段”就名不副实。
+        segment_mode = segment_end is not None
+        segment_first = index
+        segment_last = total - 1 if not segment_mode else min(
+            max(0, int(segment_end)), max(0, total - 1),
+        )
+        while index < len(actions) and index <= segment_last:
             action = actions[index]
             try:
                 # 动作边界守卫评估：命中时内联执行处理段（可携带跳转/结束/推进语义）。
@@ -632,6 +674,11 @@ class CoreMixin:
                 if depth > 0 and request.scope_action_ids \
                         and request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
                     raise EndCurrentScriptRepeatRequest()
+                if single_action:
+                    # 单独执行：检测跳转只用来结束这一行的等待（如阻塞等待），
+                    # 不顺着目标行继续执行。
+                    self._log_event("单独执行：全局检测要求跳转，只记录不继续执行。")
+                    return
                 # 守卫处理段要求跳到当前脚本某一行：按动作唯一标识解析后从该行继续。
                 if request.jump_action_id == NEXT_WORKFLOW_STEP_TARGET_ID:
                     raise EndCurrentScriptRequest()
@@ -644,6 +691,12 @@ class CoreMixin:
                     f"脚本[{self._active_script_name}]："
                     if self._active_script_name else ""
                 )
+                if segment_mode and not segment_first <= target_index <= segment_last:
+                    self._log_event(
+                        f"循环执行片段：全局检测跳转到第 {target_index + 1} 行，"
+                        "在片段之外，本次片段执行结束。"
+                    )
+                    return
                 self._log_event(
                     f"{script_context}全局检测跳转到第 {target_index + 1} 行执行。"
                 )
@@ -660,6 +713,11 @@ class CoreMixin:
             after_delay = max(0, int(action.get("after_delay_ms", 0)))
             if after_delay:
                 self._wait(self._scaled_delay(after_delay))
+            if single_action:
+                # 单独执行：这一行跑完就结束。跳转/结束/推进这类控制结果只记录，
+                # 不顺着目标行继续执行，否则就不再是“单独执行这一个动作”。
+                self._record_single_action_result(jump_target, action_indices_by_id)
+                return
             if jump_target is None:
                 index += 1
                 continue
@@ -682,9 +740,34 @@ class CoreMixin:
                 if not 1 <= jump_row <= len(actions):
                     raise RuntimeError(f"识图跳转行无效：第 {jump_row} 行，脚本共 {len(actions)} 行")
                 target_index = jump_row - 1
+            if segment_mode and not segment_first <= target_index <= segment_last:
+                self._log_event(
+                    f"循环执行片段：{self._jump_reason or '识图'}跳转到第 "
+                    f"{target_index + 1} 行，在片段之外，本次片段执行结束。"
+                )
+                return
             self._status(f"{self._jump_reason or '识图'}，跳到第 {target_index + 1} 行目标动作")
             index = target_index
             self._timeline.mark_boundary()
+    def _record_single_action_result(self, jump_target: tuple[str, str | int] | None,
+                                     action_indices_by_id: dict[str, int]) -> None:
+        """单独执行一个动作：记录这一行的控制结果，但不追着跳转目标继续执行。"""
+        if jump_target is None:
+            return
+        target_kind, target_value = jump_target
+        if target_kind == "end_current_script":
+            self._log_event(f"单独执行：已{END_CURRENT_SCRIPT_LABEL}，本次单独执行结束。")
+        elif target_kind == "next_workflow_step":
+            self._log_event("单独执行：目标为工作流下一项，独立执行时不推进工作流。")
+        elif target_kind == "action_id":
+            row = action_indices_by_id.get(str(target_value))
+            location = f"第 {row + 1} 行" if row is not None else f"动作 {target_value}"
+            self._log_event(f"单独执行：跳转目标为{location}，只记录不执行。")
+        else:
+            reason = self._jump_reason or "识图"
+            self._log_event(
+                f"单独执行：{reason}跳转到第 {target_value} 行，只记录不执行。"
+            )
     def _execute_action(self, action: dict, hwnd: int | None,
                         script_stack: set[str] | None = None,
                         depth: int = 0) -> tuple[str, str | int] | None:
@@ -883,11 +966,21 @@ class CoreMixin:
         elif kind == "global_detect":
             if self.on_global_detect_request and not self._script_scope_managed:
                 self.on_global_detect_request(action)
+            if self._single_action and depth == 0:
+                # 单独执行全局检测：注册后立刻注销等于没有测试价值，
+                # 保持检测直到触发（处理段已内联执行）或用户按 F12 停止。
+                # 只有被选中的那一行如此：引用脚本 / 录制动作内部的全局检测行
+                # 照常只注册守卫，不阻塞它们的内部步骤。
+                self._status("单独执行全局检测：保持检测中，触发后结束，或按 F12 停止")
+                while not self._poll_guards():
+                    self._wait(100)
         elif kind == "restart_workflow":
             if self.on_restart_workflow_request and self.on_restart_workflow_request(action):
                 # 应用已接管：停止当前工作流并从目标行重新执行。
                 raise PlaybackStopped()
             # 独立脚本运行时没有“当前工作流”，该固定动作不执行。
+            if self._single_action and depth == 0:
+                self._log_event("单独执行：重新执行工作流，独立执行时跳过。")
             return None
         elif kind == "end_current_script":
             raise EndCurrentScriptRequest(
@@ -1065,6 +1158,8 @@ class CoreMixin:
             if self.on_notice:
                 self.on_notice(text, duration)
         elif kind in {"comment", None}:
+            if self._single_action and depth == 0:
+                self._trace("单独执行：注释行，无实际操作。")
             return
         else:
             raise RuntimeError(f"未知动作类型：{kind}")

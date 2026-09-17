@@ -145,7 +145,11 @@ class WorkflowMixin:
         row = max(0, int(mapping.get(label, 0) or 0))
         self.workflow.restart_default_row = row
         self._schedule_workflow_draft_save()
+    def _refresh_workflow_segment_bar(self, _event=None) -> None:
+        """工作流表格选中一段步骤时，在最左边画出那根实心竖条。"""
+        self._refresh_row_segment_bar(self.workflow_tree, "workflow_segment_painted")
     def rebuild_workflow_tree(self):
+        self._reset_row_segment_bar("workflow_segment_painted")
         self._sync_workflow_restart_default_ui()
         self.workflow_tree.delete(*self.workflow_tree.get_children())
         workflow_steps = self._workflow_only_steps()
@@ -188,7 +192,7 @@ class WorkflowMixin:
             self.workflow_tree.insert(
                 "", "end", iid=str(index),
                 values=(
-                    index + 1, script_label, repeat_label,
+                    "", index + 1, script_label, repeat_label,
                     f"{step.get('before_ms', 0)} ms",
                     f"{step.get('repeat_interval_ms', DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)} ms",
                     status_label,
@@ -654,16 +658,17 @@ class WorkflowMixin:
             foreground=[("selected", foreground)],
         )
     def _edit_workflow_cell(self, event):
+        # 最左边两列是「片段竖条」与「步骤」序号，双击它们不编辑任何单元格。
         row = self.workflow_tree.identify_row(event.y)
         column = self.workflow_tree.identify_column(event.x)
-        if not row or column == "#1":
+        if not row or column in {"#1", "#2"}:
             return
         index = int(row)
         workflow_steps = self._workflow_only_steps()
         if not 0 <= index < len(workflow_steps):
             return
         step = workflow_steps[index]
-        if column == "#2":
+        if column == "#3":
             if step.get("kind") == "module":
                 action = ModulePickerDialog(
                     self.root, categories=("switch", "special"), allow_number=False,
@@ -689,7 +694,7 @@ class WorkflowMixin:
                 if not path:
                     return
                 step["script"] = display_path(Path(path))
-        elif column == "#3":
+        elif column == "#4":
             if step.get("kind") == "module":
                 repeat_script = MacroScript(
                     name=self._workflow_step_name(step),
@@ -716,7 +721,7 @@ class WorkflowMixin:
                 step["repeat_start_action_id"] = values["repeat_start_action_id"]
             else:
                 step.pop("repeat_start_action_id", None)
-        elif column == "#4":
+        elif column == "#5":
             value = DurationDialog(
                 self.root, "开始前等待", "执行这一行前等待：",
                 int(step.get("before_ms", 0)),
@@ -724,7 +729,7 @@ class WorkflowMixin:
             if value is None:
                 return
             step["before_ms"] = value
-        elif column == "#5":
+        elif column == "#6":
             value = DurationDialog(
                 self.root, "重复间隔", "同一脚本相邻两次执行之间等待：",
                 int(step.get("repeat_interval_ms", DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)),
@@ -732,7 +737,7 @@ class WorkflowMixin:
             if value is None:
                 return
             step["repeat_interval_ms"] = value
-        elif column == "#6":
+        elif column == "#7":
             step["enabled"] = not bool(step.get("enabled", True))
         else:
             return
@@ -1183,17 +1188,22 @@ class WorkflowMixin:
                      resume_action_index: int | None = None,
                      preserve_global_rearm_locks: bool = False,
                      test_mode: bool | None = None,
-                     suppress_start_sound: bool = False):
+                     suppress_start_sound: bool = False,
+                     segment: tuple[int, int] | None = None,
+                     segment_repeats: int = 1):
+        """执行工作流；segment = 只循环执行「开头行 → 结尾行」这一段。"""
         return self._run_detection_entrypoint(
             self._run_workflow_impl, start_index, start_repeat,
             resume_action_index, preserve_global_rearm_locks, test_mode,
-            suppress_start_sound,
+            suppress_start_sound, segment=segment, segment_repeats=segment_repeats,
         )
     def _run_workflow_impl(self, start_index: int = 0, start_repeat: int = 0,
                       resume_action_index: int | None = None,
                       preserve_global_rearm_locks: bool = False,
                       test_mode: bool | None = None,
-                      suppress_start_sound: bool = False):
+                      suppress_start_sound: bool = False,
+                      segment: tuple[int, int] | None = None,
+                      segment_repeats: int = 1):
         recorder = getattr(self, "recorder", None)
         if recorder is not None and recorder.running:
             self.stop_recording()
@@ -1208,6 +1218,15 @@ class WorkflowMixin:
         if resume_action_index is None:
             self._begin_detection_run()
         self._ensure_detection_worker()
+        # 片段：只跑「开头行 → 结尾行」这一段，轮次由用户指定。
+        segment_end = None
+        segment_rounds = max(1, int(segment_repeats))
+        if segment is not None:
+            first, last = sorted((int(segment[0]), int(segment[1])))
+            start_index = max(0, min(first, max(0, len(workflow_steps) - 1)))
+            segment_end = max(
+                start_index, min(last, max(0, len(workflow_steps) - 1)),
+            )
         start_index = max(0, min(int(start_index), max(0, len(workflow_steps) - 1)))
         if resume_action_index is None:
             if test_mode is None:
@@ -1227,6 +1246,7 @@ class WorkflowMixin:
         missing_rows = [
             index + 1 for index, step in enumerate(workflow_steps)
             if index >= start_index
+            if segment_end is None or index <= segment_end
             if bool(step.get("enabled", True))
             if step.get("kind") != "module"
             if not resolve_path(step.get("script", "")).is_file()
@@ -1290,7 +1310,12 @@ class WorkflowMixin:
         # 断点恢复属于同一次运行，必须沿用原始开始时间。
         self._reset_execution_clock_for_new_run(resume_action_index)
         steps = [dict(step) for step in workflow_steps]
-        if start_index:
+        if segment_end is not None:
+            initial_progress = (
+                f"工作流片段 第 {start_index + 1}-{segment_end + 1}/{len(steps)} 行 · "
+                f"循环 {segment_rounds} 次 · 等待开始 · F12 停止"
+            )
+        elif start_index:
             initial_progress = f"工作流从第 {start_index + 1}/{len(steps)} 行开始 · 等待开始 · F12 停止"
         else:
             initial_progress = f"工作流 0/{len(steps)} · 等待开始 · F12 停止"
@@ -1301,7 +1326,7 @@ class WorkflowMixin:
                   activate_target, start_index, global_modules,
                   start_repeat, resume_action_index, workflow_activation_hwnd,
                   self.workflow_test_mode_active, start_delay_seconds,
-                  workflow_activation_allowed),
+                  workflow_activation_allowed, segment_end, segment_rounds),
             daemon=True,
         )
         self.worker.start()
@@ -1309,7 +1334,14 @@ class WorkflowMixin:
         if self.workflow_test_mode_active:
             self._append_mini_step("工作流测试模式：普通计次行最多执行 1 次，且不扣减剩余次数。")
             self._log("工作流测试模式已启用：普通计次行最多执行 1 次；不计次数行保持原样。")
-        if start_index:
+        if segment_end is not None:
+            segment_text = (
+                f"循环执行片段：工作流第 {start_index + 1}-{segment_end + 1} 行，"
+                f"共 {segment_rounds} 轮（每轮按顺序各执行一次，不扣减各行剩余次数）。"
+            )
+            self._append_mini_step(segment_text)
+            self._log(segment_text)
+        elif start_index:
             self._append_mini_step(f"从第 {start_index + 1}/{len(steps)} 行开始执行工作流。")
         else:
             self._append_mini_step(f"开始执行工作流，共 {len(steps)} 个步骤。")
@@ -1318,7 +1350,8 @@ class WorkflowMixin:
                              start_index=0, global_modules=None, start_repeat=0,
                              resume_action_index=None, workflow_activation_hwnd=None,
                              test_mode=False, start_delay_seconds=0,
-                             activation_allowed=True):
+                             activation_allowed=True, segment_end=None,
+                             segment_repeats=1):
         try:
             if start_at and start_at > datetime.now():
                 seconds = (start_at - datetime.now()).total_seconds()
@@ -1365,6 +1398,13 @@ class WorkflowMixin:
             if self._workflow_needs_ocr(steps, global_modules) and not self._ensure_ocr_ready():
                 return
             start_index = max(0, min(int(start_index), max(0, len(steps) - 1)))
+            # 片段循环：只跑「开头行 → 结尾行」这一段，并按轮重复；每轮里每一行
+            # 各执行一次，各行的剩余次数不参与也不扣减。
+            segment_mode = segment_end is not None
+            last_index = len(steps) - 1 if not segment_mode else max(
+                start_index, min(int(segment_end), max(0, len(steps) - 1)),
+            )
+            segment_rounds = max(1, int(segment_repeats)) if segment_mode else 1
             self.current_workflow_step_index = start_index if steps else None
             self.current_workflow_repeat_index = 0
             self.current_workflow_action_index = 0
@@ -1378,7 +1418,7 @@ class WorkflowMixin:
                 if bool(step.get("enabled", True)) and not bool(step.get("unlimited", False))
                 and self._workflow_module_enabled(step)
             ]
-            if not test_mode and counted_steps \
+            if not test_mode and not segment_mode and counted_steps \
                     and all(int(step.get("repeats", 1)) <= 0 for step in counted_steps):
                 # 所有计次脚本都已执行完毕：整个工作流结束，不再循环执行不计次数脚本。
                 self._clear_global_guards()
@@ -1428,7 +1468,24 @@ class WorkflowMixin:
             pending_activation_hwnd = workflow_activation_hwnd
             pending_activation_prepared = activation_prepared
             activation_consumed = False
-            for index in range(start_index, len(steps)):
+            # 片段循环的执行顺序摊平成一张计划表：每轮从开头行到结尾行各走一遍。
+            # 不循环时（整轮执行 / 从选中行执行）就是原来的 start_index → 末尾。
+            step_plan = [
+                (round_index, index)
+                for round_index in range(segment_rounds)
+                for index in range(start_index, last_index + 1)
+            ]
+            reported_round = -1
+            for round_index, index in step_plan:
+                if segment_mode and round_index != reported_round:
+                    reported_round = round_index
+                    round_text = (
+                        f"循环执行片段 第 {start_index + 1}-{last_index + 1} 行 · "
+                        f"第 {round_index + 1}/{segment_rounds} 轮"
+                    )
+                    self._ui(self._set_execution_progress, f"{round_text} · F12 停止")
+                    self._ui(self._append_mini_step, f"{round_text}：开始。")
+                    self._ui(self._log, f"{round_text}：开始。")
                 step = steps[index]
                 if self.workflow_stop.is_set():
                     return
@@ -1456,7 +1513,7 @@ class WorkflowMixin:
                     continue
                 unlimited = bool(step.get("unlimited", False))
                 planned_repeats = int(step.get("repeats", 1))
-                if not unlimited and planned_repeats <= 0:
+                if not segment_mode and not unlimited and planned_repeats <= 0:
                     exhausted_name = self._workflow_step_name(step)
                     message = f"— 跳过工作流第 {script_number}/{len(steps)} 行：{exhausted_name}，执行次数已用完"
                     self._ui(self._set_execution_progress, message)
@@ -1496,13 +1553,18 @@ class WorkflowMixin:
                 self._ui(self._set_status, f"工作流步骤 {index + 1}/{len(steps)}", "warning")
                 if before and not self._guard_wait(before / 1000):
                     return
-                repeats = 1 if unlimited else (min(planned_repeats, 1) if test_mode else planned_repeats)
-                repeat_desc = (
-                    "不计次数，每次到达执行 1 次"
-                    if unlimited else
-                    f"测试执行 {repeats} 次（不扣减）" if test_mode else
-                    f"执行 {repeats} 次"
+                repeats = (
+                    1 if unlimited or segment_mode
+                    else (min(planned_repeats, 1) if test_mode else planned_repeats)
                 )
+                if segment_mode:
+                    repeat_desc = "片段循环，每轮执行 1 次（不扣减次数）"
+                elif unlimited:
+                    repeat_desc = "不计次数，每次到达执行 1 次"
+                elif test_mode:
+                    repeat_desc = f"测试执行 {repeats} 次（不扣减）"
+                else:
+                    repeat_desc = f"执行 {repeats} 次"
                 repeat_interval = max(0, int(step.get(
                     "repeat_interval_ms", DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
                 )))
@@ -1578,8 +1640,9 @@ class WorkflowMixin:
                     on_repeat=lambda current, total, number=script_number, name=script.name: self._record_workflow_repeat(
                         current, total, number, len(steps), name,
                     ),
-                    on_repeat_complete=lambda _current, _total, row=index, testing=test_mode: self._consume_workflow_repeat_from_worker(
-                        row, testing,
+                    on_repeat_complete=None if segment_mode else (
+                        lambda _current, _total, row=index, testing=test_mode:
+                        self._consume_workflow_repeat_from_worker(row, testing)
                     ),
                 )
                 played_any_step = True

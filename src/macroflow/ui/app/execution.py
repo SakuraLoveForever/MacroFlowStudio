@@ -117,9 +117,9 @@ class ExecutionMixin:
         if worker is not None:
             worker.close()
             self._detection_worker = None
-    def _run_detection_entrypoint(self, callback, *args):
+    def _run_detection_entrypoint(self, callback, *args, **kwargs):
         try:
-            return callback(*args)
+            return callback(*args, **kwargs)
         except BaseException:
             self._shutdown_detection_worker()
             raise
@@ -129,11 +129,19 @@ class ExecutionMixin:
             self._notify("从选中行运行", "请先选择一行动作。")
             return
         self.run_current_script(start_index=selected[0])
-    def run_current_script(self, start_index: int = 0):
+    def run_current_script(self, start_index: int = 0,
+                           single_action_repeats: int | None = None,
+                           segment: tuple[int, int] | None = None,
+                           segment_repeats: int = 1):
+        """执行当前脚本；single_action_repeats = 单独执行起始行，segment = 循环执行那一段。"""
         return self._run_detection_entrypoint(
-            self._run_current_script_impl, start_index,
+            self._run_current_script_impl, start_index, single_action_repeats,
+            segment=segment, segment_repeats=segment_repeats,
         )
-    def _run_current_script_impl(self, start_index: int = 0):
+    def _run_current_script_impl(self, start_index: int = 0,
+                                 single_action_repeats: int | None = None,
+                                 segment: tuple[int, int] | None = None,
+                                 segment_repeats: int = 1):
         if self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
@@ -143,10 +151,26 @@ class ExecutionMixin:
         if not self.script.actions and not trigger.get("template"):
             self._notify("没有动作", "请先录制或添加动作。")
             return
-        start_index = max(0, min(int(start_index), len(self.script.actions) - 1))
+        total_actions = len(self.script.actions)
+        # 片段：只跑「开头行 → 结尾行」这一段，次数是这一段循环几轮。
+        # 与单独执行互斥——那是只跑一行，这是一段。
+        segment_end = None
+        if segment is not None:
+            first, last = sorted((int(segment[0]), int(segment[1])))
+            start_index = max(0, min(first, total_actions - 1))
+            segment_end = max(start_index, min(last, total_actions - 1))
+        start_index = max(0, min(int(start_index), total_actions - 1))
         self._begin_detection_run()
         self._ensure_detection_worker()
-        repeats = max(1, int(self.repeat_var.get()))
+        # 单独执行某一行动作：次数是这一行的调用次数，其余动作一概不执行
+        # （动作列表仍整份交给播放器，动作ID/跳转目标/脚本上下文都要在）。
+        single_action = single_action_repeats is not None and segment_end is None
+        if single_action:
+            repeats = max(1, int(single_action_repeats))
+        elif segment_end is not None:
+            repeats = max(1, int(segment_repeats))
+        else:
+            repeats = max(1, int(self.repeat_var.get()))
         hwnd = self._bound_hwnd()
         activation_enabled, activation_signature = self._activation_settings_from_script()
         activation_hwnd = None
@@ -162,13 +186,25 @@ class ExecutionMixin:
         source_screen = dict(self.script.settings.get("recorded_screen", {})) or None
         self.workflow_stop.clear()
         self.execution_started_at = time.perf_counter()
-        start_note = f"从第 {start_index + 1}/{len(self.script.actions)} 行开始 · " if start_index else ""
-        self._set_execution_progress(f"当前脚本 · {start_note}共执行 {repeats} 次 · 正在准备 · F12 停止")
+        if single_action:
+            self._set_execution_progress(
+                f"单独执行第 {start_index + 1}/{total_actions} 行动作 · "
+                f"共 {repeats} 次 · 正在准备 · F12 停止"
+            )
+        elif segment_end is not None:
+            self._set_execution_progress(
+                f"循环执行片段 第 {start_index + 1}-{segment_end + 1}/{total_actions} 行 · "
+                f"共 {repeats} 次 · 正在准备 · F12 停止"
+            )
+        else:
+            start_note = f"从第 {start_index + 1}/{total_actions} 行开始 · " if start_index else ""
+            self._set_execution_progress(f"当前脚本 · {start_note}共执行 {repeats} 次 · 正在准备 · F12 停止")
         self.worker = threading.Thread(
             target=self._run_script_worker,
             args=(list(self.script.actions), repeats, hwnd, activation_hwnd,
                   source_screen, focus_enabled, activate_target, start_index),
-            kwargs={"trigger": trigger, "script_name": self.script.name},
+            kwargs={"trigger": trigger, "script_name": self.script.name,
+                    "single_action": single_action, "segment_end": segment_end},
             daemon=True,
         )
         # 先启动执行线程再收尾 UI：输入法切换/输入锁定与托盘隐藏、提示音
@@ -177,23 +213,45 @@ class ExecutionMixin:
         self._sound("run_start")
         self._hide_main_for_execution()
         self._show_execution_mini()
-        if start_index:
+        if single_action:
             self._append_mini_step(
-                f"从第 {start_index + 1}/{len(self.script.actions)} 行开始执行，重复 {repeats} 次。"
+                f"单独执行第 {start_index + 1}/{total_actions} 行动作，共 {repeats} 次。"
+            )
+        elif segment_end is not None:
+            self._append_mini_step(
+                f"循环执行片段 第 {start_index + 1}-{segment_end + 1}/{total_actions} 行，"
+                f"共 {repeats} 次。"
+            )
+        elif start_index:
+            self._append_mini_step(
+                f"从第 {start_index + 1}/{total_actions} 行开始执行，重复 {repeats} 次。"
             )
         else:
             self._append_mini_step(f"开始执行当前脚本，重复 {repeats} 次。")
     def _run_script_worker(self, actions, repeats, hwnd, activation_hwnd, source_screen,
                            focus_enabled, activate_target, start_index=0, trigger=None,
-                           script_name: str = ""):
+                           script_name: str = "", single_action: bool = False,
+                           segment_end: int | None = None):
         script_label = str(script_name).strip() or "未命名脚本"
+        segment_mode = segment_end is not None
         # 明细日志的层级标题：先写明是哪个脚本、共几行、执行几次，再往下逐行记。
         self._set_trace_context(
             step=0, steps=0, script=script_label,
             total=len(actions), repeat=0, repeats=repeats,
         )
         self._ui(self._set_status, "正在执行脚本…", "warning")
-        if start_index:
+        if single_action:
+            self._ui(
+                self._log,
+                f"单独执行第 {start_index + 1}/{len(actions)} 行动作：{script_label}，共 {repeats} 次。",
+            )
+        elif segment_mode:
+            self._ui(
+                self._log,
+                f"循环执行片段：{script_label} 第 {start_index + 1}-{segment_end + 1} 行，"
+                f"共 {repeats} 次。",
+            )
+        elif start_index:
             self._ui(
                 self._log,
                 f"从第 {start_index + 1}/{len(actions)} 行开始执行脚本：{script_label}，重复 {repeats} 次。",
@@ -220,20 +278,33 @@ class ExecutionMixin:
             # 纯键鼠/模板匹配脚本跳过等待立即开始。
             if self._script_needs_ocr(actions) and not self._ensure_ocr_ready():
                 return
+            if single_action:
+                progress_prefix = f"单独执行第 {start_index + 1}/{len(actions)} 行 · "
+            elif segment_mode:
+                progress_prefix = (
+                    f"循环执行片段 第 {start_index + 1}-{segment_end + 1} 行 · "
+                )
+            else:
+                progress_prefix = "当前脚本 · "
+                if start_index:
+                    progress_prefix += f"从第 {start_index + 1}/{len(actions)} 行 · "
             self.player.play(
                 actions, repeats, hwnd, source_screen=source_screen,
                 script_name=script_label,
                 activate_target=activate_target, activation_hwnd=activation_hwnd,
                 activation_prepared=activation_prepared,
                 start_index=start_index,
+                single_action=single_action,
+                segment_end=segment_end,
                 on_repeat=lambda current, total: self._ui(
                     self._set_execution_progress,
-                    f"当前脚本 · "
-                    f"{'从第 ' + str(start_index + 1) + '/' + str(len(actions)) + ' 行 · ' if start_index else ''}"
+                    f"{progress_prefix}"
                     f"共执行 {total} 次 · 当前第 {current}/{total} 次 · F12 停止",
                 ),
             )
-            if not self.player.stop_event.is_set():
+            # 单独执行 / 片段循环都是有界的试跑：不做“按脚本触发条件持续检测”的
+            # 全局脚本收尾。
+            if not self.player.stop_event.is_set() and not single_action and not segment_mode:
                 if trigger and str(trigger.get("template", "")).strip():
                     # 全局脚本：播放完成后不结束，保持守卫检测直到停止；
                     # 触发条件满足时在播放器内联重新执行语句体（脚本内的所有动作）。

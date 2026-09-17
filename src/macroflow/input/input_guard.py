@@ -345,14 +345,21 @@ class KeyCapturer:
     """Capture the next physical key press via a low-level keyboard hook.
 
     The hook consumes the key-down event so it never reaches other windows.
-    Esc cancels, F8 / F9 / F12 (software hotkeys) and injected keys pass
-    through untouched. Callbacks fire on the hook thread; callers marshal
-    them back to the UI thread (e.g. widget.after).
+    Esc cancels by default, or is captured when ``allow_escape`` is true.
+    F8 / F9 / F12 (software hotkeys) and injected keys pass through untouched.
+    Callbacks fire on the hook thread; callers marshal them back to the UI
+    thread (e.g. widget.after).
     """
 
-    def __init__(self, on_key: Callable[[int], None], on_cancel: Callable[[], None] | None = None):
+    def __init__(
+        self,
+        on_key: Callable[[int], None],
+        on_cancel: Callable[[], None] | None = None,
+        allow_escape: bool = False,
+    ):
         self._on_key = on_key
         self._on_cancel = on_cancel
+        self._allow_escape = bool(allow_escape)
         self.active = False
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
@@ -391,7 +398,7 @@ class KeyCapturer:
                 data = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                 vk = int(data.vkCode)
                 if int(wparam) in (WM_KEYDOWN, WM_SYSKEYDOWN) and not (int(data.flags) & LLKHF_INJECTED):
-                    if vk == VK_ESCAPE:
+                    if vk == VK_ESCAPE and not self._allow_escape:
                         if self._on_cancel:
                             try:
                                 self._on_cancel()
@@ -407,7 +414,7 @@ class KeyCapturer:
                                 pass
                         user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
                         return 1
-                # Esc / reserved hotkeys / injected keys: let them through.
+                # Reserved hotkeys / injected keys: let them through.
             return user32.CallNextHookEx(self._keyboard_hook, code, wparam, lparam)
 
         self._keyboard_proc = keyboard_proc

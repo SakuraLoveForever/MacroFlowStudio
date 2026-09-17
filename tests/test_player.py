@@ -1007,7 +1007,7 @@ class PlayerTests(unittest.TestCase):
         entered = []
         exited = []
         player = MacroPlayer(
-            on_script_scope_enter=lambda actions: entered.append(1) or (),
+            on_script_scope_enter=lambda actions, origin_row=0, last_row=None: entered.append(1) or (),
             on_script_scope_exit=lambda keys: exited.append(1),
         )
         player._status = lambda text: None
@@ -1024,7 +1024,7 @@ class PlayerTests(unittest.TestCase):
         entered = []
         exited = []
         player = MacroPlayer(
-            on_script_scope_enter=lambda actions: entered.append(1) or (),
+            on_script_scope_enter=lambda actions, origin_row=0, last_row=None: entered.append(1) or (),
             on_script_scope_exit=lambda keys: exited.append(1),
         )
         player._status = lambda text: None
@@ -1037,7 +1037,9 @@ class PlayerTests(unittest.TestCase):
         # 否则起始行之前的全局模块行会被照常启用（表现为“还是从头执行”）。
         rows = []
         player = MacroPlayer(
-            on_script_scope_enter=lambda actions, origin_row=0: rows.append(origin_row) or (),
+            on_script_scope_enter=(
+                lambda actions, origin_row=0, last_row=None: rows.append(origin_row) or ()
+            ),
         )
         player._status = lambda text: None
         actions = [
@@ -1053,7 +1055,9 @@ class PlayerTests(unittest.TestCase):
     def test_script_scope_exits_before_repeat_completion_and_interval(self):
         events = []
         player = MacroPlayer(
-            on_script_scope_enter=lambda _actions: events.append("enter") or "scope",
+            on_script_scope_enter=(
+                lambda _actions, origin_row=0, last_row=None: events.append("enter") or "scope"
+            ),
             on_script_scope_exit=lambda token: events.append(("exit", token)),
         )
         player._status = lambda _text: None
@@ -3754,7 +3758,9 @@ class PlayerTests(unittest.TestCase):
             {"type": "comment", "action_id": "start"},
         ]
         player = MacroPlayer(
-            on_script_scope_enter=lambda value: events.append(("enter", value)) or "scope",
+            on_script_scope_enter=(
+                lambda value, origin_row=0, last_row=None: events.append(("enter", value)) or "scope"
+            ),
             on_script_scope_exit=lambda token: events.append(("exit", token)),
         )
 
@@ -4878,6 +4884,363 @@ class PlayerTests(unittest.TestCase):
             "type": "close_app", "name": "demo.exe", "graceful": False,
         })
         self.assertIn("强制", detail)
+
+
+class SingleActionPlaybackTests(unittest.TestCase):
+    """单独执行一个动作：只跑这一行，次数是这一行的调用次数，控制流不逃出边界。"""
+
+    @staticmethod
+    def _collector():
+        notices = []
+        logs = []
+        player = MacroPlayer(
+            on_notice=lambda text, _duration: notices.append(text),
+            on_log=logs.append,
+        )
+        return player, notices, logs
+
+    def test_only_the_selected_action_runs(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "notice", "text": "第一行", "duration_ms": 1},
+            {"type": "notice", "text": "选中行", "duration_ms": 1},
+            {"type": "notice", "text": "第三行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, single_action=True)
+        self.assertEqual(notices, ["选中行"])
+
+    def test_repeats_are_the_call_count_of_the_selected_action(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "notice", "text": "第一行", "duration_ms": 1},
+            {"type": "notice", "text": "选中行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=3, start_index=1, single_action=True)
+        self.assertEqual(notices, ["选中行"] * 3)
+
+    def test_selected_row_keeps_its_own_count_and_delays(self):
+        # 一行连点 3 次，单独执行 2 次 → 6 下；执行前后延时照旧生效。
+        player = MacroPlayer()
+        waits = []
+        player._wait = lambda milliseconds: waits.append(milliseconds)
+        with patch_player("send_button") as button, \
+             patch_player("send_move_absolute"):
+            player.play([
+                {"type": "repeat_click", "button": "left", "x": 5, "y": 6,
+                 "count": 3, "interval_ms": 10, "hold_ms": 1,
+                 "delay_ms": 20, "after_delay_ms": 30},
+            ], repeats=2, single_action=True)
+        downs = [item for item in button.call_args_list if item.args[1] is True]
+        self.assertEqual(len(downs), 6)
+        self.assertIn(20, waits)
+        self.assertIn(30, waits)
+
+    def test_recorded_action_keeps_its_internal_steps(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "recorded_input", RECORDED_INPUT_STEPS_KEY: [
+                {"type": "notice", "text": "录制步骤一", "duration_ms": 1},
+                {"type": "notice", "text": "录制步骤二", "duration_ms": 1},
+            ]},
+            {"type": "notice", "text": "第三行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, single_action=True)
+        self.assertEqual(notices, ["录制步骤一", "录制步骤二"])
+
+    def test_referenced_script_keeps_its_own_internal_repeat_count(self):
+        player, notices, _logs = self._collector()
+        with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
+            ref_path = Path(folder) / "referenced.json"
+            ref_path.write_text(json.dumps({
+                "name": "被引用脚本",
+                "actions": [{"type": "notice", "text": "引用动作", "duration_ms": 1}],
+            }, ensure_ascii=False), encoding="utf-8")
+            actions = [
+                {"type": "comment", "text": "起点"},
+                {"type": "script_ref", "script": str(ref_path), "repeats": 2, "delay_ms": 0},
+                {"type": "notice", "text": "第三行", "duration_ms": 1},
+            ]
+            player.play(actions, repeats=1, start_index=1, single_action=True)
+        self.assertEqual(notices, ["引用动作", "引用动作"])
+
+    def test_image_action_keeps_its_own_detection_logic(self):
+        player, notices, _logs = self._collector()
+        match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.95,
+        }
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "image_match", "template": "images/目标.png", "delay_ms": 0,
+             "on_found": "click", "found_delay_ms": 5,
+             "click_target": "custom", "click_point": [700, 500],
+             "show_result_notice": False},
+            {"type": "notice", "text": "第三行", "duration_ms": 1},
+        ]
+        with patch_player("find_template", return_value=match), \
+             patch_player("send_move_absolute") as move, \
+             patch_player("send_button"):
+            player.play(actions, repeats=1, start_index=1, single_action=True)
+        move.assert_called_once_with(700, 500)
+        self.assertEqual(notices, [])
+
+    def test_image_jump_does_not_escape_the_single_action(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "image_match", "template": "images/目标.png",
+             "timeout_ms": 0, "delay_ms": 0,
+             "on_timeout": "jump", "timeout_jump_row": 3,
+             "show_result_notice": False},
+            {"type": "notice", "text": "目标行", "duration_ms": 1},
+        ]
+        with patch_player("find_template", return_value=None):
+            player.play(actions, repeats=1, start_index=1, single_action=True)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("只记录不执行" in text for text in logs))
+
+    def test_referenced_script_internal_global_detect_is_not_held(self):
+        # 单独执行引用脚本行时，被引用脚本内部的全局检测行照常只注册守卫，
+        # 不进入“保持检测直到触发”的等待（那是单独执行这一行本身才有的行为）。
+        with tempfile.TemporaryDirectory(dir=BASE_DIR) as folder:
+            ref_path = Path(folder) / "referenced.json"
+            ref_path.write_text(json.dumps({
+                "name": "被引用脚本",
+                "actions": [
+                    # jump_row 让它作为「内嵌全局模块行」留在动作列表里
+                    # （没有 jump_row 的 global_detect 会被当成旧全局脚本迁移掉）。
+                    {"type": "global_detect", "template": "images/guard.png", "jump_row": 0},
+                    {"type": "notice", "text": "引用脚本后续动作", "duration_ms": 1},
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+            requests = []
+            notices = []
+            player = MacroPlayer(
+                on_notice=lambda text, _duration: notices.append(text),
+                on_global_detect_request=requests.append,
+            )
+            waits = []
+
+            def wait(milliseconds):
+                waits.append(milliseconds)
+                if len(waits) > 10:
+                    raise AssertionError("引用脚本内部的全局检测不应进入保持等待")
+
+            player._wait = wait
+            player.play([
+                {"type": "comment", "text": "起点"},
+                {"type": "script_ref", "script": str(ref_path), "delay_ms": 0},
+            ], repeats=1, start_index=1, single_action=True)
+        self.assertEqual(requests, [{"type": "global_detect", "template": "images/guard.png",
+                                     "jump_row": 0}])
+        self.assertEqual(notices, ["引用脚本后续动作"])
+
+    def test_jump_action_records_target_without_running_it(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "jump", "jump_row": 3, "workflow_repeat_at_least_2": False},
+            {"type": "notice", "text": "目标行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, single_action=True)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("只记录不执行" in text for text in logs))
+
+    def test_jump_to_last_row_does_not_execute_the_last_row(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "jump_current_script_last"},
+            {"type": "notice", "text": "最后一行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=0, single_action=True)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("只记录不执行" in text for text in logs))
+
+    def test_end_current_script_action_ends_the_single_action_run(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "end_current_script"},
+            {"type": "notice", "text": "第二行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=3, start_index=0, single_action=True)
+        self.assertEqual(notices, [])
+        self.assertEqual(
+            len([text for text in logs if "单独执行：已" in text]), 1,
+            "结束动作只记录一次，剩余重复立即结束",
+        )
+
+    def test_restart_workflow_is_skipped_when_running_alone(self):
+        player, notices, logs = self._collector()
+        player.on_restart_workflow_request = lambda _action: False
+        actions = [
+            {"type": "restart_workflow"},
+            {"type": "notice", "text": "第二行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=0, single_action=True)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("独立执行时跳过" in text for text in logs))
+
+    def test_comment_row_completes_without_side_effects(self):
+        traces = []
+        player = MacroPlayer(on_trace_line=traces.append)
+        player.play([
+            {"type": "comment", "text": "备注"},
+            {"type": "notice", "text": "第二行", "duration_ms": 1},
+        ], repeats=1, start_index=0, single_action=True)
+        self.assertTrue(any("无实际操作" in text for text in traces))
+
+    def test_block_is_released_by_a_guard_jump_without_following_it(self):
+        player, notices, _logs = self._collector()
+        polls = []
+
+        def poll():
+            polls.append(1)
+            return None if len(polls) == 1 else {"kind": "success"}
+
+        player.on_guard_poll = poll
+        player.handle_guard_hit = Mock(side_effect=GuardJumpRequest(jump_row=2))
+        player._wait = lambda _milliseconds: None
+        actions = [
+            {"type": "block"},
+            {"type": "notice", "text": "第二行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=0, single_action=True)
+        player.handle_guard_hit.assert_called_once()
+        self.assertEqual(notices, [])
+
+    def test_global_detect_keeps_detecting_until_it_triggers(self):
+        player, notices, _logs = self._collector()
+        requests = []
+        player.on_global_detect_request = requests.append
+        polls = []
+
+        def poll():
+            polls.append(1)
+            # 守卫一直不触发 → 保持检测；第 3 次评估才命中。
+            return {"kind": "success"} if len(polls) == 3 else None
+
+        player.on_guard_poll = poll
+        player.handle_guard_hit = Mock()
+        player._wait = lambda _milliseconds: None
+        actions = [
+            {"type": "global_detect", "template": "images/guard.png", "jump_row": 0},
+            {"type": "notice", "text": "第二行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=0, single_action=True)
+        self.assertEqual(requests, [actions[0]])
+        self.assertGreaterEqual(len(polls), 3)
+        player.handle_guard_hit.assert_called_once()
+        self.assertEqual(notices, [])
+
+    def test_stop_during_single_action_releases_held_input(self):
+        player = MacroPlayer()
+        player._held_keys.add(65)
+        with patch_player("send_key") as key:
+            player.play(
+                [{"type": "delay", "ms": 5}, {"type": "notice", "text": "第二行"}],
+                repeats=3, start_index=0, single_action=True,
+                on_repeat=lambda _current, _total: player.stop(),
+            )
+        self.assertIn(call(65, False), key.call_args_list)
+        self.assertFalse(player.running)
+
+
+class SegmentPlaybackTests(unittest.TestCase):
+    """循环执行片段：只跑选中的那一段，按轮重复，跳转不逃出片段。"""
+
+    @staticmethod
+    def _collector():
+        notices = []
+        logs = []
+        player = MacroPlayer(
+            on_notice=lambda text, _duration: notices.append(text),
+            on_log=logs.append,
+        )
+        return player, notices, logs
+
+    def test_only_the_selected_segment_runs(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "notice", "text": "第一行", "duration_ms": 1},
+            {"type": "notice", "text": "片段首行", "duration_ms": 1},
+            {"type": "notice", "text": "片段末行", "duration_ms": 1},
+            {"type": "notice", "text": "第四行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, segment_end=2)
+        self.assertEqual(notices, ["片段首行", "片段末行"])
+
+    def test_every_round_runs_the_whole_range_in_order(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "notice", "text": "片段首行", "duration_ms": 1},
+            {"type": "notice", "text": "片段末行", "duration_ms": 1},
+            {"type": "notice", "text": "片段之外", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=3, start_index=0, segment_end=1)
+        self.assertEqual(notices, ["片段首行", "片段末行"] * 3)
+
+    def test_segment_keeps_each_row_delay_and_skips_rows_outside(self):
+        player = MacroPlayer()
+        waits = []
+        player._wait = lambda milliseconds: waits.append(milliseconds)
+        actions = [
+            {"type": "delay", "ms": 30, "delay_ms": 0},
+            {"type": "delay", "ms": 40, "delay_ms": 0},
+            {"type": "delay", "ms": 50, "delay_ms": 0},
+        ]
+        player.play(actions, repeats=2, start_index=0, segment_end=1)
+        self.assertEqual(waits.count(30), 2)
+        self.assertEqual(waits.count(40), 2)
+        self.assertNotIn(50, waits)
+
+    def test_jump_outside_the_segment_ends_the_run(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "jump", "jump_row": 3, "workflow_repeat_at_least_2": False},
+            {"type": "notice", "text": "片段之外", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=2, start_index=1, segment_end=1)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("在片段之外" in text for text in logs))
+
+    def test_jump_inside_the_segment_keeps_running(self):
+        player, notices, _logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "片段之外"},
+            {"type": "jump", "jump_row": 3, "workflow_repeat_at_least_2": False},
+            {"type": "notice", "text": "片段末行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, segment_end=2)
+        self.assertEqual(notices, ["片段末行"])
+
+    def test_jump_to_last_row_does_not_execute_outside_the_segment(self):
+        player, notices, logs = self._collector()
+        actions = [
+            {"type": "comment", "text": "起点"},
+            {"type": "jump_current_script_last"},
+            {"type": "notice", "text": "最后一行", "duration_ms": 1},
+        ]
+        player.play(actions, repeats=1, start_index=1, segment_end=1)
+        self.assertEqual(notices, [])
+        self.assertTrue(any("在片段之外" in text for text in logs))
+
+    def test_segment_scope_gets_its_last_row(self):
+        rows = []
+        player = MacroPlayer(
+            on_script_scope_enter=(
+                lambda actions, origin_row=0, last_row=None:
+                rows.append((origin_row, last_row)) or ()
+            ),
+        )
+        player._status = lambda text: None
+        player.play([
+            {"type": "notice", "text": "一", "duration_ms": 1},
+            {"type": "notice", "text": "二", "duration_ms": 1},
+            {"type": "notice", "text": "三", "duration_ms": 1},
+        ], repeats=2, start_index=1, segment_end=2)
+        self.assertEqual(rows, [(1, 2), (1, 2)])
 
 
 class CaptureFailureToleranceTests(unittest.TestCase):

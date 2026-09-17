@@ -33,14 +33,18 @@ from .control import (
 class GuardsMixin:
     """全局守卫：轮询、命中处理段与命中后的稳定等待。"""
 
-    def _poll_guards(self) -> None:
-        """动作边界/等待片上的守卫评估：依次内联执行当前轮全部命中。"""
+    def _poll_guards(self) -> bool:
+        """动作边界/等待片上的守卫评估：依次内联执行当前轮全部命中。
+
+        返回这一轮是否真的执行过处理段（单独执行全局检测时据此判断“已触发”）。
+        """
         if self._handler_depth > 0 or self.on_guard_poll is None:
-            return
+            return False
         # 刚处理完一个全局模块的那一秒停顿里不再评估守卫：那是留给游戏消化
         # 这一下的时间，也让“一个处理段”真正只对应一次触发。
         if self._guard_settle_deadline is not None:
-            return
+            return False
+        handled = False
         while True:
             started = time.perf_counter()
             try:
@@ -50,8 +54,9 @@ class GuardsMixin:
                     time.perf_counter() - started
                 ) * 1000
             if not hit:
-                return
+                return handled
             self.handle_guard_hit(hit)
+            handled = True
             self._timeline.mark_boundary()
     @staticmethod
     def _guard_processing_action_description(action: object) -> str:
@@ -114,19 +119,18 @@ class GuardsMixin:
                 f"全局检测处理段动作 {index}/{total}："
                 f"{self._guard_processing_action_description(action)}。"
             )
-    def _enter_script_scope(self, actions: list[dict], origin_row: int = 0):
-        """进入脚本全局作用域（把起始行一并交给应用层）。
+    def _enter_script_scope(self, actions: list[dict], origin_row: int = 0,
+                            last_row: int | None = None):
+        """进入脚本全局作用域（把本次播放覆盖的行范围一并交给应用层）。
 
-        ``origin_row`` 让应用层知道这次播放从第几行开始，从而只启用能被执行到的
-        脚本全局模块；只接受一个位置参数的旧回调按“从头播放”处理。
+        ``origin_row`` / ``last_row``（含）让应用层只启用这次真的会执行到的
+        那几行里的脚本全局模块：从第 N 行起跑时它之前的行不启用，片段循环时
+        片段之外（含片段末行之后）的行同样不启用。
         """
         handler = self.on_script_scope_enter
         if handler is None:
             return None
-        try:
-            return handler(actions, origin_row)
-        except TypeError:
-            return handler(actions)
+        return handler(actions, origin_row, last_row)
     def handle_guard_hit(self, hit: dict) -> None:
         """守卫触发处理段（播放器线程内联）：延时 → 点击/二次识别 → 代码段/
         模块脚本 → 跳转。原执行流在处理段结束后原地继续，无需断点快照与恢复。

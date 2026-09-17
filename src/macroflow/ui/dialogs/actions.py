@@ -550,6 +550,7 @@ class KeyActionDialog(ModalDialog):
         self.capturer = KeyCapturer(
             on_key=lambda vk: self.after(0, self._apply_captured_key, vk),
             on_cancel=lambda: self.after(0, self._cancel_capture),
+            allow_escape=True,
         )
         if not self.capturer.start():
             self._end_capture()

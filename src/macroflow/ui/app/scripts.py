@@ -77,7 +77,11 @@ from .summaries import (
 class ScriptsMixin:
     """脚本持久化与动作列表：打开 / 保存 / 草稿 / 撤销 / 树操作。"""
 
+    def _refresh_action_segment_bar(self, _event=None) -> None:
+        """动作列表选中一段时，在最左边画出那根实心竖条。"""
+        self._refresh_row_segment_bar(self.action_tree, "action_segment_painted")
     def rebuild_action_tree(self):
+        self._reset_row_segment_bar("action_segment_painted")
         self.action_tree.delete(*self.action_tree.get_children())
         action_rows = {
             str(action.get(ACTION_ID_KEY, "")): index + 1
@@ -90,7 +94,10 @@ class ScriptsMixin:
             if action.get("failure_segment_enabled"):
                 detail += f" · 失败后执行代码段 {len(action.get('failure_actions') or [])} 项"
             detail_texts.append(detail)
-            self.action_tree.insert("", "end", iid=str(index), values=(index + 1, kind, detail, delay))
+            self.action_tree.insert(
+                "", "end", iid=str(index),
+                values=("", index + 1, kind, detail, delay),
+            )
         self._autosize_tree_column(self.action_tree, "detail", 590, detail_texts)
         total = len(self.script.actions)
         suffix = "（仅显示前 20,000 条）" if total > MAX_TREE_ROWS else ""
@@ -253,17 +260,19 @@ class ScriptsMixin:
         self._log("已新开一个 MacroFlow 窗口（新建脚本）。")
         self._set_status("已新开窗口", "success")
     def _show_action_context_menu(self, event):
-        """Right-click menu on the action list; offers to run or open a referenced script."""
+        """动作列表右键菜单：从此行运行 / 单独执行这一行 / 循环执行选中的片段。"""
         row_id = self.action_tree.identify_row(event.y)
         if not row_id:
             return
-        self.action_tree.selection_set(row_id)
+        # 右键落在已选中的一段里就保留这段选中（「循环执行片段」用它定片段）；
+        # 落在别处则只选中右键那一行，避免执行错行。
+        if row_id not in self.action_tree.selection():
+            self.action_tree.selection_set(row_id)
         index = int(row_id)
         if index >= len(self.script.actions):
             return
         action = self.script.actions[index]
-        if str(action.get("type")) != "script_ref":
-            return
+        segment = self._selected_row_segment(self.action_tree)
         menu = tk.Menu(
             self.root, tearoff=False,
             background=COLOR_SURFACE, foreground=COLOR_TEXT,
@@ -271,13 +280,24 @@ class ScriptsMixin:
             borderwidth=1, relief="solid",
         )
         menu.add_command(
-            label="▶ 执行指定次数…",
-            command=lambda: self.run_script_ref_with_count(action),
+            label="▶ 从此行开始运行",
+            command=lambda: self.run_current_script(start_index=index),
         )
         menu.add_command(
-            label="⇪ 在新窗口打开引用的脚本",
-            command=lambda: self.open_referenced_script_in_new_window(action),
+            label="▶ 单独执行此动作…",
+            command=lambda: self.run_single_action_with_count(index),
         )
+        if segment is not None:
+            menu.add_command(
+                label="▶ 循环执行片段…",
+                command=self.run_action_segment,
+            )
+        if str(action.get("type")) == "script_ref":
+            menu.add_separator()
+            menu.add_command(
+                label="⇪ 在新窗口打开引用的脚本",
+                command=lambda: self.open_referenced_script_in_new_window(action),
+            )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -303,27 +323,52 @@ class ScriptsMixin:
             return
         self._log(f"已在新窗口打开引用的脚本：{ref_path}")
         self._set_status(f"已在新窗口打开 {ref_path.name}", "success")
-    def run_script_ref_with_count(self, action: dict):
-        """右键引用脚本行「执行指定次数」：先问次数（默认 1 次），再单独运行被引用脚本。"""
-        repeats = simpledialog.askinteger(
-            "执行指定次数", "被引用脚本要单独执行几次？", parent=self.root,
-            initialvalue=1, minvalue=1, maxvalue=999999,
+    def run_single_action_with_count(self, index: int):
+        """右键「单独执行此动作…」：先问次数（默认 1 次），再单独执行这一行动作。
+
+        次数是这一行的调用次数：引用脚本行执行一次仍按动作里保存的内部执行
+        次数跑，录制动作、识图、连点等动作自身的参数也照常生效。
+        """
+        repeats = self._ask_repeats(
+            "单独执行此动作", "这一行的动作要单独执行几次？",
         )
         if repeats is None:
             return
-        self.run_referenced_script_alone(action, repeats)
+        self.run_current_script(start_index=index, single_action_repeats=repeats)
+    def run_action_segment(self):
+        """右键「▶ 循环执行片段…」：把选中的这一段动作循环执行指定次数。
+
+        片段 = 列表里选中的第一行到最后一行（左边那根实心竖条就是它）；
+        次数是这一段循环几轮，每一轮按顺序把这段里的动作各跑一次。
+        """
+        segment = self._selected_row_segment(self.action_tree)
+        if segment is None:
+            self._notify("循环执行片段", "请先选中片段的第一行到最后一行（至少两行）。")
+            return
+        first, last = segment
+        repeats = self._ask_repeats(
+            "循环执行片段", f"第 {first + 1}-{last + 1} 行动作要循环执行几次？",
+        )
+        if repeats is None:
+            return
+        self.run_current_script(segment=segment, segment_repeats=repeats)
     def _show_workflow_context_menu(self, event):
-        """Right-click menu on the workflow table; offers to open the step's script."""
+        """工作流表格右键菜单：执行这一行 / 循环执行选中的片段 / 打开它的脚本。"""
         row_id = self.workflow_tree.identify_row(event.y)
         if not row_id:
             return
-        self.workflow_tree.selection_set(row_id)
+        # 右键落在已选中的一段里就保留这段选中（「循环执行片段」用它定片段）；
+        # 落在别处则只选中右键那一行，避免执行错行。
+        if row_id not in self.workflow_tree.selection():
+            self.workflow_tree.selection_set(row_id)
         index = int(row_id)
         steps = self._workflow_only_steps()
         if index >= len(steps):
             return
         step = steps[index]
-        if not str(step.get("script", "")).strip():
+        has_script = bool(str(step.get("script", "")).strip())
+        segment = self._selected_row_segment(self.workflow_tree)
+        if not has_script and segment is None:
             return
         menu = tk.Menu(
             self.root, tearoff=False,
@@ -331,22 +376,57 @@ class ScriptsMixin:
             activebackground="#1D4358", activeforeground="#FFFFFF",
             borderwidth=1, relief="solid",
         )
-        menu.add_command(
-            label="▶ 单独执行一次测试",
-            command=lambda: self.run_referenced_script_alone(step),
-        )
-        menu.add_command(
-            label="⇪ 在新窗口打开脚本",
-            command=lambda: self.open_referenced_script_in_new_window(step),
-        )
-        menu.add_command(
-            label="✎ 在当前编辑器打开",
-            command=lambda: self._open_workflow_script_in_editor(step),
-        )
+        if has_script:
+            menu.add_command(
+                label="▶ 单独执行此步骤…",
+                command=lambda: self.run_workflow_step_with_count(step),
+            )
+        if segment is not None:
+            menu.add_command(
+                label="▶ 循环执行片段…",
+                command=self.run_workflow_segment,
+            )
+        if has_script:
+            menu.add_command(
+                label="⇪ 在新窗口打开脚本",
+                command=lambda: self.open_referenced_script_in_new_window(step),
+            )
+            menu.add_command(
+                label="✎ 在当前编辑器打开",
+                command=lambda: self._open_workflow_script_in_editor(step),
+            )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+    def run_workflow_step_with_count(self, step: dict):
+        """右键「单独执行此步骤…」：先问次数（默认 1 次），再单独跑这一行的脚本。
+
+        次数只作用于这一次单独执行：工作流行自己保存的剩余次数照旧不扣减。
+        """
+        repeats = self._ask_repeats(
+            "单独执行此步骤", "这一行的脚本要单独执行几次？",
+        )
+        if repeats is None:
+            return
+        self.run_referenced_script_alone(step, repeats)
+    def run_workflow_segment(self):
+        """右键「▶ 循环执行片段…」：把选中的这一段步骤循环执行指定次数。
+
+        片段 = 表格里选中的第一行到最后一行（左边那根实心竖条就是它）；
+        每一轮里这些行按顺序各执行一次，且不扣减各行自己保存的剩余次数。
+        """
+        segment = self._selected_row_segment(self.workflow_tree)
+        if segment is None:
+            self._notify("循环执行片段", "请先选中片段的第一行到最后一行（至少两行）。")
+            return
+        first, last = segment
+        repeats = self._ask_repeats(
+            "循环执行片段", f"第 {first + 1}-{last + 1} 行要循环执行几次？",
+        )
+        if repeats is None:
+            return
+        self.run_workflow(segment=segment, segment_repeats=repeats)
     def _open_workflow_script_in_editor(self, step: dict):
         """Load a workflow step's script into the current script editor."""
         ref_value = str(step.get("script", "")).strip()
@@ -357,7 +437,7 @@ class ScriptsMixin:
         # 未保存修改的处理统一在 load_script_into_editor 里问一次（保存/放弃/取消）。
         self.load_script_into_editor(ref_path)
     def run_referenced_script_alone(self, ref: dict, repeats: int = 1):
-        """单独运行一份被引用脚本（工作流行“单独执行一次测试”与引用脚本行“执行指定次数”共用）。"""
+        """单独运行一份被引用脚本（工作流右键「单独执行此步骤…」的入口）。"""
         return self._run_detection_entrypoint(
             self._run_referenced_script_alone_impl, ref, max(1, int(repeats)),
         )

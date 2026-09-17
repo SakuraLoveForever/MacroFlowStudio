@@ -227,6 +227,9 @@ class ShellMixin:
         saved_workflow_path = str(self.app_settings.get("workflow_path", "")).strip()
         self.workflow_path: Path | None = resolve_path(saved_workflow_path) if saved_workflow_path else None
         self.workflow_drag_index: int | None = None
+        # 左边那根实心竖条已经画到哪一段（None = 没有画过的行）。
+        self.action_segment_painted: tuple[int, int] | None = None
+        self.workflow_segment_painted: tuple[int, int] | None = None
         self.workflow_was_dragged = False
         self.workflow_delete_undo_stack: list[tuple[int, dict]] = []
         self.global_delete_undo_stack: list[tuple[int, dict]] = []
@@ -1277,7 +1280,7 @@ class ShellMixin:
         action_tree_shell.rowconfigure(0, weight=1)
         self.action_tree = ttk.Treeview(
             action_tree_shell,
-            columns=("index", "kind", "detail", "delay"),
+            columns=("mark", "index", "kind", "detail", "delay"),
             show="headings",
             selectmode="extended",
         )
@@ -1298,6 +1301,7 @@ class ShellMixin:
         )
         self.action_tree.bind("<Double-1>", lambda _: self.edit_selected_action())
         self.action_tree.bind("<<TreeviewSelect>>", self._update_action_edit_button, add="+")
+        self.action_tree.bind("<<TreeviewSelect>>", self._refresh_action_segment_bar, add="+")
         self.action_tree.bind("<Delete>", lambda _: self.delete_actions())
         self.action_tree.bind("<Control-z>", lambda _: self._undo_redo_action_edit(False))
         self.action_tree.bind("<Control-y>", lambda _: self._undo_redo_action_edit(True))
@@ -1502,7 +1506,8 @@ class ShellMixin:
         frame = ttk.Frame(workflow_box, style="Surface.TFrame")
         frame.pack(fill="both", expand=True)
         self.workflow_tree = ttk.Treeview(
-            frame, columns=("index", "script", "repeat", "before", "interval", "enabled"),
+            frame,
+            columns=("mark", "index", "script", "repeat", "before", "interval", "enabled"),
             show="headings", selectmode="extended", style="Workflow.Treeview", height=10,
         )
         self._apply_column_widths(self.workflow_tree, WORKFLOW_TREE_COLUMNS, "script")
@@ -1525,6 +1530,7 @@ class ShellMixin:
         self.workflow_tree.bind("<ButtonRelease-1>", self._workflow_drag_end, add="+")
         self.workflow_tree.bind("<Double-1>", self._edit_workflow_cell, add="+")
         self.workflow_tree.bind("<<TreeviewSelect>>", self._update_workflow_selection_color, add="+")
+        self.workflow_tree.bind("<<TreeviewSelect>>", self._refresh_workflow_segment_bar, add="+")
         self.workflow_tree.bind("<Control-a>", self._select_all_workflow_steps)
         self.workflow_tree.bind("<Button-3>", self._show_workflow_context_menu, add="+")
     def _build_log_tab(self):

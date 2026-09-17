@@ -38,7 +38,11 @@ FONT_BODY = 9
 FONT_SUBTITLE = 10
 FONT_TITLE = 12
 FONT_BRAND = 15
+# 动作列表 / 工作流表格最左边那一列：选中片段时填满实心方块，形成一根竖条。
+SEGMENT_BAR = "█"
+SEGMENT_COLUMN = ("mark", "", 20, "center")
 ACTION_TREE_COLUMNS = (
+    SEGMENT_COLUMN,
     ("index", "#", 46, "center"), ("kind", "动作", 96, "w"),
     ("detail", "参数", 420, "w"), ("delay", "执行前延时", 92, "center"),
 )
@@ -70,6 +74,7 @@ ACTION_ICONS = {
     "recorded_input": "⏺",
 }
 WORKFLOW_TREE_COLUMNS = (
+    SEGMENT_COLUMN,
     ("index", "步骤", 50, "center"), ("script", "脚本 / 模块", 320, "w"),
     ("repeat", "执行次数", 76, "center"), ("before", "开始前等待", 92, "center"),
     ("interval", "重复间隔", 92, "center"), ("enabled", "状态", 64, "center"),

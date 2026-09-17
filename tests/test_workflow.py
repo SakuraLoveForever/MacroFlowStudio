@@ -484,7 +484,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         }])
         app.workflow_tree = Mock()
         app.workflow_tree.identify_row.return_value = "0"
-        app.workflow_tree.identify_column.return_value = "#5"
+        app.workflow_tree.identify_column.return_value = "#6"
         app.root = Mock()
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
@@ -550,7 +550,9 @@ class WorkflowDisplayTests(unittest.TestCase):
 
         values = app.workflow_tree.insert.call_args.kwargs["values"]
         tags = app.workflow_tree.insert.call_args.kwargs["tags"]
-        self.assertIn("文件不存在", values[1])
+        # 第 1 格是左边那根片段竖条，脚本名从第 3 格开始。
+        self.assertEqual(values[0], "")
+        self.assertIn("文件不存在", values[2])
         self.assertEqual(tags, ("missing",))
 
     def test_disabled_workflow_row_is_dimmed(self):
@@ -597,7 +599,7 @@ class WorkflowDisplayTests(unittest.TestCase):
 
         values = app.workflow_tree.insert.call_args.kwargs["values"]
         tags = app.workflow_tree.insert.call_args.kwargs["tags"]
-        self.assertEqual(values[2], "∞")
+        self.assertEqual(values[3], "∞")
         self.assertEqual(values[-1], "✓ 不计次数")
         self.assertEqual(tags, ("unlimited",))
 
@@ -633,7 +635,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         }])
         app.workflow_tree = Mock()
         app.workflow_tree.identify_row.return_value = "0"
-        app.workflow_tree.identify_column.return_value = "#3"
+        app.workflow_tree.identify_column.return_value = "#4"
         app.root = Mock()
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
@@ -2171,7 +2173,10 @@ class ActivationWindowToggleTests(unittest.TestCase):
             with patch("macroflow.ui.app.threading.Thread") as thread_class:
                 app.run_workflow()
             worker_args = thread_class.call_args.kwargs["args"]
-            self.assertFalse(worker_args[-1])
+            # 末尾三项：前置窗口总开关、片段末行、片段轮次。
+            self.assertFalse(worker_args[-3])
+            self.assertIsNone(worker_args[-2])
+            self.assertEqual(worker_args[-1], 1)
             self.assertIsNone(worker_args[9])
 
             # 侧栏勾选且编辑器脚本自带前置窗口：作为工作流默认前置窗口传下去。
@@ -2184,8 +2189,166 @@ class ActivationWindowToggleTests(unittest.TestCase):
             with patch("macroflow.ui.app.threading.Thread") as thread_class:
                 app.run_workflow()
             worker_args = thread_class.call_args.kwargs["args"]
-            self.assertTrue(worker_args[-1])
+            self.assertTrue(worker_args[-3])
             self.assertEqual(worker_args[9], 456)
+
+class WorkflowSegmentTests(unittest.TestCase):
+    """循环执行片段：选中的一段按轮重复，每轮每行各一次，不扣减剩余次数。"""
+
+    def _app(self, steps) -> MacroFlowApp:
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = None
+        app.workflow_test_mode_var = FakeBooleanVar(False)
+        app._workflow_only_steps = Mock(return_value=list(steps))
+        app._global_module_steps = Mock(return_value=[])
+        app._workflow_snapshot = Mock()
+        app._persist_workflow_draft = Mock()
+        app.rebuild_workflow_tree = Mock()
+        app.workflow_start_var = Mock()
+        app.workflow_start_var.get.return_value = ""
+        app._bound_hwnd = Mock(return_value=123)
+        app._activation_settings_from_script = Mock(return_value=(False, None))
+        app._log = Mock()
+        app._notify = Mock()
+        app._set_status = Mock()
+        app.focus_mode_enabled_var = FakeBooleanVar(False)
+        app.activate_target_enabled_var = FakeBooleanVar(True)
+        app.activation_enabled_var = FakeBooleanVar(False)
+        app._clear_global_guards = Mock()
+        app._clear_global_detect_rearm_locks = Mock()
+        app.workflow_stop = threading.Event()
+        app._sound = Mock()
+        app._hide_main_for_execution = Mock()
+        app._reset_execution_clock_for_new_run = Mock()
+        app._set_execution_progress = Mock()
+        app._show_execution_mini = Mock()
+        app._append_mini_step = Mock()
+        return app
+
+    def test_run_workflow_forwards_the_selected_segment(self):
+        app = self._app([
+            {"script": "a.json", "repeats": 1},
+            {"script": "b.json", "repeats": 1},
+            {"script": "c.json", "repeats": 1},
+        ])
+
+        with patch("macroflow.ui.app.threading.Thread") as thread_class:
+            app.run_workflow(segment=(0, 1), segment_repeats=4)
+
+        worker_args = thread_class.call_args.kwargs["args"]
+        self.assertEqual(worker_args[5], 0, "片段从开头行起跑")
+        self.assertEqual(worker_args[-2], 1, "片段末行")
+        self.assertEqual(worker_args[-1], 4, "片段轮次")
+        progress = app._set_execution_progress.call_args.args[0]
+        self.assertIn("工作流片段 第 1-2/3 行", progress)
+        self.assertIn("循环 4 次", progress)
+        self.assertTrue(any(
+            "循环执行片段：工作流第 1-2 行" in call.args[0]
+            for call in app._append_mini_step.call_args_list
+        ))
+
+    def test_both_lists_carry_the_segment_bar_column(self):
+        # 两个列表最左边都要有那根实心竖条所在的列，并且选中一变就重画。
+        workflow_source = inspect.getsource(MacroFlowApp._build_workflow_tab)
+        script_source = inspect.getsource(MacroFlowApp._build_script_tab)
+        self.assertIn('columns=("mark", "index", "script"', workflow_source)
+        self.assertIn("_refresh_workflow_segment_bar", workflow_source)
+        self.assertIn('columns=("mark", "index", "kind"', script_source)
+        self.assertIn("_refresh_action_segment_bar", script_source)
+
+    def test_segment_bar_fills_the_left_column_of_the_selected_rows(self):
+        from tkinter import ttk
+
+        root = tk.Tk()
+        self.addCleanup(root.destroy)
+        root.withdraw()
+        tree = ttk.Treeview(
+            root, columns=("mark", "index", "script", "repeat", "before", "interval", "enabled"),
+            show="headings", selectmode="extended",
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            paths = []
+            for name in ("a", "b", "c"):
+                path = Path(folder) / f"{name}.json"
+                save_script(MacroScript(name=name, actions=[]), path)
+                paths.append(path)
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.workflow = Workflow(steps=[{"script": str(path)} for path in paths])
+            app.workflow_tree = tree
+            app.workflow_segment_painted = None
+            app.empty_workflow_hint = Mock()
+            app.global_tree = None
+
+            app.rebuild_workflow_tree()
+
+            self.assertEqual([tree.set(str(i), "index") for i in range(3)], ["1", "2", "3"])
+            self.assertEqual([tree.set(str(i), "script") for i in range(3)], ["a", "b", "c"])
+            self.assertEqual([tree.set(str(i), "mark") for i in range(3)], ["", "", ""])
+
+            tree.selection_set("0", "1")
+            app._refresh_workflow_segment_bar()
+
+        self.assertEqual(
+            [tree.set(str(i), "mark") for i in range(3)], [SEGMENT_BAR, SEGMENT_BAR, ""],
+        )
+
+    def test_worker_loops_the_row_range_without_consuming_counts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "first.json"
+            second = Path(folder) / "second.json"
+            outside = Path(folder) / "outside.json"
+            save_script(MacroScript(name="片段一", actions=[{"type": "delay", "ms": 1}]), first)
+            save_script(MacroScript(name="片段二", actions=[{"type": "delay", "ms": 2}]), second)
+            save_script(MacroScript(name="片段外", actions=[{"type": "delay", "ms": 3}]), outside)
+
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.workflow_stop = threading.Event()
+            app.player = Mock()
+            app.player.stop_event = threading.Event()
+            app._enter_focus_mode = Mock()
+            app._leave_focus_mode = Mock()
+            app._set_status = Mock()
+            app._set_execution_progress = Mock()
+            app._append_mini_step = Mock()
+            app._log = Mock()
+            app._sound = Mock()
+            app._handle_worker_error = Mock()
+            app._finish_execution_visibility = Mock()
+            app._ui = lambda callback, *args: callback(*args)
+            steps = [
+                {"script": str(first), "repeats": 4, "enabled": True},
+                # 次数用完的行在片段里照跑：片段的轮次由用户说了算。
+                {"script": str(second), "repeats": 0, "enabled": True},
+                {"script": str(outside), "repeats": 2, "enabled": True},
+            ]
+
+            app._run_workflow_worker(steps, None, None, False, segment_end=1, segment_repeats=3)
+
+            played = [call.args[0] for call in app.player.play.call_args_list]
+            self.assertEqual(played, [
+                [{"type": "delay", "ms": 1}], [{"type": "delay", "ms": 2}],
+            ] * 3, "每轮按顺序走一遍片段，片段之外的第 3 行一次都不跑")
+            self.assertTrue(all(
+                call.args[1] == 1 for call in app.player.play.call_args_list
+            ), "每轮每一行只执行一次")
+            self.assertTrue(all(
+                call.kwargs["on_repeat_complete"] is None
+                for call in app.player.play.call_args_list
+            ), "片段循环不扣减各行剩余次数")
+            self.assertEqual([step["repeats"] for step in steps], [4, 0, 2])
+            round_logs = [
+                call.args[0] for call in app._log.call_args_list
+                if "循环执行片段" in call.args[0]
+            ]
+            self.assertEqual(len(round_logs), 3, "每一轮开始都记一条")
+            self.assertTrue(all("轮：开始" in text for text in round_logs))
+            self.assertTrue(any(
+                "第 1/3 轮" in call.args[0] for call in app._append_mini_step.call_args_list
+            ))
+            self.assertTrue(any(
+                "第 3/3 轮" in call.args[0] for call in app._append_mini_step.call_args_list
+            ))
+
 
 if __name__ == '__main__':
     unittest.main()

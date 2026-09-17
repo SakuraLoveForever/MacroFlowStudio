@@ -1497,6 +1497,32 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         )
         self.assertTrue(any("第 1、2 行的全局模块不启用" in call.args[0] for call in app._log.call_args_list))
 
+    def test_script_scope_keeps_only_globals_inside_the_segment(self):
+        # 循环执行片段：片段之外（含片段末行之后）的全局模块行本次不会执行到，
+        # 同样不能注册——否则用户只跑第 2~3 行，第 4 行的全局模块照样在后台
+        # 识别并点击，看起来就像“把整份脚本都跑了”。
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._log = Mock()
+        app._ui = lambda callback, *args: callback(*args)
+        app._activate_global_detect_from_config = Mock()
+        actions = [
+            {"type": "global_detect", "action_id": "above", "template": "images/a.png"},
+            {"type": "delay", "ms": 0, "action_id": "first"},
+            {"type": "global_detect", "action_id": "inside", "template": "images/b.png"},
+            {"type": "global_detect", "action_id": "below", "template": "images/c.png"},
+        ]
+
+        keys = app._enter_script_global_scope(actions, 1, 2)
+
+        self.assertEqual(keys, ("script:inside",))
+        self.assertEqual(
+            [call.args[0]["action_id"] for call in app._activate_global_detect_from_config.call_args_list],
+            ["inside"],
+        )
+        message = app._log.call_args.args[0]
+        self.assertIn("循环执行片段 第 2-3 行", message)
+        self.assertIn("第 1、4 行的全局模块不启用", message)
+
     def test_script_scope_restarts_module_start_delay_from_each_script_start(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}

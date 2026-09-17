@@ -41,6 +41,7 @@ from macroflow.core.alerts import play_alert
 from macroflow.ui.app import (
     BACKUP_INTERVAL_CHOICES, BACKUP_INTERVAL_MS, MacroFlowApp,
     RECORD_TOOLBAR_BUTTON_LABEL,
+    SEGMENT_BAR,
     action_summary, coordinate_scale_summary,
     disable_combobox_wheel_selection,
     key_action_matches,
