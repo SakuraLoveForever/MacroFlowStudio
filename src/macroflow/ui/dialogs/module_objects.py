@@ -11,6 +11,7 @@ from macroflow.core.models import (
 from macroflow.core.storage import (
     BASE_DIR, DIRECTION_SCRIPTS_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
     DEFAULT_MODULE_INTERVAL_MS, DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     load_app_settings, load_module_images_dir, load_module_objects,
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
@@ -60,6 +61,7 @@ from .base import (
     show_floating_notice,
 )
 from .helpers import (
+    _app_via_parent,
     bind_wheel_to_scroll_tree,
     configure_module_list_scrollbar,
     configure_module_tree_styles,
@@ -324,6 +326,9 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.threshold_var = tk.StringVar(value=str(obj.get("threshold", 0.85)))
         # 新建模块的「检测间隔」默认 1 秒；编辑已有模块时沿用对象里保存的值。
         self.interval_var = duration_var(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))
+        self.cooldown_var = duration_var(
+            obj.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS),
+        )
         self.start_delay_var = duration_var(obj.get("start_delay_ms", 0))
         fallback_objects = load_module_objects()
         fallback_key = str(obj.get("fallback_module_key", "")).strip()
@@ -518,6 +523,12 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             body, row, "检测间隔",
             lambda m: ttk.Entry(m, textvariable=self.interval_var, width=14),
             "每两次识别之间的等待毫秒数，越小响应越快、越耗资源；新建模块默认 1 秒。",
+        )
+        row += 1
+        self.row_cooldown = self._labeled_row(
+            body, row, "触发冷却",
+            lambda m: ttk.Entry(m, textvariable=self.cooldown_var, width=14),
+            "触发后等待多少毫秒才允许同一模块再次触发；目标持续存在也会在冷却结束后再次触发。新建模块默认 2 秒。",
         )
         row += 1
         self.row_start_delay = self._labeled_row(
@@ -905,6 +916,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode)
         self._set_row(self.row_ignore_background, not pure and not text_mode and not number_mode and not direct_mode)
         self._set_row(self.row_interval, not pure and not direct_mode)
+        self._set_row(
+            self.row_cooldown,
+            not pure and category in ("工作流全局模块", "脚本全局模块"),
+        )
         self._set_row(self.row_start_delay, not pure)
         fallback_supported = not pure and not number_mode and not direct_mode
         self._set_row(self.row_fallback_module, fallback_supported)
@@ -1163,6 +1178,11 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             show_floating_notice(self, "检测间隔格式错误", "检测间隔必须是不小于 50 的整数（毫秒）。")
             return
         try:
+            cooldown = max(0, min(86400000, int(self.cooldown_var.get())))
+        except ValueError:
+            show_floating_notice(self, "触发冷却格式错误", "触发冷却必须是大于等于 0 的时间。")
+            return
+        try:
             start_delay = max(0, min(86400000, int(self.start_delay_var.get())))
         except ValueError:
             show_floating_notice(self, "开始识别前延时格式错误", "延时必须是大于等于 0 的时间。")
@@ -1288,6 +1308,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "region": region,
             "threshold": threshold,
             "interval_ms": interval,
+            "cooldown_ms": cooldown,
             "start_delay_ms": start_delay,
             "fallback_module_key": (
                 getattr(self, "fallback_module_keys", {}).get(
@@ -1622,7 +1643,7 @@ class TemplateRegionManagerDialog(ModalDialog):
 
     def __init__(self, parent, app=None):
         super().__init__(parent, "模块对象管理", 1040, 520)
-        self.app = app or getattr(parent, "_macroflow_app", None)
+        self.app = app or _app_via_parent(parent)
         self.objects: dict[str, dict] = load_module_objects()
         self.current = "all"
         self.trees: dict[str, ttk.Treeview] = {}
@@ -1856,35 +1877,57 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._open_form(key, obj)
 
     def _show_module_context_menu(self, event):
-        """Show move/copy actions for workflow/script global modules."""
+        """Show standalone testing for every module and global move/copy actions."""
         tree = event.widget
         key = tree.identify_row(event.y)
         if not key:
             return
         obj = self.objects.get(key)
-        category = str(obj.get("category", "")) if obj else ""
-        if category not in ("workflow_global", "script_global"):
+        if not obj:
             return
+        category = str(obj.get("category", "")) if obj else ""
         tree.selection_set(key)
         tree.focus(key)
-        target = "script_global" if category == "workflow_global" else "workflow_global"
-        target_label = "脚本全局" if target == "script_global" else "工作流全局"
         menu = tk.Menu(
             self, tearoff=0, background=COLOR_SURFACE, foreground=COLOR_TEXT,
             activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
         )
         menu.add_command(
-            label=f"改成{target_label}",
-            command=lambda: self._change_global_module_category(key, target, copy_object=False),
+            label="▶ 测试指定次数…",
+            command=lambda: self._test_module_with_count(key),
         )
-        menu.add_command(
-            label=f"复制成{target_label}",
-            command=lambda: self._change_global_module_category(key, target, copy_object=True),
-        )
+        if category in ("workflow_global", "script_global"):
+            target = "script_global" if category == "workflow_global" else "workflow_global"
+            target_label = "脚本全局" if target == "script_global" else "工作流全局"
+            menu.add_separator()
+            menu.add_command(
+                label=f"改成{target_label}",
+                command=lambda: self._change_global_module_category(
+                    key, target, copy_object=False,
+                ),
+            )
+            menu.add_command(
+                label=f"复制成{target_label}",
+                command=lambda: self._change_global_module_category(
+                    key, target, copy_object=True,
+                ),
+            )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _test_module_with_count(self, key: str):
+        """Ask once for a repeat count, then test the saved module independently."""
+        if self.app is None:
+            show_floating_notice(self, "无法测试模块", "当前窗口未连接到主程序执行器。")
+            return
+        repeats = self.app._ask_repeats(
+            "测试模块", "这个模块要独立测试几次？",
+        )
+        if repeats is None:
+            return
+        self.app.run_module_object_test(key, repeats)
 
     def _change_global_module_category(self, key: str, target: str,
                                        copy_object: bool = False):

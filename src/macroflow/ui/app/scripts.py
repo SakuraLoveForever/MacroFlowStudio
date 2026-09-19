@@ -1153,6 +1153,8 @@ class ScriptsMixin:
         value = DurationDialog(self.root, "插入延时", "延时时间：", 500).show()
         if value is not None:
             self._insert_action({"type": "delay", "ms": value, "delay_ms": 0})
+    def add_rebind_window(self):
+        self._insert_action({"type": "rebind_window", "delay_ms": 0})
     def add_jump(self):
         ensure_action_ids(self.script.actions)
         action = JumpActionDialog(self.root, actions=self.script.actions).show()

@@ -8,7 +8,7 @@ from macroflow.execution.player import (
 )
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     available_script_path, backup_script,
     display_path, ensure_dirs, migrate_workflow_templates, safe_name,
     DIRECTION_SCRIPTS_DIR,
@@ -100,7 +100,7 @@ class GuardsMixin:
             self._detection_request = None
             if (result.run_id != getattr(self, "_detection_run_id", 0)
                     or result.config_version != getattr(self, "_guard_config_version", 0)):
-                # 守卫状态已在检测线程里推进（triggered/awaiting_clear/重臂锁），
+                # 守卫状态已在检测线程里推进（冷却截止时间），
                 # 结果却不能交付：必须回滚，否则目标一直可见时该守卫在本次执行
                 # 剩余时间里静默失效（命中被丢掉，日志里也没有任何痕迹）。
                 self._rollback_detection_hit(result.hit)
@@ -135,13 +135,11 @@ class GuardsMixin:
             guard = guards.get(key)
             if guard is None:
                 return
-            guard["triggered"] = False
             guard["timeout_triggered"] = False
-            guard["awaiting_clear"] = False
-            guard["awaiting_clear_logged"] = False
-            locks = getattr(self, "global_detect_rearm_locks", None)
-            if locks is not None:
-                locks.discard(key)
+            guard["cooldown_until"] = 0.0
+            cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
+            if cooldowns is not None:
+                cooldowns.pop(key, None)
     @staticmethod
     def _defer_detection_event(events: list[dict], kind: str, **payload) -> None:
         events.append({"kind": kind, **payload})
@@ -174,8 +172,7 @@ class GuardsMixin:
         """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
 
         节流未到点的守卫跳过；至少一个守卫到点才截图一次，全部图片守卫
-        共享同一帧。普通模块命中一次后等目标消失再重新武装；勾选“直到
-        目标消失”的模块则在目标持续存在时按检测间隔反复返回处理段。
+        共享同一帧。模块命中后按各自冷却时间重新开放触发，不要求目标先消失。
         同一帧命中的多个守卫先排队，再由播放器逐个执行。
         """
         if getattr(self, "exiting", False) or getattr(self, "_evaluating_guards", False):
@@ -313,26 +310,6 @@ class GuardsMixin:
         condition_subject = self._global_monitor_subject(guard, subject)
         absent_target_name = "期望文字" if recognize == "text" else "目标模板"
         repeat_while_detected = bool(guard.get("wait_text_absent"))
-        if guard.get("awaiting_clear") and not repeat_while_detected:
-            if detected:
-                if not guard.get("awaiting_clear_logged"):
-                    guard["awaiting_clear_logged"] = True
-                    self._ui(
-                        self._trace_event,
-                        f"全局检测：{condition_subject} 刚刚已触发，等待消失后再允许下次触发。",
-                    )
-            else:
-                locks = getattr(self, "global_detect_rearm_locks", None)
-                if locks is not None:
-                    locks.discard(str(guard.get("key", "")))
-                guard["awaiting_clear"] = False
-                guard["awaiting_clear_logged"] = False
-                guard["was_detected"] = False
-                guard["triggered"] = False
-                guard["match_since"] = None
-                guard["not_found_since"] = now
-                self._ui(self._log, f"全局检测：{condition_subject} 已确认消失，允许下次触发。")
-            return None
         if detected:
             guard["not_found_since"] = None
             guard["timeout_triggered"] = False
@@ -360,14 +337,17 @@ class GuardsMixin:
                     )
             hold_ms = guard["hold_ms"] if guard.get("hold_enabled", False) else 0
             elapsed_ms = (now - (guard["match_since"] or now)) * 1000
-            if not guard.get("triggered") and elapsed_ms >= hold_ms:
-                guard["triggered"] = not repeat_while_detected
-                if not repeat_while_detected:
-                    guard["awaiting_clear"] = True
-                    locks = getattr(self, "global_detect_rearm_locks", None)
-                    if locks is None:
-                        locks = self.global_detect_rearm_locks = set()
-                    locks.add(str(guard.get("key", "")))
+            cooldown_until = float(guard.get("cooldown_until", 0.0))
+            if now >= cooldown_until and elapsed_ms >= hold_ms:
+                cooldown_ms = max(0, int(guard.get(
+                    "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+                )))
+                cooldown_until = now + cooldown_ms / 1000.0
+                guard["cooldown_until"] = cooldown_until
+                cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
+                if cooldowns is None:
+                    cooldowns = self.global_detect_cooldown_deadlines = {}
+                cooldowns[str(guard.get("key", ""))] = cooldown_until
                 guard["trigger_kind"] = "success"
                 self.global_detect_trigger_count += 1
                 self._ui(self._log, f"全局检测触发：{condition_subject}。")
@@ -381,7 +361,6 @@ class GuardsMixin:
                     f"全局检测：{self._global_monitor_subject(guard, '图片已消失')}，计时重置。",
                 )
             guard["was_detected"] = False
-            guard["triggered"] = False
             guard["match_since"] = None
             if guard.get("not_found_since") is None:
                 guard["not_found_since"] = now
@@ -435,6 +414,12 @@ class GuardsMixin:
             guard["interval_ms"] = max(
                 100, min(10000, int(obj.get("interval_ms", guard["interval_ms"]))),
             )
+            guard["cooldown_ms"] = max(
+                0, min(86400000, int(obj.get(
+                    "cooldown_ms",
+                    guard.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS),
+                ))),
+            )
             guard["ignore_background"] = bool(obj.get("ignore_background", False))
             guard["hold_enabled"] = bool(obj.get("hold_enabled", False))
             guard["hold_ms"] = max(0, int(obj.get("hold_ms", guard["hold_ms"])))
@@ -484,15 +469,7 @@ class GuardsMixin:
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right",
             ):
                 guard[field] = max(0, int(obj.get(field, 0)))
-            if guard["wait_text_absent"]:
-                # 模块对象可在运行中切换为持续重试，不能继承旧的单次触发锁。
-                guard["awaiting_clear"] = False
-                guard["awaiting_clear_logged"] = False
-                guard["triggered"] = False
-                locks = getattr(self, "global_detect_rearm_locks", None)
-                if locks is not None:
-                    locks.discard(str(guard.get("key", "")))
-            else:
+            if not guard["wait_text_absent"]:
                 guard["target_absent_armed"] = False
         except (TypeError, ValueError):
             pass
@@ -829,10 +806,10 @@ class GuardsMixin:
                 guards.clear()
         else:
             guards.clear()
-    def _clear_global_detect_rearm_locks(self):
-        locks = getattr(self, "global_detect_rearm_locks", None)
-        if locks is not None:
-            locks.clear()
+    def _clear_global_detect_cooldowns(self):
+        cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
+        if cooldowns is not None:
+            cooldowns.clear()
     def _guard_wait(self, seconds: float) -> bool:
         """守卫感知的等待（工作流步骤间隙）：等待期间周期评估守卫并内联执行处理段。
 
@@ -938,7 +915,7 @@ class GuardsMixin:
         self._append_mini_step(f"特殊模块：重新执行工作流，跳转到{target_text}。")
         self.run_workflow(
             start_index=target_index, start_repeat=0, resume_action_index=0,
-            preserve_global_rearm_locks=True, suppress_start_sound=True,
+            preserve_global_cooldowns=True, suppress_start_sound=True,
         )
     def _record_workflow_action(self, next_index):
         """Record the next action index of the current script (player thread)."""

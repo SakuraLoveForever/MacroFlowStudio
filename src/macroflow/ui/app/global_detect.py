@@ -15,6 +15,7 @@ from macroflow.core.models import (
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
     DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     available_script_path, backup_script,
     display_path, ensure_dirs, migrate_workflow_templates, safe_name,
     DIRECTION_SCRIPTS_DIR,
@@ -117,13 +118,13 @@ class GlobalDetectMixin:
         return tuple(keys)
     def _exit_script_global_scope(self, keys: object) -> None:
         """Remove only the script-global guards owned by the leaving script."""
-        locks = getattr(self, "global_detect_rearm_locks", None)
+        cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
         key_set = {str(key) for key in tuple(keys or ())}
         with self.guards_lock:
             for key in key_set:
                 self.global_guards.pop(key, None)
-                if locks is not None:
-                    locks.discard(key)
+                if cooldowns is not None:
+                    cooldowns.pop(key, None)
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending and key_set:
             pending[:] = [
@@ -164,6 +165,9 @@ class GlobalDetectMixin:
                     template_path = resolve_path(str(obj["template"]))
                 config["threshold"] = obj.get("threshold", 0.85)
                 config["interval_ms"] = obj.get("interval_ms", 250)
+                config["cooldown_ms"] = obj.get(
+                    "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+                )
                 config["start_delay_ms"] = obj.get("start_delay_ms", 0)
                 config["fallback_module_key"] = obj.get("fallback_module_key", "")
                 config["fallback_on_match"] = obj.get("fallback_on_match", "continue")
@@ -184,6 +188,9 @@ class GlobalDetectMixin:
         try:
             threshold = max(0.1, min(1.0, float(config.get("threshold", 0.85))))
             interval = max(100, min(10000, int(config.get("interval_ms", 500))))
+            cooldown = max(0, min(86400000, int(config.get(
+                "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+            ))))
             start_delay = max(0, min(86400000, int(config.get("start_delay_ms", 0))))
             # hold 上限放宽到 10 分钟：长时间“持续可见”判定（如回合间主线界面
             # 卡死 5 分钟才触发的兜底检测）不能被 60 秒截断。
@@ -191,7 +198,9 @@ class GlobalDetectMixin:
             restart_delay = max(0, min(60000, int(config.get("restart_delay_ms", DEFAULT_GLOBAL_CLICK_DELAY_MS))))
             jump_row = max(0, int(config.get("jump_row", 0)))
         except (TypeError, ValueError):
-            threshold, interval, start_delay, hold, restart_delay, jump_row = 0.85, 500, 0, 1000, 0, 0
+            threshold, interval, cooldown, start_delay, hold, restart_delay, jump_row = (
+                0.85, 500, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, 0, 1000, 0, 0,
+            )
         region = config.get("region", [])
         # 旧配置没有 region_mode：有区域按自定义区域，否则按全屏。
         region_mode = str(config.get(
@@ -269,15 +278,17 @@ class GlobalDetectMixin:
             )
         else:
             module_display_name = str(config.get("name", "")).strip() or "脚本全局模块"
-        rearm_locks = getattr(self, "global_detect_rearm_locks", None)
-        if rearm_locks is None:
-            rearm_locks = self.global_detect_rearm_locks = set()
+        cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
+        if cooldowns is None:
+            cooldowns = self.global_detect_cooldown_deadlines = {}
         guard = {
             "key": key,
             "module": dict(module) if module is not None else None,
             "template": template_path,
             "threshold": threshold,
             "interval_ms": interval,
+            "cooldown_ms": cooldown,
+            "cooldown_until": float(cooldowns.get(key, 0.0)),
             "start_delay_ms": start_delay if module is None else 0,
             "start_delay_since": time.perf_counter(),
             "start_delay_done": False,
@@ -336,11 +347,6 @@ class GlobalDetectMixin:
             "not_found_since": time.perf_counter(),
             "trigger_kind": "success",
             "was_detected": False,
-            "triggered": False,
-            "awaiting_clear": (
-                key in rearm_locks and not bool(config.get("wait_text_absent", False))
-            ),
-            "awaiting_clear_logged": False,
             "match_since": None,
             "match_data": None,
             "last_ocr_observation": None,
@@ -386,7 +392,7 @@ class GlobalDetectMixin:
         self._ui(
             self._trace_event,
             f"全局检测已启用：模块[{module_display_name}] · {name} · 区域 {region_text} · {hold_text}"
-            f"{start_delay_text} · {repeat_text}"
+            f"{start_delay_text} · 触发冷却 {cooldown} ms · {repeat_text}"
             f"触发后{tail}",
         )
     @staticmethod

@@ -282,6 +282,7 @@ class ShellMixin:
             on_log=lambda text: self._ui(self._log, f"[快捷键] {text}"),
             on_trace=self._on_player_trace,
             on_trace_line=lambda text: self._trace_event(f"[快捷键] {text}"),
+            on_target_window_request=lambda: self._bound_hwnd(update_display=False),
             on_ocr_engine_wait=self._hotkey_wait_ocr_ready,
         )
         self.workflow_stop = threading.Event()
@@ -300,8 +301,8 @@ class ShellMixin:
         self._detection_worker = None
         # 同一共享截图命中的守卫按注册顺序排队，播放器逐个执行处理段。
         self._pending_global_guard_hits: list[dict] = []
-        # 触发后跨执行保留的重新武装锁；新守卫确认图片消失后才允许再次触发。
-        self.global_detect_rearm_locks: set[str] = set()
+        # 触发后的冷却截止时间；工作流重启时按模块 key 保留，避免绕过冷却。
+        self.global_detect_cooldown_deadlines: dict[str, float] = {}
         self.global_detect_trigger_count = 0
         # 单独执行（F9）全局脚本时的语句体回放参数：触发条件满足后重新播放语句体。
         self.standalone_global_replay: dict | None = None
@@ -1079,19 +1080,12 @@ class ShellMixin:
         self._popup_menu(menu, self.add_action_menu_button)
 
     def _show_script_more_menu(self):
-        """「⋯ 更多」：插入位置与脚本插入等不常按的入口。"""
+        """「⋯ 更多」：脚本插入与低频管理入口。"""
         menu = tk.Menu(
             self.root, tearoff=False, background=COLOR_SURFACE, foreground=COLOR_TEXT,
             activebackground="#1D4358", activeforeground="#FFFFFF",
             borderwidth=1, relief="solid",
         )
-        menu.add_command(
-            label="▲ 向上插入", command=lambda: self._set_insert_position(True),
-        )
-        menu.add_command(
-            label="▼ 向下插入", command=lambda: self._set_insert_position(False),
-        )
-        menu.add_separator()
         menu.add_command(label="⇥ 引用脚本（实时读取）", command=lambda: self._insert_script(False))
         menu.add_command(label="⇥ 逐行插入脚本", command=lambda: self._insert_script(True))
         menu.add_separator()
@@ -1116,6 +1110,7 @@ class ShellMixin:
         """Return the action buttons exposed by the script editor toolbar."""
         return (
             ("◷ 延时", "add_delay", "ScriptTool.TButton"),
+            ("◎ 重新绑定", "add_rebind_window", "ScriptTool.TButton"),
             ("⌨ 键盘", "add_key", "ScriptTool.TButton"),
             ("T 文本", "add_text", "ScriptTool.TButton"),
             ("i 提醒", "add_notice", "ScriptTool.TButton"),
@@ -1179,7 +1174,7 @@ class ShellMixin:
         toolbar = ttk.Frame(self.script_tab, padding=pad(12, 3, 12, 8), style="Toolbar.TFrame")
         toolbar.pack(fill="x")
 
-        # 一行搞定：常用动作常驻，其余动作进「添加动作」菜单。动作类型有 19 个，
+        # 一行搞定：常用动作常驻，其余动作进「添加动作」菜单。动作类型较多，
         # 全铺出来会占满两行，把动作列表挤下去。
         add_buttons = ttk.Frame(toolbar, style="Toolbar.TFrame")
         add_buttons.pack(side="left", fill="x")
@@ -1205,10 +1200,8 @@ class ShellMixin:
 
         ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=px(8))
 
-        insert_position_menu = tk.Menu(
-            self.root, tearoff=False, background=COLOR_SURFACE, foreground=COLOR_TEXT,
-            activebackground="#1D4358", activeforeground="#FFFFFF",
-            borderwidth=1, relief="solid",
+        ttk.Label(add_buttons, text="插入位置", style="Muted.TLabel").pack(
+            side="left", padx=pad(4, 2),
         )
         self.insert_above_button = ttk.Button(
             add_buttons, text="▲ 向上插入",
@@ -1218,6 +1211,8 @@ class ShellMixin:
             add_buttons, text="▼ 向下插入",
             command=lambda: self._set_insert_position(False),
         )
+        self.insert_above_button.pack(side="left", padx=px(2))
+        self.insert_below_button.pack(side="left", padx=px(2))
 
         edit_buttons = ttk.Frame(toolbar, style="Toolbar.TFrame")
         edit_buttons.pack(side="left", fill="x")
@@ -1242,13 +1237,12 @@ class ShellMixin:
             if text == "✎ 编辑":
                 self.edit_action_button = button
 
-        # 「更多」：插入位置、脚本插入、以及低频动作入口都在这里，避免工具栏再长一行。
+        # 「更多」：脚本插入与低频管理入口。
         self.script_more_menu_button = ttk.Button(
             toolbar, text="⋯ 更多", command=self._show_script_more_menu,
             style="ScriptTool.TButton",
         )
         self.script_more_menu_button.pack(side="right")
-        self._script_insert_position_menu = insert_position_menu
         self._script_overflow_specs = overflow_specs
         self._set_insert_position(False)
 

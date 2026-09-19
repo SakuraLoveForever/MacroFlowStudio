@@ -14,6 +14,7 @@ from pypinyin import lazy_pinyin
 from macroflow.core.storage import (
     BASE_DIR, DIRECTION_SCRIPTS_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
     DEFAULT_MODULE_INTERVAL_MS, DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
+    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     load_app_settings, load_module_images_dir, load_module_objects,
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
@@ -133,7 +134,8 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
     a jump target refers to without opening the script.
     """
     kind_labels = {
-        "delay": "延时", "key": "键盘", "key_press": "键盘", "text": "文本",
+        "delay": "延时", "rebind_window": "重新绑定目标窗口",
+        "key": "键盘", "key_press": "键盘", "text": "文本",
         "mouse_move": "鼠标移动", "mouse_button": "鼠标按键", "click": "点击",
         "repeat_click": "连续点击",
         "scroll": "滚轮", "image_match": "识图", "text_ocr": "识别文字",
@@ -441,6 +443,8 @@ def segment_row_label(action: dict) -> str:
     kind = action.get("type", "")
     if kind == "delay":
         return f"延时 {action.get('ms', 0)} ms"
+    if kind == "rebind_window":
+        return "重新绑定目标窗口"
     if kind in ("key", "key_press"):
         return f"按键 {action.get('key', action.get('name', '?'))}"
     if kind == "text":

@@ -4149,6 +4149,28 @@ class PlayerTests(unittest.TestCase):
             ], hwnd=123)
         move.assert_called_once_with(2, 3)
 
+    def test_rebind_window_action_updates_remaining_actions_and_exposes_new_hwnd(self):
+        request_target = Mock(return_value=456)
+        player = MacroPlayer(on_target_window_request=request_target)
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=True), \
+             package_patch('player', 'send_move_absolute'), \
+             patch.object(player, '_clamp_click_point', return_value=(10, 20)) as clamp:
+            player.play([
+                {"type": "rebind_window"},
+                {"type": "mouse_move", "mode": "absolute", "x": 10, "y": 20},
+            ], hwnd=123)
+
+        request_target.assert_called_once_with()
+        clamp.assert_called_once_with(10, 20, 456)
+        self.assertEqual(player.rebound_target_hwnd, 456)
+
+    def test_rebind_window_action_stops_when_saved_target_is_not_found(self):
+        player = MacroPlayer(on_target_window_request=Mock(return_value=None))
+
+        with self.assertRaisesRegex(RuntimeError, "未找到已保存的目标窗口"):
+            player.play([{"type": "rebind_window"}])
+
     def test_relative_action_resolves_game_window_created_after_workflow_start(self):
         player = MacroPlayer(on_target_window_request=Mock(return_value=456))
         with package_patch('player', 'is_window', side_effect=lambda hwnd: hwnd == 456), \

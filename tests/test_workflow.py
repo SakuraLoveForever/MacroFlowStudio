@@ -1039,6 +1039,45 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             )
             self.assertTrue(any("跳过工作流第 1/2 行" in call.args[0] for call in app._log.call_args_list))
 
+    def test_rebound_target_from_one_script_is_used_by_later_workflow_steps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "first.json"
+            second = Path(folder) / "second.json"
+            save_script(MacroScript(name="重启游戏", actions=[{"type": "rebind_window"}]), first)
+            save_script(MacroScript(name="后续操作", actions=[{"type": "delay", "ms": 0}]), second)
+
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.workflow_stop = threading.Event()
+            app.player = Mock()
+            app.player.stop_event = threading.Event()
+            app.player.rebound_target_hwnd = None
+            app._enter_focus_mode = Mock()
+            app._leave_focus_mode = Mock()
+            app._set_status = Mock()
+            app._set_execution_progress = Mock()
+            app._append_mini_step = Mock()
+            app._log = Mock()
+            app._sound = Mock()
+            app._handle_worker_error = Mock()
+            app._finish_execution_visibility = Mock()
+            app._ui = lambda callback, *args: callback(*args)
+
+            play_count = 0
+
+            def play(*_args, **_kwargs):
+                nonlocal play_count
+                play_count += 1
+                app.player.rebound_target_hwnd = 456 if play_count == 1 else None
+
+            app.player.play.side_effect = play
+            app._run_workflow_worker([
+                {"script": str(first), "repeats": 1},
+                {"script": str(second), "repeats": 1},
+            ], None, 123, False)
+
+            calls = app.player.play.call_args_list
+            self.assertEqual([call.args[2] for call in calls], [123, 456])
+
     def test_execution_skips_disabled_script_and_continues(self):
         with tempfile.TemporaryDirectory() as folder:
             disabled_path = Path(folder) / "disabled.json"
@@ -1512,7 +1551,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
                 app.activation_enabled_var = Mock()
                 app.activation_enabled_var.get.return_value = False
                 app._clear_global_guards = Mock()
-                app._clear_global_detect_rearm_locks = Mock()
+                app._clear_global_detect_cooldowns = Mock()
                 app.workflow_stop = threading.Event()
                 app._sound = Mock()
                 app._hide_main_for_execution = Mock()
@@ -2180,7 +2219,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
                 app.focus_mode_enabled_var = FakeBooleanVar(False)
                 app.activate_target_enabled_var = FakeBooleanVar(True)
                 app._clear_global_guards = Mock()
-                app._clear_global_detect_rearm_locks = Mock()
+                app._clear_global_detect_cooldowns = Mock()
                 app.workflow_stop = threading.Event()
                 app._sound = Mock()
                 app._hide_main_for_execution = Mock()
@@ -2238,7 +2277,7 @@ class WorkflowSegmentTests(unittest.TestCase):
         app.activate_target_enabled_var = FakeBooleanVar(True)
         app.activation_enabled_var = FakeBooleanVar(False)
         app._clear_global_guards = Mock()
-        app._clear_global_detect_rearm_locks = Mock()
+        app._clear_global_detect_cooldowns = Mock()
         app.workflow_stop = threading.Event()
         app._sound = Mock()
         app._hide_main_for_execution = Mock()

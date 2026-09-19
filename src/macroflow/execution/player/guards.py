@@ -236,17 +236,20 @@ class GuardsMixin:
         """
         if self._guard_settle_deadline is None:
             return
-        remaining = self._guard_settle_deadline - time.perf_counter()
+        deadline = self._guard_settle_deadline
         self._guard_settle_deadline = None
         if self.stop_event.is_set():
             # 已经按了 F12：不再为停顿多等一秒。
             raise PlaybackStopped()
+        remaining = deadline - time.perf_counter()
         if remaining > 0:
             self._trace(f"全局检测处理完成，等待 {int(remaining * 1000)} ms 后继续原任务。")
             # 这一段是纯等待：不评估守卫（_poll_guards 看到截止时刻会跳过），
             # 只保证 F12 能及时中断。
-            if self.stop_event.wait(remaining):
-                raise PlaybackStopped()
+            while remaining > 0:
+                if self.stop_event.wait(remaining):
+                    raise PlaybackStopped()
+                remaining = deadline - time.perf_counter()
     def _play_guard_actions(self, actions: list[dict], hwnd: int | None,
                             hit: dict, source_screen: dict | None = None) -> None:
         """在播放器内联执行守卫处理段动作：注册脚本作用域、临时切换录制屏幕。

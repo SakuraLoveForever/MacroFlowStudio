@@ -1266,12 +1266,14 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
                 parent, action, default_row=_app_workflow_default_row(parent),
             ).show(),
         )
-    if kind in ("end_current_script", "jump_current_script_last", "block"):
+    if kind in ("end_current_script", "jump_current_script_last", "block", "rebind_window"):
         message = (
             f"{END_CURRENT_SCRIPT_LABEL}，无需配置。"
             if kind == "end_current_script" else
             "执行到这里时会离开模块代码段，并从当前脚本最后一行继续，无需配置。"
             if kind == "jump_current_script_last" else
+            "执行到这里时会根据侧栏保存的目标窗口信息重新绑定，无需配置。"
+            if kind == "rebind_window" else
             "执行到这里时会一直等待，只有其他跳转才能离开，无需配置。"
         )
         show_floating_notice(parent, "特殊模块", message)

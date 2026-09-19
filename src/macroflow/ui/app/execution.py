@@ -7,6 +7,7 @@ from macroflow.execution.player import (
     screen_template_scale,
 )
 from macroflow.execution.detection_worker import DetectionEvaluation, DetectionWorker
+from macroflow.core.storage import registered_module_object
 from pathlib import Path
 from macroflow.core.display_power import allow_display_sleep, keep_display_awake
 from macroflow.input.wininput import (
@@ -36,6 +37,7 @@ from .constants import (
     FLOATING_NOTICE_HEIGHT,
     FLOATING_NOTICE_WIDTH,
 )
+from macroflow.ui.dialogs.segments import module_action_for_key
 
 class ExecutionMixin:
     """执行入口：F9、工作流、单独执行、执行小窗与收尾。"""
@@ -138,6 +140,70 @@ class ExecutionMixin:
             self._run_current_script_impl, start_index, single_action_repeats,
             segment=segment, segment_repeats=segment_repeats,
         )
+
+    def run_module_object_test(self, module_key: str, repeats: int = 1):
+        """Run one saved module as a standalone live-reference action."""
+        return self._run_detection_entrypoint(
+            self._run_module_object_test_impl, module_key, max(1, int(repeats)),
+        )
+
+    def _run_module_object_test_impl(self, module_key: str, repeats: int = 1):
+        """Start a module-only run without changing the current script or workflow."""
+        module_obj = registered_module_object(str(module_key))
+        if module_obj is None:
+            self._notify("模块不存在", f"找不到模块：{module_key}")
+            return
+        if self.recorder.running:
+            self.stop_recording()
+        if self.worker and self.worker.is_alive():
+            self._notify("正在运行", "已有脚本或工作流正在执行。")
+            return
+
+        category = str(module_obj.get("category") or "switch")
+        # 全局模块在独立测试时按普通识别动作执行一次完整识别/动作链；否则注册
+        # 为脚本守卫后会一直常驻，且已禁用模块会在注册阶段被过滤，无法诊断。
+        action_category = "special" if category == "special" else "switch"
+        action = module_action_for_key(module_key, action_category, module_obj)
+        name = str(module_obj.get("name") or "").strip() or Path(
+            str(module_obj.get("template") or module_key).replace("\\", "/"),
+        ).stem or "未命名模块"
+        repeats = max(1, int(repeats))
+
+        self._begin_detection_run()
+        self._ensure_detection_worker()
+        hwnd = self._bound_hwnd()
+        activation_enabled, activation_signature = self._activation_settings_from_script()
+        activation_hwnd = None
+        try:
+            activation_hwnd = self._execution_activation_hwnd(
+                hwnd, activation_enabled, activation_signature,
+            )
+        except RuntimeError:
+            self._log("前置窗口未打开，已跳过前置窗口，继续执行模块测试。")
+        focus_enabled = bool(self.focus_mode_enabled_var.get())
+        activate_target = bool(self.activate_target_enabled_var.get())
+        self.execution_focus_requested = focus_enabled
+        source_screen = dict(self.script.settings.get("recorded_screen", {})) or None
+        self.workflow_stop.clear()
+        self.execution_started_at = time.perf_counter()
+        self._set_execution_progress(
+            f"模块测试 · {name} · 共执行 {repeats} 次 · 正在准备 · F12 停止"
+        )
+        self.worker = threading.Thread(
+            target=self._run_script_worker,
+            args=([action], repeats, hwnd, activation_hwnd, source_screen,
+                  focus_enabled, activate_target, 0),
+            kwargs={
+                "trigger": {}, "script_name": f"模块测试：{name}",
+                "single_action": True,
+            },
+            daemon=True,
+        )
+        self.worker.start()
+        self._sound("run_start")
+        self._hide_main_for_execution()
+        self._show_execution_mini()
+        self._append_mini_step(f"独立测试模块 {name}，共 {repeats} 次。")
     def _run_current_script_impl(self, start_index: int = 0,
                                  single_action_repeats: int | None = None,
                                  segment: tuple[int, int] | None = None,
@@ -453,7 +519,7 @@ class ExecutionMixin:
         if hotkey_player is not None:
             hotkey_player.stop()
         self.workflow_restart_requested = False
-        self._clear_global_detect_rearm_locks()
+        self._clear_global_detect_cooldowns()
         self._clear_global_guards()
         # F12 必须立即解除 BlockInput，不能等待工作流/全局模块线程自然退出。
         self._leave_focus_mode()

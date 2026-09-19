@@ -1253,7 +1253,7 @@ class WorkflowMixin:
         self.run_workflow(start_index=index)
     def run_workflow(self, start_index: int = 0, start_repeat: int = 0,
                      resume_action_index: int | None = None,
-                     preserve_global_rearm_locks: bool = False,
+                     preserve_global_cooldowns: bool = False,
                      test_mode: bool | None = None,
                      suppress_start_sound: bool = False,
                      segment: tuple[int, int] | None = None,
@@ -1261,12 +1261,12 @@ class WorkflowMixin:
         """执行工作流；segment = 只循环执行「开头行 → 结尾行」这一段。"""
         return self._run_detection_entrypoint(
             self._run_workflow_impl, start_index, start_repeat,
-            resume_action_index, preserve_global_rearm_locks, test_mode,
+            resume_action_index, preserve_global_cooldowns, test_mode,
             suppress_start_sound, segment=segment, segment_repeats=segment_repeats,
         )
     def _run_workflow_impl(self, start_index: int = 0, start_repeat: int = 0,
                       resume_action_index: int | None = None,
-                      preserve_global_rearm_locks: bool = False,
+                      preserve_global_cooldowns: bool = False,
                       test_mode: bool | None = None,
                       suppress_start_sound: bool = False,
                       segment: tuple[int, int] | None = None,
@@ -1367,8 +1367,8 @@ class WorkflowMixin:
         # 每次开始前清空上一轮守卫（守卫生命周期 = 一次工作流运行），
         # 工作流全局模块随后由 worker 重新注册。
         self._clear_global_guards()
-        if not preserve_global_rearm_locks:
-            self._clear_global_detect_rearm_locks()
+        if not preserve_global_cooldowns:
+            self._clear_global_detect_cooldowns()
         self.workflow_stop.clear()
         if not suppress_start_sound:
             self._sound("run_start")
@@ -1712,6 +1712,9 @@ class WorkflowMixin:
                         self._consume_workflow_repeat_from_worker(row, testing)
                     ),
                 )
+                rebound_hwnd = getattr(self.player, "rebound_target_hwnd", None)
+                if isinstance(rebound_hwnd, int) and rebound_hwnd:
+                    hwnd = rebound_hwnd
                 played_any_step = True
                 if step_activation is not None:
                     activation_consumed = True

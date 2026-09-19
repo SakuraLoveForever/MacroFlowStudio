@@ -53,6 +53,8 @@ class GuardTestHelpers:
             "expected_text": "",
             "match_mode": "contains",
             "wait_text_absent": False,
+            "cooldown_ms": 2000,
+            "cooldown_until": 0.0,
             "target_absent_armed": False,
             "click_count": 1,
             "ocr_offset_up": 0, "ocr_offset_down": 0,
@@ -81,9 +83,6 @@ class GuardTestHelpers:
             "not_found_since": time.perf_counter(),
             "trigger_kind": "success",
             "was_detected": False,
-            "triggered": False,
-            "awaiting_clear": False,
-            "awaiting_clear_logged": False,
             "match_since": None,
             "match_data": None,
             "last_check_time": 0.0,
@@ -100,7 +99,7 @@ class GuardTestHelpers:
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}
         app.guards_lock = threading.Lock()
-        app.global_detect_rearm_locks = set()
+        app.global_detect_cooldown_deadlines = {}
         app.global_detect_trigger_count = 0
         app._evaluating_guards = False
         app.exiting = False
@@ -924,7 +923,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         guard = self._make_guard(
             "module-x.png", recognize="text", expected_text="加载中",
             match_mode="contains", region=None, wait_text_absent=True,
-            target_absent_armed=False, hold_ms=0,
+            target_absent_armed=False, hold_ms=0, cooldown_ms=0,
         )
         app.global_guards[guard["key"]] = guard
         screen = np.zeros((400, 400, 3), dtype=np.uint8)
@@ -969,7 +968,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             app = self._make_guard_app()
             guard = self._make_guard(
                 template, region=None, wait_text_absent=True,
-                target_absent_armed=False, hold_ms=0,
+                target_absent_armed=False, hold_ms=0, cooldown_ms=0,
             )
             app.global_guards[guard["key"]] = guard
             found = {
@@ -1050,11 +1049,11 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._trace_event.assert_any_call(observation)
         app._append_mini_step.assert_any_call(observation)
 
-    def test_module_ref_activation_uses_resolved_object_and_preserves_rearm_lock(self):
+    def test_module_ref_activation_preserves_running_cooldown(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}
         app.guards_lock = threading.Lock()
-        app.global_detect_rearm_locks = {"workflow:m1"}
+        app.global_detect_cooldown_deadlines = {"workflow:m1": 1234.5}
         logs = []
         app._log = Mock(side_effect=logs.append)
         app._ui = lambda callback, *args: callback(*args)
@@ -1064,7 +1063,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         module = {"kind": "global_module", "step_id": "m1"}
         resolved = Path("C:/Macro/images/点击游戏画面.png")
         obj = {
-            "threshold": 0.85, "interval_ms": 250, "hold_ms": 100,
+            "threshold": 0.85, "interval_ms": 250, "cooldown_ms": 3456,
+            "hold_ms": 100,
             "hold_enabled": True,
             "delay_ms": 0, "after_action": "click_match", "button": "left",
         }
@@ -1078,8 +1078,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
         guard = app.global_guards["workflow:m1"]
         self.assertEqual(guard["hold_ms"], 100)
-        # 重新武装锁跨执行保留：同 key 守卫注册后仍处于 awaiting_clear。
-        self.assertTrue(guard["awaiting_clear"])
+        self.assertEqual(guard["cooldown_ms"], 3456)
+        self.assertEqual(guard["cooldown_until"], 1234.5)
         self.assertTrue(any("持续超过 100 ms" in text for text in app._trace_logs))
         self.assertEqual(lookup.call_count, 2)
         self.assertTrue(all(
@@ -1426,11 +1426,11 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             {"script:mainline", "script:initialize"},
         )
 
-    def test_script_global_actions_have_independent_rearm_locks(self):
+    def test_script_global_actions_have_independent_cooldowns(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}
         app.guards_lock = threading.Lock()
-        app.global_detect_rearm_locks = {"script:mainline"}
+        app.global_detect_cooldown_deadlines = {"script:mainline": 1234.5}
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
 
@@ -1444,8 +1444,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "template": "images/init.png",
             })
 
-        self.assertTrue(app.global_guards["script:mainline"]["awaiting_clear"])
-        self.assertFalse(app.global_guards["script:initialize"]["awaiting_clear"])
+        self.assertEqual(app.global_guards["script:mainline"]["cooldown_until"], 1234.5)
+        self.assertEqual(app.global_guards["script:initialize"]["cooldown_until"], 0.0)
 
     def test_script_scope_enables_all_globals_when_starting_from_the_top(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1569,7 +1569,9 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             "workflow:one": {"key": "workflow:one"},
         }
         app.guards_lock = threading.Lock()
-        app.global_detect_rearm_locks = {"script:one", "workflow:one"}
+        app.global_detect_cooldown_deadlines = {
+            "script:one": 1234.5, "workflow:one": 2345.6,
+        }
         app._guard_config_version = 8
         app._pending_global_guard_hits = [{"guard_key": "script:one"}]
 
@@ -1577,8 +1579,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
         self.assertNotIn("script:one", app.global_guards)
         self.assertIn("workflow:one", app.global_guards)
-        # 离开作用域同时丢弃该脚本守卫的重新武装锁。
-        self.assertEqual(app.global_detect_rearm_locks, {"workflow:one"})
+        # 离开作用域同时丢弃该脚本守卫的冷却状态。
+        self.assertEqual(app.global_detect_cooldown_deadlines, {"workflow:one": 2345.6})
         self.assertEqual(app._guard_config_version, 9)
         self.assertEqual(app._pending_global_guard_hits, [])
 
@@ -1724,7 +1726,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
     def test_evaluate_global_guards_hold_then_trigger(self):
         # 上升沿语义：首次评估只置 was_detected/match_since，达到 hold 时长后
-        # 第二次评估返回 hit，且守卫进入 awaiting_clear。
+        # 第二次评估返回 hit，且守卫进入触发冷却。
         with tempfile.TemporaryDirectory() as folder:
             template = Path(folder) / "g.png"
             template.write_bytes(b"x")
@@ -1741,45 +1743,38 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 self.assertIsNone(app._evaluate_global_guards())
                 self.assertTrue(guard["was_detected"])
                 self.assertIsNotNone(guard["match_since"])
-                self.assertFalse(guard["awaiting_clear"])
+                self.assertEqual(guard["cooldown_until"], 0.0)
                 # 拨快 match_since 到超过 hold，第二次评估触发。
                 guard["match_since"] = time.perf_counter() - 2.0
                 guard["last_check_time"] = 0.0
                 hit = app._evaluate_global_guards()
             self.assertIsNotNone(hit)
             self.assertEqual(hit["kind"], "success")
-            self.assertTrue(guard["triggered"])
-            self.assertTrue(guard["awaiting_clear"])
-            self.assertIn(guard["key"], app.global_detect_rearm_locks)
+            self.assertGreater(guard["cooldown_until"], time.perf_counter())
+            self.assertEqual(
+                app.global_detect_cooldown_deadlines[guard["key"]],
+                guard["cooldown_until"],
+            )
 
-    def test_evaluate_global_guards_awaiting_clear_blocks_retrigger(self):
+    def test_global_guard_retriggers_after_cooldown_while_target_stays_visible(self):
         with tempfile.TemporaryDirectory() as folder:
             template = Path(folder) / "g.png"
             template.write_bytes(b"x")
             app = self._make_guard_app()
             guard = self._make_guard(
-                template, triggered=True, awaiting_clear=True, awaiting_clear_logged=False,
+                template, cooldown_ms=2000, cooldown_until=3000.0,
+                was_detected=True, match_since=1000.0,
             )
             app.global_guards[guard["key"]] = guard
-            app.global_detect_rearm_locks = {guard["key"]}
             match = {"x": 10, "y": 20, "width": 30, "height": 40,
                      "center_x": 25, "center_y": 40, "score": 0.9}
-            screen = np.zeros((60, 80, 3), dtype=np.uint8)
-            # 目标仍在：awaiting_clear 阻止再次触发。
-            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
-                 package_patch('app', 'find_template_in_image', return_value=match), \
-                 package_patch('app', 'show_overlay'):
-                self.assertIsNone(app._evaluate_global_guards())
-            self.assertTrue(guard["awaiting_clear"])
-            self.assertIn(guard["key"], app.global_detect_rearm_locks)
-            # 目标消失：解除 awaiting_clear 并重新武装，允许下次触发。
-            guard["last_check_time"] = 0.0
-            with package_patch('app', 'capture_bgr', return_value=(screen, (-20, 0))), \
-                 package_patch('app', 'find_template_in_image', return_value=None), \
-                 package_patch('app', 'show_overlay'):
-                self.assertIsNone(app._evaluate_global_guards())
-            self.assertFalse(guard["awaiting_clear"])
-            self.assertNotIn(guard["key"], app.global_detect_rearm_locks)
+            with patch.object(app, "_guard_image_detect", return_value=(True, match)):
+                self.assertIsNone(app._evaluate_one_guard(guard, None, None, 2999.9))
+                hit = app._evaluate_one_guard(guard, None, None, 3000.0)
+            self.assertIsNotNone(hit)
+            self.assertEqual(hit["kind"], "success")
+            self.assertEqual(guard["cooldown_until"], 3002.0)
+            self.assertEqual(app.global_detect_cooldown_deadlines[guard["key"]], 3002.0)
 
     def test_evaluate_skips_when_player_stopped(self):
         app = self._make_guard_app()
@@ -1813,7 +1808,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                  package_patch('app', 'show_overlay'):
                 hit = app._evaluate_global_guards()
             self.assertIsNotNone(hit)
-            self.assertTrue(guard["awaiting_clear"])
+            self.assertGreater(guard["cooldown_until"], 0.0)
             self.assertTrue(any("立即触发" in text for text in app._trace_logs))
 
     def test_guard_module_ref_reads_object_each_round(self):
@@ -1958,7 +1953,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertFalse(app.workflow_restart_requested)
         app.run_workflow.assert_called_once_with(
             start_index=0, start_repeat=0, resume_action_index=0,
-            preserve_global_rearm_locks=True, suppress_start_sound=True,
+            preserve_global_cooldowns=True, suppress_start_sound=True,
         )
 
     def test_launch_workflow_restart_uses_configured_row_object(self):
@@ -1979,7 +1974,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
         app.run_workflow.assert_called_once_with(
             start_index=1, start_repeat=0, resume_action_index=0,
-            preserve_global_rearm_locks=True, suppress_start_sound=True,
+            preserve_global_cooldowns=True, suppress_start_sound=True,
         )
 
     def test_launch_workflow_restart_clamps_row_beyond_workflow_length(self):
@@ -2001,7 +1996,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
         app.run_workflow.assert_called_once_with(
             start_index=1, start_repeat=0, resume_action_index=0,
-            preserve_global_rearm_locks=True, suppress_start_sound=True,
+            preserve_global_cooldowns=True, suppress_start_sound=True,
         )
         # 重启完成后目标行复位，避免影响下一次触发。
         self.assertEqual(app.workflow_restart_target_row, 1)

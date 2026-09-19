@@ -99,6 +99,8 @@ class CoreMixin:
         self._held_keys: set[int] = set()
         self._held_buttons: set[str] = set()
         self._relative_target_hwnd: int | None = None
+        self._runtime_target_hwnd: int | None = None
+        self.rebound_target_hwnd: int | None = None
         self._legacy_relative_started = False
         self._source_screen: dict | None = None
         self._target_screen: dict | None = None
@@ -294,6 +296,8 @@ class CoreMixin:
         self._last_stop_referenced_source_screen = None
         self.reset()
         self._relative_target_hwnd = None
+        self._runtime_target_hwnd = None
+        self.rebound_target_hwnd = None
         self._legacy_relative_started = False
         self._source_screen = dict(source_screen) if source_screen else None
         self._target_screen = get_playback_screen_rect(hwnd) if self._source_screen else None
@@ -323,6 +327,7 @@ class CoreMixin:
                     "绑定窗口已失效；普通动作继续执行，只有相对转向或窗口区域动作需要重新绑定。",
                 )
                 hwnd = None
+            self._runtime_target_hwnd = int(hwnd) if hwnd else None
             if self._activation_hwnd and not is_window(self._activation_hwnd):
                 self._activation_hwnd = None
                 self._activation_prepared = False
@@ -544,6 +549,7 @@ class CoreMixin:
             if self.on_timing:
                 self.on_timing(self._timeline.metrics.snapshot())
             self._relative_target_hwnd = None
+            self._runtime_target_hwnd = None
             self._source_screen = None
             self._target_screen = None
             self._activate_target = True
@@ -777,9 +783,22 @@ class CoreMixin:
         # 目标窗口本来就在前台时不激活，避免多一次 SetForegroundWindow 让游戏
         # 弹“点击游戏画面继续操作”。
         kind = action.get("type")
+        if self.running:
+            hwnd = self._runtime_target_hwnd
         if kind in INPUT_ACTION_KINDS:
             self._ensure_foreground_for_input(hwnd)
-        if kind == "delay":
+        if kind == "rebind_window":
+            rebound = self.on_target_window_request() if self.on_target_window_request else None
+            if not rebound or not is_window(rebound):
+                raise RuntimeError("未找到已保存的目标窗口，无法重新绑定")
+            hwnd = int(rebound)
+            self._runtime_target_hwnd = hwnd
+            self.rebound_target_hwnd = hwnd
+            self._relative_target_hwnd = hwnd
+            if self._source_screen:
+                self._target_screen = get_playback_screen_rect(hwnd)
+            self._log_event(f"已重新绑定目标窗口，HWND={hwnd}。")
+        elif kind == "delay":
             # 手工延时同样跟随倍速，否则同一份脚本里“录制间隔加速、手工延时
             # 不加速”两种口径混在一起。
             self._wait(self._scaled_delay(int(action.get("ms", 100))))

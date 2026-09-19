@@ -86,6 +86,33 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertIn("⇥ 逐行插入脚本", labels)
         menu.tk_popup.assert_called_once()
 
+    def test_script_more_menu_does_not_duplicate_insert_direction_buttons(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.script_more_menu_button = Mock()
+        app.script_more_menu_button.winfo_rootx.return_value = 10
+        app.script_more_menu_button.winfo_rooty.return_value = 20
+        app.script_more_menu_button.winfo_height.return_value = 24
+
+        with patch("macroflow.ui.app.shell.tk.Menu") as menu_class:
+            app._show_script_more_menu()
+
+        labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
+        self.assertNotIn("▲ 向上插入", labels)
+        self.assertNotIn("▼ 向下插入", labels)
+
+    def test_set_script_insert_position_highlights_current_mode(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.insert_position_var = FakeVar("below")
+        app.insert_above_button = Mock()
+        app.insert_below_button = Mock()
+
+        app._set_insert_position(True)
+
+        self.assertEqual(app.insert_position_var.get(), "above")
+        app.insert_above_button.configure.assert_called_with(bootstyle="primary")
+        app.insert_below_button.configure.assert_called_with(bootstyle="secondary")
+
     def test_script_editor_add_actions_use_one_module_entry(self):
         labels = [label for label, _command, _style in MacroFlowApp._script_action_button_specs()]
 
@@ -97,6 +124,17 @@ class ScriptEditingTests(unittest.TestCase):
         specs = MacroFlowApp._script_action_button_specs()
 
         self.assertIn(("⏸ 阻塞", "add_block", "AccentScriptTool.TButton"), specs)
+
+    def test_script_editor_adds_rebind_window_action(self):
+        app = make_edit_app()
+
+        app.add_rebind_window()
+
+        self.assertEqual(app.script.actions[0]["type"], "rebind_window")
+        self.assertEqual(
+            action_summary(app.script.actions[0])[:2],
+            ("◎  重新绑定", "根据已保存的目标窗口信息重新获取窗口"),
+        )
 
     def test_script_editor_exposes_scroll_action(self):
         # 工具栏「滚轮」：spec 里的命令名必须能在实例上取到（否则按钮点不动）。
@@ -2514,6 +2552,57 @@ class SingleActionRunTests(unittest.TestCase):
         app.run_current_script(start_index=1, single_action_repeats=4)
         app._run_current_script_impl.assert_called_once_with(
             1, 4, segment=None, segment_repeats=1)
+
+
+class ModuleObjectRunTests(unittest.TestCase):
+    """模块对象管理右键测试：独立执行选中的实时模块引用。"""
+
+    def _app(self) -> MacroFlowApp:
+        return SingleActionRunTests()._app()
+
+    def test_module_test_builds_live_reference_and_runs_requested_count(self):
+        app = self._app()
+        module_obj = {
+            "category": "workflow_global", "name": "结算确定", "enabled": False,
+            "template": "images/ok.png", "region": [1, 2, 300, 200],
+        }
+        with patch("macroflow.ui.app.execution.registered_module_object", return_value=module_obj), \
+             patch("threading.Thread") as thread_class:
+            app._run_module_object_test_impl("module:ok", 6)
+
+        worker_args = thread_class.call_args.kwargs["args"]
+        self.assertEqual(worker_args[1], 6)
+        self.assertEqual(worker_args[7], 0)
+        action = worker_args[0][0]
+        self.assertEqual(action["type"], "image_match")
+        self.assertEqual(action["module_key"], "module:ok")
+        self.assertIs(action["module_ref"], True)
+        self.assertIs(thread_class.call_args.kwargs["kwargs"]["single_action"], True)
+        self.assertIn("模块测试 · 结算确定 · 共执行 6 次", app._set_execution_progress.call_args.args[0])
+        thread_class.return_value.start.assert_called_once()
+
+    def test_module_test_supports_special_modules(self):
+        app = self._app()
+        module_obj = {
+            "category": "special", "name": "结束当前最里层脚本，继续执行",
+            "pure_action": True,
+        }
+        with patch("macroflow.ui.app.execution.registered_module_object", return_value=module_obj), \
+             patch("threading.Thread") as thread_class:
+            app._run_module_object_test_impl("结束当前最里层脚本，继续执行", 1)
+
+        action = thread_class.call_args.kwargs["args"][0][0]
+        self.assertEqual(action["type"], "end_current_script")
+
+    def test_module_test_entrypoint_uses_detection_guard(self):
+        app = self._app()
+        app._run_detection_entrypoint = Mock()
+
+        app.run_module_object_test("module:ok", 3)
+
+        app._run_detection_entrypoint.assert_called_once_with(
+            app._run_module_object_test_impl, "module:ok", 3,
+        )
 
 
 class LastScriptRestoreTests(unittest.TestCase):

@@ -416,12 +416,14 @@ DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS = 5000
 # 模块对象的「检测间隔」默认值：新建模块按 1 秒轮询（识别一次约几百毫秒，
 # 1 秒间隔对挂机足够灵敏，又不会让 CPU/截图开销堆在一起）。
 DEFAULT_MODULE_INTERVAL_MS = 1000
+DEFAULT_MODULE_TRIGGER_COOLDOWN_MS = 2000
 DEFAULT_MODULE_OBJECT: dict = {
     "category": "switch",
     "enabled": True,                    # 仓库可用性：禁用后不能再插入新引用
     "region": [0, 0, 0, 0],            # [0,0,0,0] = 尚未设置区域 → 全屏识别
     "threshold": 0.85,
     "interval_ms": DEFAULT_MODULE_INTERVAL_MS,
+    "cooldown_ms": DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     "start_delay_ms": 0,                # 进入模块后、开始识别前的延时（脚本全局模块 = 脚本开始后的等待）
     "fallback_module_key": "",         # 主模块等待期间同时识别的备用图片/文字模块
     "fallback_on_match": "continue",   # 备用命中后继续识别主模块或直接退出
@@ -509,6 +511,12 @@ def _normalize_object(value, key: str = ""):
         obj["interval_ms"] = max(50, min(10000, int(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))))
     except (TypeError, ValueError):
         obj["interval_ms"] = DEFAULT_MODULE_INTERVAL_MS
+    try:
+        obj["cooldown_ms"] = max(
+            0, min(86400000, int(obj.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS))),
+        )
+    except (TypeError, ValueError):
+        obj["cooldown_ms"] = DEFAULT_MODULE_TRIGGER_COOLDOWN_MS
     try:
         obj["start_delay_ms"] = max(0, min(86400000, int(obj.get("start_delay_ms", 0))))
     except (TypeError, ValueError):

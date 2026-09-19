@@ -708,6 +708,8 @@ class TemplateRegionTests(unittest.TestCase):
         form.ignore_background_var.get.return_value = False
         form.interval_var = Mock()
         form.interval_var.get.return_value = "1000"
+        form.cooldown_var = Mock()
+        form.cooldown_var.get.return_value = "2000"
         form.start_delay_var = Mock()
         form.start_delay_var.get.return_value = "0"
         form.fallback_module_key_var = Mock()
@@ -860,6 +862,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertFalse(obj["run_code_after_action"])
         self.assertEqual(obj["threshold"], 0.85)
         self.assertEqual(obj["interval_ms"], 1000)
+        self.assertEqual(obj["cooldown_ms"], 2000)
         self.assertEqual(obj["start_delay_ms"], 0)
         self.assertEqual(obj["fallback_module_key"], "")
         self.assertFalse(obj["fallback_click"])
@@ -907,6 +910,17 @@ class TemplateRegionTests(unittest.TestCase):
         )
         self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["interval_ms"], 1000)
 
+    def test_new_module_trigger_cooldown_defaults_to_two_seconds(self):
+        import macroflow.core.storage as storage_module
+        import macroflow.ui.dialogs as dialogs_module
+
+        self.assertEqual(storage_module.DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, 2000)
+        self.assertIs(
+            dialogs_module.DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+            storage_module.DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+        )
+        self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["cooldown_ms"], 2000)
+
     def test_form_saves_start_delay_for_any_module_category(self):
         for label in ("切换模块", "工作流全局模块", "脚本全局模块"):
             form = self._form(image="images/g.png", region="10,20,300,400")
@@ -917,13 +931,24 @@ class TemplateRegionTests(unittest.TestCase):
             self.assertEqual(form.result[2]["start_delay_ms"], 125000, label)
             notice.assert_not_called()
 
+    def test_form_saves_per_module_trigger_cooldown(self):
+        form = self._form(image="images/g.png", region="10,20,300,400")
+        form.category_var.get.return_value = "工作流全局模块"
+        form.cooldown_var.get.return_value = "3750"
+
+        with package_patch('dialogs', 'show_floating_notice') as notice:
+            form.save()
+
+        self.assertEqual(form.result[2]["cooldown_ms"], 3750)
+        notice.assert_not_called()
+
     def test_toggle_sections_shows_start_delay_for_switch_module(self):
         form = self._form(recognize="模板图片")
         form.pure = False
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_start_delay",
+            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay",
             "row_fallback_module", "row_fallback_click",
             "row_blocking", "row_delay", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
@@ -1375,7 +1400,7 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent",
-            "row_ignore_background", "row_interval", "row_start_delay", "row_fallback_module",
+            "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay", "row_fallback_module",
             "row_fallback_click", "row_blocking", "row_delay",
             "action_section_heading", "row_after", "row_hold", "row_button",
             "row_click_count",
@@ -1424,7 +1449,7 @@ class TemplateRegionTests(unittest.TestCase):
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_start_delay",
+            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay",
             "row_fallback_module", "row_fallback_click",
             "row_blocking", "row_delay", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
@@ -1686,9 +1711,51 @@ class TemplateRegionTests(unittest.TestCase):
         with patch("tkinter.Menu") as menu_class:
             dialog._show_module_context_menu(event)
         labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
-        self.assertEqual(labels, ["改成工作流全局", "复制成工作流全局"])
+        self.assertEqual(labels, [
+            "▶ 测试指定次数…", "改成工作流全局", "复制成工作流全局",
+        ])
         tree.selection_set.assert_called_once_with("module:source")
         menu_class.return_value.tk_popup.assert_called_once_with(100, 120)
+
+    def test_manager_context_menu_offers_test_for_every_module_category(self):
+        for category in ("switch", "workflow_global", "script_global", "special"):
+            with self.subTest(category=category):
+                dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+                dialog.objects = {
+                    "module:source": self._object(category=category, name="测试模块"),
+                }
+                tree = Mock()
+                tree.identify_row.return_value = "module:source"
+                event = Mock(widget=tree, y=30, x_root=100, y_root=120)
+                with patch("tkinter.Menu") as menu_class:
+                    dialog._show_module_context_menu(event)
+                labels = [
+                    item.kwargs["label"]
+                    for item in menu_class.return_value.add_command.call_args_list
+                ]
+                self.assertIn("▶ 测试指定次数…", labels)
+                tree.selection_set.assert_called_once_with("module:source")
+
+    def test_manager_module_test_asks_for_count_and_runs_selected_module(self):
+        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.app = Mock()
+        dialog.app._ask_repeats.return_value = 4
+
+        dialog._test_module_with_count("module:source")
+
+        dialog.app._ask_repeats.assert_called_once_with(
+            "测试模块", "这个模块要独立测试几次？",
+        )
+        dialog.app.run_module_object_test.assert_called_once_with("module:source", 4)
+
+    def test_manager_module_test_cancel_runs_nothing(self):
+        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.app = Mock()
+        dialog.app._ask_repeats.return_value = None
+
+        dialog._test_module_with_count("module:source")
+
+        dialog.app.run_module_object_test.assert_not_called()
 
     def test_prepend_global_module_to_selected_scripts(self):
         with tempfile.TemporaryDirectory() as folder:
