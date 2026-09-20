@@ -1756,6 +1756,30 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 guard["cooldown_until"],
             )
 
+    def test_hold_countdown_follows_match_and_resets_after_detection_is_lost(self):
+        app = self._make_guard_app()
+        guard = self._make_guard("images/g.png", hold_ms=5000, hold_enabled=True)
+        first_match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.9,
+        }
+        moved_match = dict(first_match, x=50, center_x=65)
+
+        with patch.object(app, "_guard_image_detect", side_effect=[
+            (True, first_match), (True, moved_match), (False, None),
+            (True, first_match),
+        ]), patch.object(app, "_detection_overlay") as overlay:
+            self.assertIsNone(app._evaluate_one_guard(guard, None, None, 100.0))
+            self.assertIsNone(app._evaluate_one_guard(guard, None, None, 101.2))
+            self.assertIsNone(app._evaluate_one_guard(guard, None, None, 102.0))
+            self.assertIsNone(app._evaluate_one_guard(guard, None, None, 103.0))
+
+        self.assertEqual(overlay.call_args_list, [
+            call(10, 20, 30, 40, label="5s"),
+            call(50, 20, 30, 40, label="4s"),
+            call(10, 20, 30, 40, label="5s"),
+        ])
+
     def test_global_guard_retriggers_after_cooldown_while_target_stays_visible(self):
         with tempfile.TemporaryDirectory() as folder:
             template = Path(folder) / "g.png"

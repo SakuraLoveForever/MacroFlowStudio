@@ -33,6 +33,7 @@ from macroflow.input.wininput import (
 )
 from macroflow.core.image_match import capture_bgr, find_template, find_template_in_image
 from datetime import datetime
+import math
 from macroflow.core.ocr import (
     _get_engine, find_expected_match, format_ocr_observation, matches_expected,
     ocr_match_center, recognize_image_with_boxes, recognize_region_with_boxes,
@@ -151,22 +152,26 @@ class GuardsMixin:
             elif kind == "mini_step":
                 self._ui(self._append_mini_step, event["text"])
             elif kind == "overlay":
-                show_overlay(event["x"], event["y"], event["width"], event["height"])
+                show_overlay(
+                    event["x"], event["y"], event["width"], event["height"],
+                    label=event.get("label"),
+                )
             elif kind == "restore_foreground":
                 self._restore_workflow_scan_foreground()
             elif kind == "fallback_click":
                 self._guard_fallback_click(
                     event["guard"], event["match"], event["fallback_name"],
                 )
-    def _detection_overlay(self, x, y, width, height) -> None:
+    def _detection_overlay(self, x, y, width, height, label=None) -> None:
         detection_context = getattr(self, "_detection_event_context", None)
         deferred_events = getattr(detection_context, "events", None)
         if deferred_events is not None:
             self._defer_detection_event(
                 deferred_events, "overlay", x=x, y=y, width=width, height=height,
+                label=label,
             )
             return
-        show_overlay(x, y, width, height)
+        show_overlay(x, y, width, height, label=label)
     def _evaluate_global_guards_sync(self, _run_id: int | None = None,
                                      _config_version: int | None = None) -> DetectionEvaluation:
         """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
@@ -316,7 +321,8 @@ class GuardsMixin:
             if match:
                 # 持续重试时目标位置可能变化，每轮都使用最新命中位置。
                 guard["match_data"] = dict(match)
-            if not guard.get("was_detected"):
+            first_detection = not guard.get("was_detected")
+            if first_detection:
                 guard["was_detected"] = True
                 guard["match_since"] = now
                 if match:
@@ -327,7 +333,6 @@ class GuardsMixin:
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
                            if guard.get("hold_enabled", False) else "立即触发。"),
                     )
-                    self._detection_overlay(match["x"], match["y"], match["width"], match["height"])
                 else:
                     self._ui(
                         self._trace_event,
@@ -337,6 +342,16 @@ class GuardsMixin:
                     )
             hold_ms = guard["hold_ms"] if guard.get("hold_enabled", False) else 0
             elapsed_ms = (now - (guard["match_since"] or now)) * 1000
+            if match and hold_ms > 0 and elapsed_ms < hold_ms:
+                remaining_seconds = max(1, math.ceil((hold_ms - elapsed_ms) / 1000))
+                self._detection_overlay(
+                    match["x"], match["y"], match["width"], match["height"],
+                    label=f"{remaining_seconds}s",
+                )
+            elif match and first_detection:
+                self._detection_overlay(
+                    match["x"], match["y"], match["width"], match["height"],
+                )
             cooldown_until = float(guard.get("cooldown_until", 0.0))
             if now >= cooldown_until and elapsed_ms >= hold_ms:
                 cooldown_ms = max(0, int(guard.get(

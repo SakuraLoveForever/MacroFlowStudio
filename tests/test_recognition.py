@@ -2003,6 +2003,65 @@ class OcrTests(unittest.TestCase):
 
 
 class DetectOverlayTests(unittest.TestCase):
+    def test_overlay_window_is_excluded_from_screen_capture(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        fake_user32 = Mock()
+        fake_user32.CreateWindowExW.return_value = 123
+        fake_user32.GetMessageW.return_value = 0
+        previous_hwnd = overlay_module._window_hwnd
+        was_ready = overlay_module._ready.is_set()
+        overlay_module._window_hwnd = None
+        overlay_module._ready.clear()
+        try:
+            with patch.object(overlay_module, "_user32", fake_user32):
+                overlay_module._window_loop()
+        finally:
+            overlay_module._window_hwnd = previous_hwnd
+            if was_ready:
+                overlay_module._ready.set()
+            else:
+                overlay_module._ready.clear()
+
+        fake_user32.SetWindowDisplayAffinity.assert_called_once_with(
+            123, 0x00000011,
+        )
+
+    def test_countdown_label_is_forwarded_to_the_overlay_window(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        with patch.object(overlay_module, "_ensure_window", return_value=123), \
+             patch.object(overlay_module._user32, "PostMessageW") as post_message:
+            overlay_module.show_overlay(50, 60, 100, 80, label="5s")
+
+        self.assertEqual(overlay_module._pending[-1], "5s")
+        post_message.assert_called_once_with(
+            123, overlay_module.WM_OVERLAY_SHOW, 0, 0,
+        )
+
+    def test_countdown_label_does_not_widen_the_match_frame(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        fake_user32 = Mock()
+        fake_user32.GetDpiForSystem.return_value = 96
+        fake_user32.GetClientRect.side_effect = lambda _hwnd, pointer: (
+            setattr(pointer._obj, "right", 30),
+            setattr(pointer._obj, "bottom", 34),
+        )
+        fake_gdi = Mock()
+        previous = overlay_module._pending
+        overlay_module._pending = (50, 60, 10, 10, 0xFF, 900, "5s")
+        try:
+            with patch.object(overlay_module, "_user32", fake_user32), \
+                 patch.object(overlay_module, "_gdi32", fake_gdi):
+                overlay_module._wnd_proc(1, overlay_module.WM_PAINT, 0, 0)
+        finally:
+            overlay_module._pending = previous
+
+        # 10 px target + 2 px border on both sides: the label may be wider,
+        # but the red frame must still end at x=13 instead of using the label width.
+        self.assertEqual(fake_gdi.Rectangle.call_args.args[3], 13)
+
     def test_show_and_hide_overlay_creates_window(self):
         from macroflow.ui.detect_overlay import hide_overlay, show_overlay
         show_overlay(50, 60, 100, 80)

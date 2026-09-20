@@ -19,6 +19,7 @@ from macroflow.core.storage import (
     DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, load_script, registered_module_object,
     registered_template_region, resolve_path,
 )
+from macroflow.ui.detect_overlay import show_overlay
 import time
 
 from .base import (
@@ -158,7 +159,21 @@ class GuardsMixin:
             delay = max(0, int(hit.get("delay_ms", 0)))
             if delay:
                 self._trace(f"全局检测处理动作：等待 {delay} ms。")
-                self._wait(delay)
+                match = hit.get("match")
+                if isinstance(match, dict) and all(
+                    key in match for key in ("x", "y", "width", "height")
+                ):
+                    remaining_delay = delay
+                    while remaining_delay > 0:
+                        show_overlay(
+                            match["x"], match["y"], match["width"], match["height"],
+                            label=f"{(remaining_delay + 999) // 1000}s",
+                        )
+                        wait_ms = min(1000, remaining_delay)
+                        self._wait(wait_ms)
+                        remaining_delay -= wait_ms
+                else:
+                    self._wait(delay)
             activation_hwnd = hit.get("activation_hwnd")
             if activation_hwnd and is_window(activation_hwnd):
                 self._trace("全局检测处理动作：执行前置窗口激活。")

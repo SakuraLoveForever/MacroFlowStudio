@@ -2585,6 +2585,29 @@ class PlayerTests(unittest.TestCase):
             events,
         )
 
+    def test_global_guard_overlay_counts_down_the_delay_before_action(self):
+        player = MacroPlayer()
+        player.guard_settle_ms = 0
+        player._wait = Mock()
+        match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.95,
+        }
+
+        with patch(
+            "macroflow.execution.player.guards.show_overlay", create=True,
+        ) as overlay:
+            player.handle_guard_hit({"delay_ms": 10000, "match": match})
+
+        self.assertEqual(
+            [call.kwargs.get("label") for call in overlay.call_args_list],
+            ["10s", "9s", "8s", "7s", "6s", "5s", "4s", "3s", "2s", "1s"],
+        )
+        self.assertEqual(
+            [call.args[0] for call in player._wait.call_args_list],
+            [1000] * 10,
+        )
+
     def test_guard_handling_pauses_before_resuming_script(self):
         """全局模块先执行完，停 GUARD_SETTLE_MS，再继续原来的任务。"""
         player = MacroPlayer()
@@ -3290,6 +3313,84 @@ class PlayerTests(unittest.TestCase):
 
         self.assertEqual(notices, ["目标已执行"])
         self.assertIn("模块 主线关卡 执行结果：成功", logs)
+
+    def test_module_reference_requires_continuous_hold_before_success(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        module = {
+            "name": "返回游戏大厅", "template": "images/lobby.png",
+            "region": [], "blocking": False, "interval_ms": 50,
+            "threshold": 0.85, "not_found_timeout_ms": 10000,
+            "hold_enabled": True, "hold_ms": 2000,
+            "delay_ms": 0, "after_action": "continue",
+            "run_code_after_action": False, "run_code_on_timeout": False,
+        }
+        match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.95,
+        }
+        clock = {"now": 0.0}
+        observations = [
+            (0.0, match), (1.0, match), (1.1, None),
+            (2.0, match), (3.0, match), (4.0, match),
+        ]
+
+        def detect(*_args, **_kwargs):
+            clock["now"], result = observations.pop(0)
+            return result
+
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', side_effect=detect) as find, \
+             package_patch('player', 'show_overlay') as overlay, \
+             patch("macroflow.execution.player.image.time.perf_counter",
+                   side_effect=lambda: clock["now"]):
+            result = player._execute_image({
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:lobby", "template": "images/lobby.png",
+            }, None)
+
+        self.assertIsNone(result)
+        self.assertEqual(find.call_count, 6)
+        self.assertEqual(
+            [call.kwargs.get("label") for call in overlay.call_args_list],
+            [None],
+        )
+
+    def test_module_overlay_counts_down_the_delay_before_action(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        module = {
+            "name": "游戏大厅", "template": "images/lobby.png",
+            "region": [], "blocking": False, "interval_ms": 50,
+            "threshold": 0.85, "not_found_timeout_ms": 10000,
+            "hold_enabled": True, "hold_ms": 1000,
+            "delay_ms": 8000, "after_action": "continue",
+            "run_code_after_action": False, "run_code_on_timeout": False,
+        }
+        match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.95,
+        }
+
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'find_template', return_value=match) as find, \
+             package_patch('player', 'show_overlay') as overlay, \
+             patch("macroflow.execution.player.image.time.perf_counter",
+                   side_effect=[0.0, 0.0, 1.1]):
+            result = player._execute_image({
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:lobby", "template": "images/lobby.png",
+            }, None)
+
+        self.assertIsNone(result)
+        self.assertEqual(find.call_count, 2)
+        self.assertEqual(
+            [call.kwargs.get("label") for call in overlay.call_args_list],
+            ["8s", "7s", "6s", "5s", "4s", "3s", "2s", "1s"],
+        )
+        self.assertEqual([call.args[0] for call in player._wait.call_args_list], [
+            50, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+        ])
 
     def test_module_failure_signal_uses_object_timeout_then_jumps(self):
         logs = []

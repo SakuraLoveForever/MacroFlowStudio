@@ -23,6 +23,7 @@ from ctypes import wintypes
 DEFAULT_COLOR = 0x000000FF  # 亮红 (GDI COLORREF, BGR)
 DEFAULT_DURATION_MS = 900
 BORDER_PX = 2
+LABEL_HEIGHT_PX = 20
 
 WS_POPUP = 0x80000000
 WS_EX_LAYERED = 0x00080000
@@ -33,6 +34,7 @@ WS_EX_NOACTIVATE = 0x08000000
 SW_SHOWNOACTIVATE = 4
 SW_HIDE = 0
 LWA_COLORKEY = 0x00000001
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 KEY_COLOR = 0x00FF00FF  # 洋红：作为窗口背景键色，被变为全透明
 PS_SOLID = 0
 TRANSPARENT_BKMODE = 1
@@ -84,7 +86,7 @@ class WNDCLASSW(ctypes.Structure):
 _class_name = "MacroFlowDetectOverlay"
 
 _lock = threading.Lock()
-_pending: tuple[int, int, int, int, int, int] | None = None  # (l,t,w,h,color,duration)
+_pending: tuple[int, int, int, int, int, int, str | None] | None = None
 _window_hwnd: int | None = None
 _window_thread: threading.Thread | None = None
 _ready = threading.Event()
@@ -151,7 +153,9 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         rect = wintypes.RECT()
         _user32.GetClientRect(hwnd, ctypes.byref(rect))
         with _lock:
-            border_color = _pending[4] if _pending else DEFAULT_COLOR
+            data = _pending
+            border_color = data[4] if data else DEFAULT_COLOR
+            label = data[6] if data else None
         # 背景填充为键色（透明），再画一圈细边框。
         brush = _gdi32.CreateSolidBrush(KEY_COLOR)
         _user32.FillRect(hdc, ctypes.byref(rect), brush)
@@ -164,7 +168,19 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         # 填出来的白不会被抠掉）。选空画刷后只有一圈细边框可见。
         old_brush = _gdi32.SelectObject(hdc, _gdi32.GetStockObject(NULL_BRUSH))
         _gdi32.SetBkMode(hdc, TRANSPARENT_BKMODE)
-        _gdi32.Rectangle(hdc, 1, 1, max(2, rect.right - 1), max(2, rect.bottom - 1))
+        label_height = round(LABEL_HEIGHT_PX * _system_scale()) if label else 0
+        frame_width = _to_virtualized(data[:4])[2] if data else rect.right
+        frame_right = max(2, min(rect.right - 1, frame_width + border_px * 2 - 1))
+        _gdi32.Rectangle(
+            hdc, 1, label_height + 1,
+            frame_right, max(label_height + 2, rect.bottom - 1),
+        )
+        if label:
+            label_text = ctypes.c_wchar_p(label)
+            _gdi32.SetTextColor(hdc, 0x00000000)
+            _gdi32.TextOutW(hdc, 4, 2, label_text, len(label))
+            _gdi32.SetTextColor(hdc, 0x0000FFFF)
+            _gdi32.TextOutW(hdc, 3, 1, label_text, len(label))
         _gdi32.SelectObject(hdc, old_brush)
         _gdi32.SelectObject(hdc, old_pen)
         _gdi32.DeleteObject(pen)
@@ -179,14 +195,18 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             data = _pending
         if data is None:
             return 0
-        left, top, width, height, _color, duration_ms = data
+        left, top, width, height, _color, duration_ms, label = data
         left, top, width, height = _to_virtualized((left, top, width, height))
         border_px = max(2, round(BORDER_PX * _system_scale()))
+        label_height = round(LABEL_HEIGHT_PX * _system_scale()) if label else 0
+        label_width = round((len(label) * 9 + 8) * _system_scale()) if label else 0
         _user32.MoveWindow(
-            hwnd, left - border_px, top - border_px,
-            max(1, width + border_px * 2), max(1, height + border_px * 2),
+            hwnd, left - border_px, top - border_px - label_height,
+            max(1, width + border_px * 2, label_width),
+            max(1, height + border_px * 2 + label_height),
             True,
         )
+        _user32.InvalidateRect(hwnd, None, True)
         _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
         _user32.SetTimer(hwnd, 1, max(50, duration_ms), None)
         return 0
@@ -215,6 +235,9 @@ def _window_loop() -> None:
     )
     if not hwnd:
         return
+    # 高亮框对用户可见，但不能出现在下一轮屏幕截图中；否则边框会污染模板，
+    # 造成“命中 → 显示倒计时 → 下一帧未命中 → 计时重置”的自干扰循环。
+    _user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
     _user32.SetLayeredWindowAttributes(hwnd, KEY_COLOR, 0, LWA_COLORKEY)
     with _lock:
         _window_hwnd = int(hwnd)
@@ -241,7 +264,8 @@ def _ensure_window() -> int | None:
 
 
 def show_overlay(x: int, y: int, width: int, height: int,
-                 color: int = DEFAULT_COLOR, duration_ms: int = DEFAULT_DURATION_MS) -> None:
+                 color: int = DEFAULT_COLOR, duration_ms: int = DEFAULT_DURATION_MS,
+                 label: str | None = None) -> None:
     """Show a thin border around (x, y, width, height) for a short while.
 
     Coordinates are physical desktop pixels. Repeated calls refresh the
@@ -254,7 +278,10 @@ def show_overlay(x: int, y: int, width: int, height: int,
         return
     with _lock:
         global _pending
-        _pending = (int(x), int(y), int(width), int(height), int(color), int(duration_ms))
+        _pending = (
+            int(x), int(y), int(width), int(height), int(color), int(duration_ms),
+            str(label) if label else None,
+        )
     _user32.PostMessageW(hwnd, WM_OVERLAY_SHOW, 0, 0)
 
 

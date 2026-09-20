@@ -30,6 +30,7 @@ from macroflow.input.wininput import (
     send_text, set_cursor_pos,
 )
 from macroflow.ui.detect_overlay import show_overlay
+import math
 import time
 
 from .base import (
@@ -158,6 +159,11 @@ class ImageMixin:
                 "not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
             ))
         ) if module_obj is not None else 0
+        hold_ms = max(0, int(module_obj.get("hold_ms", 0))) if (
+            module_obj is not None
+            and module_obj.get("hold_enabled", False)
+            and not wait_target_absent
+        ) else 0
         fallback_template = None
         if module_obj is None:
             fallback_template = (
@@ -225,6 +231,7 @@ class ImageMixin:
         recognized = ""
         waiting_absent_logged = False
         last_ocr_observation = None
+        hold_since = None
         while True:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
@@ -311,9 +318,20 @@ class ImageMixin:
                         self.on_notice("期望文字已消失，循环点击完成", 3500)
                     return self._module_result_route(action, module_obj, succeeded=True)
                 elif text_present:
-                    break
+                    now = time.perf_counter()
+                    if hold_ms <= 0:
+                        break
+                    if hold_since is None:
+                        hold_since = now
+                    elapsed_hold_ms = (now - hold_since) * 1000
+                    if elapsed_hold_ms >= hold_ms:
+                        break
+                    start = now
+                    self._wait(interval_ms)
+                    continue
                 else:
                     match = None
+                    hold_since = None
             else:
                 # 主模板始终在自己的区域检测；备用激活后两者同时检测（各自区域）。
                 try:
@@ -349,7 +367,18 @@ class ImageMixin:
                         self.on_notice("目标模板已消失，循环执行完成", 3500)
                     return self._module_result_route(action, module_obj, succeeded=True)
                 if match:
-                    break
+                    now = time.perf_counter()
+                    if hold_ms <= 0:
+                        break
+                    if hold_since is None:
+                        hold_since = now
+                    elapsed_hold_ms = (now - hold_since) * 1000
+                    if elapsed_hold_ms >= hold_ms:
+                        break
+                    start = now
+                    self._wait(interval_ms)
+                    continue
+                hold_since = None
             fallback_match = None
             if module_fallback is not None:
                 try:
@@ -533,7 +562,15 @@ class ImageMixin:
                                    else f"识图超时：{subject}")
             self._wait(interval_ms)
 
-        if not text_module:
+        found_delay = max(0, int(
+            module_obj.get("delay_ms", 0) if module_obj is not None
+            else action.get("found_delay_ms", 0)
+        ))
+        delay_overlay = (
+            module_obj is not None and found_delay > 0 and match
+            and all(key in match for key in ("x", "y", "width", "height"))
+        )
+        if not text_module and not delay_overlay:
             show_overlay(match["x"], match["y"], match["width"], match["height"])
         if text_module:
             self._status(f"识别文字命中：{recognized[:40]}")
@@ -547,9 +584,17 @@ class ImageMixin:
                 f"({match['center_x']}, {match['center_y']})",
                 3500,
             )
-        found_delay = (module_obj.get("delay_ms", 0) if module_obj is not None
-                       else action.get("found_delay_ms", 0))
-        self._wait(max(0, int(found_delay)))
+        remaining_delay = found_delay
+        while delay_overlay and remaining_delay > 0:
+            show_overlay(
+                match["x"], match["y"], match["width"], match["height"],
+                label=f"{math.ceil(remaining_delay / 1000)}s",
+            )
+            wait_ms = min(1000, remaining_delay)
+            self._wait(wait_ms)
+            remaining_delay -= wait_ms
+        if not delay_overlay:
+            self._wait(found_delay)
         if module_obj is not None:
             # 实时引用：动作 B 由模块对象决定（点击识别区域/自定义/继续/二次识别/代码段）。
             result = self._after_module_success(module_obj, match, hwnd,
