@@ -464,11 +464,17 @@ def segment_row_label(action: dict) -> str:
             f"滚轮 {scroll_direction_label(action.get('dy', 0))} "
             f"{scroll_clicks(action.get('dy', 0))} 格"
         )
-    if kind == "image_match":
-        label = f"识图 {Path(str(action.get('template', ''))).stem}"
-        return f"【阻塞等待】{label}" if segment_action_is_blocking(action) else label
-    if kind == "global_detect":
-        label = f"全局检测 {Path(str(action.get('template', ''))).stem}"
+    if kind in ("image_match", "global_detect"):
+        template = str(action.get("template", "")).strip()
+        name = ""
+        if action.get("module_ref"):
+            key = str(action.get("module_key") or template).strip()
+            obj = registered_module_object(key) if key else None
+            name = str((obj or {}).get("name") or "").strip()
+            template = str((obj or {}).get("template") or template).strip()
+        if not name:
+            name = "未找到模块" if template.startswith("module:") else Path(template).stem
+        label = f"{'识图' if kind == 'image_match' else '全局检测'} {name}"
         return f"【阻塞等待】{label}" if segment_action_is_blocking(action) else label
     if kind == "script_ref":
         repeats = script_ref_repeat_count(action)

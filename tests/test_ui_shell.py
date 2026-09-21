@@ -187,7 +187,7 @@ class CloseActionTests(unittest.TestCase):
         app.on_close()
         app._quit_app.assert_called_once_with()
 
-    def test_close_action_is_saved_with_the_sidebar_settings(self):
+    def test_close_action_is_saved_without_obsolete_proxy_setting(self):
         # 选择要落盘：下次打开软件仍按用户选的关闭行为走。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.close_action_var = FakeSettingVar("tray")
@@ -217,11 +217,12 @@ class CloseActionTests(unittest.TestCase):
         app.workflow_path = None
         app.saved_window_signature = None
         app.workflow = Workflow()
-        app.app_settings = {}
+        app.app_settings = {"disable_flclash_proxy_before_workflow": True}
 
         settings = app._collect_sidebar_settings()
 
         self.assertEqual(settings["close_action"], "tray")
+        self.assertNotIn("disable_flclash_proxy_before_workflow", settings)
 
 if __name__ == '__main__':
     unittest.main()

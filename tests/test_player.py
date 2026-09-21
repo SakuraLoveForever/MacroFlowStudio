@@ -500,18 +500,29 @@ class PlayerTests(unittest.TestCase):
         self.assertIn("等待目标消失", joined)
         self.assertNotIn("开始阻塞等待", joined)
 
-    def test_missing_module_reference_does_not_run_stale_template(self):
-        player = MacroPlayer()
+    def test_missing_module_reference_is_routed_as_failure_without_running_stale_template(self):
+        logs = []
+        player = MacroPlayer(on_log=logs.append)
         with package_patch('player', 'registered_module_object', return_value=None), package_patch('player', 'find_template', return_value=None) as find:
-            with self.assertRaisesRegex(RuntimeError, "引用的模块不存在"):
-                player._execute_image({
-                    "type": "image_match", "module_ref": True,
-                    "module_key": "module:deleted", "template": "images/stale.png",
-                    "region_mode": "template", "region": [1, 2, 3, 4],
-                    "timeout_ms": 0,
-                }, None)
+            result = player._execute_image({
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:deleted", "template": "images/stale.png",
+                "region_mode": "template", "region": [1, 2, 3, 4],
+                "timeout_ms": 0, "on_timeout": "continue",
+            }, None)
 
+        self.assertIsNone(result)
+        self.assertIn("引用的模块已不存在，按识别失败处理：module:deleted", logs)
         find.assert_not_called()
+
+    def test_missing_module_reference_summary_matches_failure_routing(self):
+        _kind, detail, _delay = action_summary({
+            "type": "image_match", "module_ref": True,
+            "module_key": "module:deleted", "template": "images/stale.png",
+        }, module_objects={})
+
+        self.assertIn("对象不存在，按识别失败处理", detail)
+        self.assertNotIn("按内嵌参数执行", detail)
 
     def test_recorded_input_actions_keep_each_recorded_delay(self):
         player = MacroPlayer()

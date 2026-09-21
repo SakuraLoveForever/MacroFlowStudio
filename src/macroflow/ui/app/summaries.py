@@ -84,7 +84,7 @@ def _module_ref_summary(action: dict, label: str,
         )
         return (
             action_kind_label(kind, label),
-            f"引用模块 {name}（对象不存在，按内嵌参数执行）{result_text}",
+            f"引用模块 {name}（对象不存在，按识别失败处理）{result_text}",
             f"{int(action.get('delay_ms', 0))} ms",
         )
     name = str(obj.get("name") or Path(key.replace("\\", "/")).stem)

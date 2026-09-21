@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "MacroFlow Studio 项目架构",
+    "locale": "zh-CN",
+    "output": "macroflow-studio-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/SakuraLoveForever/MacroFlowStudio.git",
+      "provider": "github",
+      "revision": "7d08b4d7ca35aa871b473deaed42300332cb1406"
+    }
+  },
+  "layout": {
+    "mode": "grid",
+    "origin": [36, 54],
+    "cols": 6,
+    "gapX": 50,
+    "gapY": 78,
+    "cellW": 170,
+    "cellH": 72
+  },
+  "components": [
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "用户",
+      "sublabel": "编辑、录制与运行自动化",
+      "size": [170, 72],
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "desktop_ui",
+      "type": "frontend",
+      "label": "MacroFlowApp",
+      "sublabel": "主窗口、编辑器与对话框",
+      "tag": "UI 线程",
+      "sources": [
+        { "path": "src/macroflow/ui/app/main.py", "line": 21, "label": "主窗口组合" },
+        { "path": "src/macroflow/ui/app/shell.py", "label": "界面壳层" }
+      ],
+      "size": [170, 72],
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "run_orchestration",
+      "type": "backend",
+      "label": "运行编排层",
+      "sublabel": "工作流 / 脚本 worker + UI 队列",
+      "tag": "后台线程",
+      "sources": [
+        { "path": "src/macroflow/ui/app/workflow.py", "line": 71, "label": "工作流编排" },
+        { "path": "src/macroflow/ui/app/execution.py", "line": 42, "label": "脚本执行" },
+        { "path": "src/macroflow/ui/update_queue.py", "line": 19, "label": "UI 更新队列" }
+      ],
+      "size": [170, 72],
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "macro_player",
+      "type": "backend",
+      "label": "MacroPlayer",
+      "sublabel": "动作分发、跳转、模块与守卫",
+      "tag": "8 个 Mixin",
+      "sources": [
+        { "path": "src/macroflow/execution/player/__init__.py", "line": 117, "label": "播放器组合" },
+        { "path": "src/macroflow/execution/player/core.py", "label": "动作调度核心" }
+      ],
+      "size": [170, 72],
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "windows_control",
+      "type": "security",
+      "label": "Windows 控制层",
+      "sublabel": "输入、窗口、专注锁与显示设置",
+      "sources": [
+        { "path": "src/macroflow/input/wininput.py", "label": "Win32 输入与窗口 API" },
+        { "path": "src/macroflow/input/input_guard.py", "line": 92, "label": "专注输入守卫" }
+      ],
+      "size": [170, 72],
+      "row": 1,
+      "col": 4
+    },
+    {
+      "id": "target_desktop",
+      "type": "external",
+      "label": "目标应用 / 桌面",
+      "sublabel": "窗口、屏幕像素与键鼠事件",
+      "size": [170, 72],
+      "row": 1,
+      "col": 5
+    },
+    {
+      "id": "recording_stack",
+      "type": "backend",
+      "label": "录制与原始输入",
+      "sublabel": "MacroRecorder + Raw Input",
+      "sources": [
+        { "path": "src/macroflow/input/recorder.py", "line": 37, "label": "动作录制器" },
+        { "path": "src/macroflow/input/rawinput.py", "line": 113, "label": "原始鼠标输入" },
+        { "path": "src/macroflow/ui/app/recording.py", "line": 34, "label": "录制交互" }
+      ],
+      "size": [170, 72],
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "guard_worker",
+      "type": "messagebus",
+      "label": "DetectionWorker",
+      "sublabel": "串行化全局守卫识别请求",
+      "tag": "请求 / 结果队列",
+      "sources": [
+        { "path": "src/macroflow/execution/detection_worker.py", "line": 39, "label": "守卫检测线程" }
+      ],
+      "size": [170, 72],
+      "row": 2,
+      "col": 3
+    },
+    {
+      "id": "domain_storage",
+      "type": "database",
+      "label": "模型与 JSON 存储",
+      "sublabel": "脚本、工作流、设置、模块对象",
+      "sources": [
+        { "path": "src/macroflow/core/models.py", "line": 177, "label": "脚本 / 工作流模型" },
+        { "path": "src/macroflow/core/storage.py", "line": 56, "label": "JSON 持久化" }
+      ],
+      "size": [170, 72],
+      "row": 3,
+      "col": 1
+    },
+    {
+      "id": "system_services",
+      "type": "backend",
+      "label": "桌面系统服务",
+      "sublabel": "托盘、热键、声音、防休眠、启动",
+      "sources": [
+        { "path": "src/macroflow/ui/app/tray.py", "line": 39, "label": "托盘生命周期" },
+        { "path": "src/macroflow/core/display_power.py", "label": "显示器电源状态" },
+        { "path": "src/macroflow/ui/app/startup.py", "line": 69, "label": "应用入口" }
+      ],
+      "size": [170, 72],
+      "row": 3,
+      "col": 2
+    },
+    {
+      "id": "recognition_engine",
+      "type": "backend",
+      "label": "视觉识别层",
+      "sublabel": "mss 截图、OpenCV 模板匹配与 OCR",
+      "sources": [
+        { "path": "src/macroflow/core/image_match.py", "line": 132, "label": "模板匹配" },
+        { "path": "src/macroflow/core/ocr.py", "line": 125, "label": "OCR 封装" }
+      ],
+      "size": [170, 72],
+      "row": 2,
+      "col": 4
+    },
+    {
+      "id": "paddle_runtime",
+      "type": "external",
+      "label": "PaddleOCR 运行时",
+      "sublabel": "paddle_ocr/ 与 paddle_models/",
+      "tag": "按需加载",
+      "size": [170, 72],
+      "row": 3,
+      "col": 4
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "MacroFlow Studio 单机进程",
+      "wraps": [
+        "desktop_ui",
+        "run_orchestration",
+        "macro_player",
+        "windows_control",
+        "recording_stack",
+        "guard_worker",
+        "domain_storage",
+        "system_services",
+        "recognition_engine"
+      ],
+      "pad": 22
+    }
+  ],
+  "connections": [
+    {
+      "id": "operator_to_ui",
+      "from": "operator",
+      "to": "desktop_ui",
+      "label": "操作",
+      "labelAt": [231, 190],
+      "variant": "emphasis"
+    },
+    {
+      "id": "ui_to_orchestration",
+      "from": "desktop_ui",
+      "to": "run_orchestration",
+      "label": "启动 worker",
+      "labelAt": [451, 190]
+    },
+    {
+      "id": "orchestration_to_player",
+      "from": "run_orchestration",
+      "to": "macro_player",
+      "label": "执行步骤",
+      "labelAt": [671, 190],
+      "variant": "emphasis"
+    },
+    {
+      "id": "player_to_windows",
+      "from": "macro_player",
+      "to": "windows_control",
+      "label": "动作命令",
+      "labelAt": [891, 190]
+    },
+    {
+      "id": "windows_to_target",
+      "from": "windows_control",
+      "to": "target_desktop",
+      "label": "SendInput",
+      "labelAt": [1111, 190],
+      "variant": "security"
+    },
+    {
+      "id": "ui_to_storage",
+      "from": "desktop_ui",
+      "to": "domain_storage",
+      "label": "JSON 读写",
+      "labelAt": [341, 290]
+    },
+    {
+      "id": "recording_to_ui",
+      "from": "recording_stack",
+      "to": "desktop_ui",
+      "label": "录制动作流",
+      "labelAt": [341, 140]
+    },
+    {
+      "id": "orchestration_to_guard",
+      "from": "run_orchestration",
+      "to": "guard_worker",
+      "label": "守卫请求"
+    },
+    {
+      "id": "guard_to_recognition",
+      "from": "guard_worker",
+      "to": "recognition_engine"
+    },
+    {
+      "id": "player_to_recognition",
+      "from": "macro_player",
+      "to": "recognition_engine",
+      "label": "识图 / OCR"
+    },
+    {
+      "id": "target_to_recognition",
+      "from": "target_desktop",
+      "to": "recognition_engine",
+      "label": "屏幕像素 / mss",
+      "variant": "dashed"
+    },
+    {
+      "id": "recognition_to_paddle",
+      "from": "recognition_engine",
+      "to": "paddle_runtime",
+      "label": "惰性初始化模型",
+      "labelAt": [1001, 440]
+    },
+    {
+      "id": "ui_to_services",
+      "from": "desktop_ui",
+      "to": "system_services",
+      "label": "桌面生命周期"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主执行路径",
+      "items": [
+        "MacroFlowApp 启动后台 worker",
+        "运行编排层按工作流步骤调用 MacroPlayer",
+        "播放器通过 Win32 控制目标窗口"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "识别与守卫",
+      "items": [
+        "模板匹配使用 mss + OpenCV",
+        "OCR 运行时与模型按需从外置目录加载",
+        "DetectionWorker 串行执行全局守卫识别"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "数据与线程边界",
+      "items": [
+        "脚本、工作流和设置使用本地 JSON",
+        "执行与识别在后台线程运行",
+        "UIUpdateQueue 将状态安全送回 Tk UI 线程"
+      ]
+    }
+  ]
+}

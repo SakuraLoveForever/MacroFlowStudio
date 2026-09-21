@@ -53,7 +53,23 @@ class ImageMixin:
             module_key = str(action.get("module_key") or action.get("template", "")).strip()
             module_obj = registered_module_object(module_key)
             if module_obj is None:
-                raise RuntimeError(f"引用的模块不存在：{module_key or '未设置'}")
+                self._log_event(
+                    f"引用的模块已不存在，按识别失败处理：{module_key or '未设置'}"
+                )
+                stale_template = str(action.get("template", "")).strip()
+                return self._module_result_route(
+                    action,
+                    {
+                        "name": str(action.get("module_name", "")).strip()
+                        or Path(stale_template).stem or "已删除模块",
+                        "template": stale_template,
+                    },
+                    succeeded=False,
+                    result_label="引用模块不存在",
+                    hwnd=hwnd,
+                    script_stack=script_stack,
+                    depth=depth,
+                )
             elif str(module_obj.get("template", "")).strip():
                 template = resolve_path(str(module_obj["template"]))
         if module_obj is not None:

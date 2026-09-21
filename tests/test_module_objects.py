@@ -605,6 +605,21 @@ class TemplateRegionTests(unittest.TestCase):
             self.assertFalse(segment_action_is_blocking(action))
             self.assertEqual(segment_row_label(action), "识图 next")
 
+    def test_segment_module_reference_displays_module_name_instead_of_internal_id(self):
+        module = {"name": "登录确认", "blocking": False}
+
+        with package_patch('dialogs', 'registered_module_object', return_value=module):
+            self.assertEqual(segment_row_label({
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:89971b22b5b44b639a76dc69465dc595",
+                "template": "module:89971b22b5b44b639a76dc69465dc595",
+            }), "识图 登录确认")
+            self.assertEqual(segment_row_label({
+                "type": "global_detect", "module_ref": True,
+                "module_key": "module:89971b22b5b44b639a76dc69465dc595",
+                "template": "module:89971b22b5b44b639a76dc69465dc595",
+            }), "全局检测 登录确认")
+
     def test_reload_segment_list_colors_every_blocking_module(self):
         form = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         form.segment = [
