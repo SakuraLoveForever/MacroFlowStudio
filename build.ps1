@@ -31,6 +31,7 @@ if (Test-Path -LiteralPath $ProjectDependencies) {
 $BuildStamp = Join-Path $ProjectDir "build\MacroFlowStudio.inputs.sha256"
 $BuildInputPaths = @(
   (Join-Path $ProjectDir "MacroFlowStudio.spec"),
+  (Join-Path $ProjectDir "build\ocr_closure_modules.txt"),
   (Join-Path $ProjectDir "build.ps1")
 )
 $BuildInputPaths += @(Get-ChildItem -LiteralPath (Join-Path $ProjectDir "src") -File -Recurse |

@@ -1,5 +1,5 @@
-# OCR-only runtime additions. NumPy, Pillow, six and cv2 are supplied by the
-# main application requirements (OpenCV uses opencv-python-headless).
+# Shared providers are also pinned here so the external-component builder can
+# validate their metadata in .deps; their modules remain bundled in the main exe.
 rapidocr==3.9.2
 onnxruntime==1.24.2
 pyclipper==1.4.0
@@ -20,3 +20,7 @@ packaging==26.3
 protobuf==7.35.1
 sympy==1.14.0
 mpmath==1.3.0
+numpy==2.5.1
+Pillow==12.2.0
+six==1.17.0
+opencv-python-headless==5.0.0.93
