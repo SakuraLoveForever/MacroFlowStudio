@@ -4,12 +4,9 @@
 # （spec 模式）。
 #
 # 结构说明（v1.87.0 起）：
-#   - 主 exe 不再包含 OCR 引擎。paddle/paddleocr/paddlex 及 paddle_models/
-#     由 build.ps1 复制到 dist/paddle_ocr/（exe 旁边），ocr.py 在首次使用
-#     OCR 时把它加入 sys.path 按需加载：exe 体积约 253MB -> 约 70MB，
-#     启动不再解压全部内容，OCR 功能不变。
-#   - 移除了仅 paddle 家族使用的元数据依赖（shapely/pyclipper/imagesize/
-#     pypdfium2/python-bidi），PIL 被 app/dialogs/ttkbootstrap 直接使用保留。
+#   - RapidOCR / ONNX Runtime / 模型留在 exe 同级 rapidocr_ocr/，ocr.py
+#     首次使用时才把目录加入 sys.path 并加载。
+#   - OCR 外置闭包单独打包；主程序继续收集自己使用的 Pillow/OpenCV。
 import os
 import sys
 from pathlib import Path
@@ -30,7 +27,7 @@ tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # ---------- OCR 运行期缺失的 stdlib 补齐 ----------
-# paddle 闭包（build/ocr_closure_modules.txt）引用、但当前 exe 的
+# OCR 外置闭包（build/ocr_closure_modules.txt）引用、但当前 exe 的
 # PYZ/base_library.zip 里没有的 stdlib 模块（如 http.cookies——主程序从不
 # import 它，PyInstaller 分析不到），全部作为 hiddenimports 打进新 exe：
 # 否则打包版 OCR 首次使用会报 "No module named 'http.cookies'"。
@@ -72,9 +69,9 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         'pip', 'networkx', 'hf_xet',
-        # OCR 引擎外置：paddle 全家不在 exe 内，运行时由 ocr.py 从 exe 同目录
-        # 的 paddle_ocr/ 按需加载（否则模块分析会把函数级 import 也打包进来）。
+        # OCR 推理栈外置：RapidOCR 与 ONNX Runtime 从 exe 同级目录按需加载。
         'paddle', 'paddleocr', 'paddlex',
+        'rapidocr', 'onnxruntime',
     ],
     noarchive=False,
     optimize=0,

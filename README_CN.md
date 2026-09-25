@@ -11,7 +11,7 @@
 ![Version](https://img.shields.io/badge/Version-v1.0.0-4B8BBE?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square)
 ![Language](https://img.shields.io/badge/Language-zh--CN-EA4335?style=flat-square)
-![OCR](https://img.shields.io/badge/OCR-PaddleOCR%20Offline-FF6F00?style=flat-square)
+![OCR](https://img.shields.io/badge/OCR-RapidOCR%20Offline-FF6F00?style=flat-square)
 ![Build](https://img.shields.io/badge/Build-PyInstaller%206.20-8A2BE2?style=flat-square)
 
 </div>
@@ -24,7 +24,7 @@
 |---|---|
 | 🎮 **智能轨迹识别** | 鼠标锁定在窗口中央时记录原始相对轨迹（游戏视角转向，高频采样 ≤16 ms），离开窗口自动恢复桌面坐标 |
 | 🧩 **动作类型丰富** | 14+ 种动作：键盘 / 鼠标 / 滚轮 / 识图 / OCR / 跳转 / 引用脚本 / 启停软件 / 特殊模块 |
-| 🔍 **识图 + OCR 双引擎** | 模板匹配找固定图案，PaddleOCR 离线读变化文字（中文数字识别准确） |
+| 🔍 **识图 + OCR 双引擎** | 模板匹配找固定图案，RapidOCR CPU 离线读取变化文字 |
 | 🗂️ **模块对象仓库** | 识别设置可复用：切换 / 全局 / 特殊模块，代码段、备用识别、读取数字 |
 | ⚙️ **工作流编排** | 多脚本按次数执行，全局模块持续检测，断点恢复，测试模式 |
 | 🛡️ **强制专注模式** | 系统级输入锁 + 自动英语输入法，异常时自动释放按键 |
@@ -33,11 +33,11 @@
 
 ## 📦 安装与使用
 
-1. 下载最新版安装包：**[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)**（约 230 MB）
-2. 解压后**整个文件夹一起拷贝**即可使用（`paddle_ocr` 目录必须与 exe 保持同目录）
+1. 下载最新版安装包：**[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)**（约 126 MiB）
+2. 解压后**整个文件夹一起拷贝**即可使用（`rapidocr_ocr` 目录必须与 exe 保持同目录）
 3. 双击 `MacroFlowStudio.exe` 启动；设置保存在 exe 同目录 `app_settings.json`
 
-> ⚠️ `paddle_ocr`（离线 OCR 引擎与模型）首次使用"识别文字"时才按需加载，**删除后 OCR 不可用**；该目录包含 paddleocr 的全部运行依赖，请勿删减。
+> ⚠️ `rapidocr_ocr`（离线 OCR 引擎与模型）首次使用"识别文字"时才按需加载，**删除后 OCR 不可用**；该目录包含 RapidOCR、CPU ONNX Runtime、本地模型、运行依赖与许可证，请勿删减。
 
 ## 🚀 快速开始
 
@@ -67,7 +67,7 @@
 | ↔️ 拖动 | 从起点按住拖动到终点松开（屏选标注或手动输入坐标），可选步数/时长/鼠标键 |
 | 🎡 滚轮 | 在指定位置向上/向下滚动指定格数（工具栏「↕ 滚轮」，可屏选坐标） |
 | 🖼️ 识图 | 模板匹配找图（见下） |
-| 🔤 识别文字 | PaddleOCR 离线识别区域文字（见下） |
+| 🔤 识别文字 | RapidOCR 离线识别区域文字（见下） |
 | 💬 浮动提醒 / 注释 | 屏幕提示 / 备忘文字 |
 | 🔗 引用脚本 | 实时读取另一脚本执行（内嵌执行，不跳转）；动作列表里在该行**右键 →「▶ 执行指定次数…」**可单独把这个被引用脚本跑 1~N 次（默认 1 次，外层脚本不动） |
 | 🚀 打开 / 关闭软件 | 启动程序（带参数）/ 优雅或强制结束进程 |
@@ -89,7 +89,7 @@
 - **找到后**：继续 / 点击（识图区域中心或自定义坐标）/ 跳转指定行 / 直接结束当前脚本执行工作流下一项
 - **二次识别**：命中后可选另一张模板再次确认
 
-**文字识别**（读会变化的文字，与识图互补）：引擎为 PaddleOCR（纯离线，中文数字识别准确）
+**文字识别**（读会变化的文字，与识图互补）：引擎为 RapidOCR 3.9.2（CPU 离线运行，使用本地 PP-OCRv6 small 模型）
 
 - 框选识别区域（留空 = 全屏），或绑定目标窗口
 - 期望文字按"包含 / 等于"匹配；留空 = 识别到任意文字即命中
@@ -178,8 +178,8 @@
 
 ```
 MacroFlowStudio/
-├── MacroFlowStudio.exe   # 主程序（约 70 MB）
-├── paddle_ocr/           # OCR 引擎 + 模型 + 全部运行依赖（按需加载）
+├── MacroFlowStudio.exe   # 主程序（约 78 MiB）
+├── rapidocr_ocr/          # RapidOCR + CPU ONNX Runtime + 本地模型/依赖/许可证（按需加载）
 ├── scripts/              # 脚本
 ├── workflows/            # 工作流
 ├── images/               # 建议存放识图模板
@@ -200,12 +200,13 @@ MacroFlowStudio/
 
 ```powershell
 python -m pip install -r requirements.txt
+C:\Python313\python.exe -m pip install --target .deps --no-deps -r requirements-ocr.txt
 .\run.bat                 # 源码运行（等价于 PYTHONPATH=.deps;src + python -m macroflow.ui.app）
 python -m unittest discover -s tests -t .   # 运行全部单元测试（按功能拆分的多个测试文件）
-.\build.ps1               # 打包，输出 dist\MacroFlowStudio.exe + dist\paddle_ocr\
+.\build.ps1               # 打包，输出 dist\MacroFlowStudio.exe + dist\rapidocr_ocr\
 ```
 
-源码运行需要 Python 3.13 + PaddleOCR 依赖（见 run.bat）；"识别文字"依赖 PaddleOCR 模型目录（`paddle_models`）。源码运行时数据（脚本/工作流/设置等）生成在项目根目录，与打包版"exe 同目录"语义一致。
+源码运行需要 Python 3.13；除 `requirements.txt` 外，还需按上方命令将 RapidOCR / ONNX Runtime CPU 依赖及本地模型安装到 `.deps`。OCR 首次使用时按需加载，不联网下载模型。源码运行时数据（脚本/工作流/设置等）生成在项目根目录，与打包版"exe 同目录"语义一致。
 
 ## 🛡️ 安全限制
 

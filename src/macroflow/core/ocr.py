@@ -1,15 +1,6 @@
-"""OCR 文字识别：PaddleOCR 引擎的惰性单例封装。
-
-使用 PaddleOCR 3.x（paddlepaddle 3.3.1），det/rec/文字方向 3 个模型内置在
-paddle_models/ 目录，完全离线；引擎首次调用时才初始化（加载模型需要一两秒），
-避免拖慢软件启动。打包版中 paddle 全家（paddle/paddleocr/paddlex + 模型）位于
-exe 同目录的 paddle_ocr/，由 build.ps1 复制，首次使用 OCR 时才加入 sys.path
-按需加载（主 exe 因此从约 253MB 缩到约 70MB）。识别结果只取文本，各识别行
-直接拼接（中文没有空格，拉丁字母连写符合截图实际排版）。
-"""
+"""OCR 文字识别：RapidOCR CPU 引擎的惰性单例封装。"""
 from __future__ import annotations
 
-import os
 import re
 import sys
 import threading
@@ -18,29 +9,18 @@ from pathlib import Path
 
 import numpy as np
 
-# paddle 3.x 在 Windows 上对 PP-OCRv5 模型启用 oneDNN(MKLDNN) 会触发
-# ConvertPirAttribute2RuntimeAttribute 崩溃，必须关闭；同时固定模型源为百度
-# BOS 并跳过连通性探测，保证离线可用。这些环境变量须在 import paddle 之前
-# 生效，故放在模块最顶部。
-os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
-os.environ.setdefault("FLAGS_use_mkldnn", "0")
-os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "bos")
-os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-
 from macroflow.core.image_match import capture_bgr  # noqa: E402
 
 _engine = None
 _progress_callback = None
-# 引擎初始化可能被启动预加载线程与播放线程并发触发：首次导入 paddle 全家
-# 可能耗时数十秒，必须串行化，避免两边同时初始化。
+# 引擎初始化可能被启动预加载线程与播放线程并发触发，必须串行化。
 _engine_lock = threading.Lock()
 
-# (模型目录名, model_name 参数名, model_dir 参数名)
-MODEL_DIRS = (
-    ("PP-OCRv5_mobile_det", "text_detection_model_name", "text_detection_model_dir"),
-    ("PP-OCRv5_mobile_rec", "text_recognition_model_name", "text_recognition_model_dir"),
-    ("PP-LCNet_x1_0_textline_ori", "textline_orientation_model_name", "textline_orientation_model_dir"),
-)
+RAPIDOCR_MODEL_FILES = {
+    "det": "PP-OCRv6_det_small.onnx",
+    "cls": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "rec": "PP-OCRv6_rec_small.onnx",
+}
 
 
 def set_progress_callback(callback) -> None:
@@ -59,24 +39,20 @@ def _report_progress(stage: str, percent: int) -> None:
 
 
 def _ocr_component_root() -> Path | None:
-    """打包版 OCR 组件目录：exe 同目录的 paddle_ocr/；源码运行返回 None。"""
+    """打包版 OCR 组件目录：exe 同目录的 rapidocr_ocr/。"""
     if not getattr(sys, "frozen", False):
         return None
-    root = Path(sys.executable).resolve().parent / "paddle_ocr"
-    return root if root.is_dir() else None
+    return Path(sys.executable).resolve().parent / "rapidocr_ocr"
 
 
-def _models_root() -> Path:
-    """模型目录：打包后位于 paddle_ocr/paddle_models，源码运行位于项目根目录。
-
-    源码结构为 src/macroflow/core/ocr.py，向上三级即项目根——与 storage.app_dir()
-    的“源码版数据在项目根”语义一致；模型不随包一起移动，不能按 __file__ 的
-    同级目录查找（那会得到 src/macroflow/core/paddle_models，永远不存在）。
-    """
+def _rapidocr_model_paths() -> dict[str, Path]:
+    """Resolve the three ONNX models shipped in the pinned RapidOCR wheel."""
     ocr_root = _ocr_component_root()
     if ocr_root is not None:
-        return ocr_root / "paddle_models"
-    return Path(__file__).resolve().parents[3] / "paddle_models"
+        model_root = ocr_root / "rapidocr" / "models"
+    else:
+        model_root = Path(__file__).resolve().parents[3] / ".deps" / "rapidocr" / "models"
+    return {name: model_root / filename for name, filename in RAPIDOCR_MODEL_FILES.items()}
 
 
 def _get_engine():
@@ -89,35 +65,46 @@ def _get_engine():
             return _engine
         _report_progress("准备 OCR 组件", 5)
         ocr_root = _ocr_component_root()
+        if ocr_root is not None:
+            sys.path.insert(0, str(ocr_root))
+        model_paths = _rapidocr_model_paths()
+        for index, (name, model_path) in enumerate(model_paths.items()):
+            _report_progress(f"正在检查模型 {index + 1}/{len(model_paths)}", 15 + index * 15)
+            if not model_path.is_file():
+                raise RuntimeError(f"OCR 引擎不可用：缺少 {name} 模型文件 {model_path}")
         try:
-            if ocr_root is not None:
-                sys.path.insert(0, str(ocr_root))
-            _report_progress("正在导入 PaddleOCR", 20)
-            from paddleocr import PaddleOCR
+            _report_progress("正在导入 RapidOCR", 60)
+            from rapidocr import RapidOCR
+            from rapidocr.utils.typings import EngineType, ModelType, OCRVersion
         except ImportError as exc:
             raise RuntimeError(
-                f"OCR 引擎不可用：缺少 PaddleOCR 依赖（{exc}）。"
-                "打包版请保持 paddle_ocr 目录与程序同目录，或重新安装软件；"
+                f"OCR 引擎不可用：缺少 RapidOCR 或 ONNX Runtime 依赖（{exc}）。"
+                "打包版请保持 rapidocr_ocr 目录与程序同目录，或重新安装软件；"
                 "源码运行请使用 run.bat 启动"
             ) from exc
-        model_params = {}
-        for index, (dir_name, name_param, dir_param) in enumerate(MODEL_DIRS):
-            _report_progress(f"正在检查模型 {index + 1}/{len(MODEL_DIRS)}", 25 + index * 15)
-            model_dir = _models_root() / dir_name
-            if not (model_dir / "inference.pdiparams").is_file():
-                raise RuntimeError(f"OCR 引擎不可用：缺少模型目录 {model_dir}")
-            model_params[name_param] = dir_name
-            model_params[dir_param] = str(model_dir)
         _report_progress("正在创建 OCR 引擎", 75)
-        # 关掉文档方向分类/展平（扫描件功能，游戏截图用不到，省两个模型）；
-        # det 长边限制 960 避免全屏大图识别过慢（1080p 约 2.5 秒）。
-        _engine = PaddleOCR(
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            text_det_limit_side_len=960,
-            text_det_limit_type="max",
-            **model_params,
-        )
+        params = {
+            "Det.engine_type": EngineType.ONNXRUNTIME,
+            "EngineConfig.onnxruntime.use_cuda": False,
+            "Det.lang_type": "ch",
+            "Det.model_type": ModelType.SMALL,
+            "Det.ocr_version": OCRVersion.PPOCRV6,
+            "Det.model_path": str(model_paths["det"]),
+            "Det.limit_side_len": 960,
+            "Det.limit_type": "max",
+            "Cls.engine_type": EngineType.ONNXRUNTIME,
+            "Cls.lang_type": "ch",
+            "Cls.model_type": ModelType.MOBILE,
+            "Cls.ocr_version": OCRVersion.PPOCRV4,
+            "Cls.model_path": str(model_paths["cls"]),
+            "Rec.engine_type": EngineType.ONNXRUNTIME,
+            "Rec.lang_type": "ch",
+            "Rec.model_type": ModelType.SMALL,
+            "Rec.ocr_version": OCRVersion.PPOCRV6,
+            "Rec.model_path": str(model_paths["rec"]),
+            "Global.max_side_len": 960,
+        }
+        _engine = RapidOCR(params=params)
         _report_progress("OCR 引擎已加载", 100)
     return _engine
 
@@ -127,37 +114,36 @@ def recognize_image_with_boxes(
 ) -> tuple[str, list[dict]]:
     """识别图片并返回拼接文字及每一行文字的绝对屏幕坐标。"""
     try:
-        result = _get_engine().predict(screen)
+        result = _get_engine()(screen)
     except Exception as exc:
         raise RuntimeError(f"OCR 识别失败：{exc}") from exc
-    texts = []
+    result_texts = getattr(result, "txts", None) if result is not None else None
+    result_boxes = getattr(result, "boxes", None) if result is not None else None
+    result_scores = getattr(result, "scores", None) if result is not None else None
+    texts = list(result_texts) if result_texts is not None else []
+    boxes = list(result_boxes) if result_boxes is not None else []
+    scores = list(result_scores) if result_scores is not None else []
     matches = []
     origin_x, origin_y = map(int, origin)
-    for page in result:
-        if isinstance(page, dict):
-            page_texts = list(page.get("rec_texts") or [])
-            scores = list(page.get("rec_scores") or [])
-            polygons = list(page.get("rec_polys") or page.get("dt_polys") or [])
-            texts.extend(page_texts)
-            for index, text in enumerate(page_texts):
-                if index >= len(polygons):
-                    continue
-                points = np.asarray(polygons[index]).reshape(-1, 2)
-                if not points.size:
-                    continue
-                left = int(np.floor(points[:, 0].min())) + origin_x
-                top = int(np.floor(points[:, 1].min())) + origin_y
-                right = int(np.ceil(points[:, 0].max())) + origin_x
-                bottom = int(np.ceil(points[:, 1].max())) + origin_y
-                width = max(1, right - left)
-                height = max(1, bottom - top)
-                matches.append({
-                    "text": str(text),
-                    "x": left, "y": top, "width": width, "height": height,
-                    "center_x": left + width // 2,
-                    "center_y": top + height // 2,
-                    "score": float(scores[index]) if index < len(scores) else 1.0,
-                })
+    for index, text in enumerate(texts):
+        if not text or index >= len(boxes):
+            continue
+        points = np.asarray(boxes[index]).reshape(-1, 2)
+        if points.shape != (4, 2):
+            continue
+        left = int(np.floor(points[:, 0].min())) + origin_x
+        top = int(np.floor(points[:, 1].min())) + origin_y
+        right = int(np.ceil(points[:, 0].max())) + origin_x
+        bottom = int(np.ceil(points[:, 1].max())) + origin_y
+        width = max(1, right - left)
+        height = max(1, bottom - top)
+        matches.append({
+            "text": str(text),
+            "x": left, "y": top, "width": width, "height": height,
+            "center_x": left + width // 2,
+            "center_y": top + height // 2,
+            "score": float(scores[index]) if index < len(scores) else 1.0,
+        })
     return "".join(str(text) for text in texts), matches
 
 

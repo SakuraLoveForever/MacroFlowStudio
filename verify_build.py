@@ -94,7 +94,7 @@ EXPECT_SYMBOLS = {
     "macroflow.core.ocr": ["recognize_region", "recognize_image", "recognize_image_with_boxes",
             "recognize_region_with_boxes", "find_expected_match", "matches_expected",
             "format_ocr_observation", "extract_ocr_integer", "parse_ocr_number_pair", "ocr_match_center",
-            "_get_engine", "_models_root", "MODEL_DIRS"],
+            "_get_engine", "_rapidocr_model_paths", "RAPIDOCR_MODEL_FILES"],
     "macroflow.input.input_guard": ["BlockInput", "WM_MACROFLOW_INPUT", "_dispatch_input",
                     "_drain_input_requests"],
     "macroflow.input.wininput": ["set_input_dispatcher", "_send_input_direct",
@@ -158,43 +158,44 @@ if isinstance(pyz_data, tuple):
 pyz_toc = read_pyz(pyz_data)
 if "pypinyin" not in pyz_toc:
     ERRORS.append("缺少拼音排序依赖 pypinyin")
-# v1.87.0 起 OCR 引擎外置：exe 不应再包含 paddle，改为检查 exe 同目录的
-# paddle_ocr/（由 build.ps1 复制），首次使用 OCR 时按需加载。
-for paddle_module in ("paddle", "paddleocr", "paddlex"):
-    if paddle_module in pyz_toc:
-        ERRORS.append(f"OCR 引擎未外置：exe 仍包含 {paddle_module}")
+# OCR 推理栈外置：exe 不应包含旧 Paddle 或 RapidOCR / ONNX Runtime。
+for ocr_module in ("paddle", "paddleocr", "paddlex", "rapidocr", "onnxruntime"):
+    if ocr_module in pyz_toc:
+        ERRORS.append(f"OCR 引擎未外置：exe 仍包含 {ocr_module}")
+    for entry in archive.toc:
+        normalized_entry = entry.replace("\\", "/").replace(".", "/").lower()
+        if normalized_entry == ocr_module or normalized_entry.startswith(ocr_module + "/"):
+            ERRORS.append(f"OCR 引擎未外置：exe 归档仍包含 {entry}")
 exe_dir = os.path.dirname(os.path.abspath(EXE))
-ocr_root = os.path.join(exe_dir, "paddle_ocr")
+ocr_root = os.path.join(exe_dir, "rapidocr_ocr")
 if not os.path.isdir(ocr_root):
     ERRORS.append(f"缺少外置 OCR 组件目录 {ocr_root}")
 else:
-    for model_dir in ("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec", "PP-LCNet_x1_0_textline_ori"):
-        marker = os.path.join(ocr_root, "paddle_models", model_dir, "inference.pdiparams")
-        if not os.path.isfile(marker):
-            ERRORS.append(f"缺少 OCR 模型 {model_dir}/inference.pdiparams")
-    if not os.path.isfile(os.path.join(ocr_root, "paddle", "__init__.py")):
-        ERRORS.append(f"缺少 OCR 引擎 paddle 包（{ocr_root}）")
-    # v1.87.1 起：paddleocr 运行时依赖（colorlog 等）与 paddlex 的
-    # importlib.metadata 检查项必须随外置目录一并复制，否则 OCR 报
-    # "缺少 PaddleOCR 依赖 (No module named 'colorlog')"。
-    for rel, desc in {
-        "colorlog/__init__.py": "colorlog",
-        "setuptools/__init__.py": "setuptools",
-        "_distutils_hack/__init__.py": "_distutils_hack",
-        "google/protobuf/__init__.py": "google/protobuf",
-        "paddle/_typing/__init__.py": "paddle/_typing（运行时依赖，不能删）",
-        "pandas.libs": "pandas.libs",
-        "shapely.libs": "shapely.libs",
-        "paddlepaddle-3.3.1.dist-info": "paddlepaddle 元数据",
-        "paddlex-3.7.2.dist-info": "paddlex 元数据",
-        "paddleocr-3.7.0.dist-info": "paddleocr 元数据",
-        "pyclipper-1.4.0.dist-info": "pyclipper 元数据(ocr-core)",
-        "python_bidi-0.6.11.dist-info": "python-bidi 元数据(ocr-core)",
-        "shapely-2.1.2.dist-info": "shapely 元数据(ocr-core)",
-        "pypdfium2-5.12.1.dist-info": "pypdfium2 元数据(ocr-core)",
-    }.items():
-        if not os.path.exists(os.path.join(ocr_root, rel)):
-            ERRORS.append(f"缺少 OCR 依赖 {desc}（{rel}）")
+    required_ocr_files = {
+        "rapidocr/__init__.py": "RapidOCR 包",
+        "onnxruntime/__init__.py": "ONNX Runtime 包",
+        "onnxruntime/capi/onnxruntime.dll": "ONNX Runtime CPU DLL",
+        "onnxruntime/capi/onnxruntime_providers_shared.dll": "ONNX Runtime CPU provider DLL",
+        "rapidocr/models/PP-OCRv6_det_small.onnx": "PP-OCRv6 检测模型",
+        "rapidocr/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx": "文字方向分类模型",
+        "rapidocr/models/PP-OCRv6_rec_small.onnx": "PP-OCRv6 识别模型",
+        "rapidocr-3.9.2.dist-info/METADATA": "RapidOCR 版本元数据",
+        "onnxruntime-1.24.2.dist-info/METADATA": "ONNX Runtime 版本元数据",
+        "RapidOCR-LICENSE.txt": "RapidOCR 许可证",
+        "THIRD_PARTY_DEPENDENCIES.txt": "OCR 依赖清单",
+        "OCR_EXTERNAL_MODULES.txt": "离线 smoke 外置模块清单",
+        "onnxruntime/LICENSE": "ONNX Runtime 许可证",
+        "onnxruntime/ThirdPartyNotices.txt": "ONNX Runtime 第三方许可证",
+    }
+    for rel, desc in required_ocr_files.items():
+        if not os.path.isfile(os.path.join(ocr_root, rel)):
+            ERRORS.append(f"缺少 {desc}（{rel}）")
+    state_extensions = [
+        name for name in os.listdir(os.path.join(ocr_root, "onnxruntime", "capi"))
+        if name.startswith("onnxruntime_pybind11_state") and name.endswith(".pyd")
+    ] if os.path.isdir(os.path.join(ocr_root, "onnxruntime", "capi")) else []
+    if not state_extensions:
+        ERRORS.append("缺少 ONNX Runtime Python CPU 扩展")
 
 
 def unmarshal(obj):

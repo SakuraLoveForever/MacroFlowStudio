@@ -1,5 +1,10 @@
 # MacroFlow Studio 更新历史
 
+## 未发布（OCR 引擎迁移）
+
+- **OCR 后端**：从 PaddleOCR 迁移到 RapidOCR 3.9.2，使用 PP-OCRv6 small 检测/识别模型、文字方向分类模型和 CPU 版 ONNX Runtime。模型随本地依赖安装与发布目录携带，首次识别按需加载且不联网下载。
+- **部署**：发布包将精简 OCR 依赖放在 exe 同级 `rapidocr_ocr/` 目录，并保留 RapidOCR、ONNX Runtime 和第三方许可证；OCR 调用接口、文字框坐标与工作流行为保持不变。
+
 ## v1.2.9（日志分两层 + 参数列只留核心 + 「从此开始执行」修复 + 关闭行为可选）
 
 ### 新增

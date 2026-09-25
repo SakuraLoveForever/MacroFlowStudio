@@ -11,7 +11,7 @@ Record or edit keyboard/mouse actions into scripts, use **image matching / text 
 ![Version](https://img.shields.io/badge/Version-v1.0.0-4B8BBE?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square)
 ![Language](https://img.shields.io/badge/Language-English-0078D6?style=flat-square)
-![OCR](https://img.shields.io/badge/OCR-PaddleOCR%20Offline-FF6F00?style=flat-square)
+![OCR](https://img.shields.io/badge/OCR-RapidOCR%20Offline-FF6F00?style=flat-square)
 ![Build](https://img.shields.io/badge/Build-PyInstaller%206.20-8A2BE2?style=flat-square)
 
 </div>
@@ -24,7 +24,7 @@ Record or edit keyboard/mouse actions into scripts, use **image matching / text 
 |---|---|
 | 🎮 **Smart track recording** | Records raw relative mouse movement while the cursor is locked at the window center (first-person view turning, sampled at ≤16 ms); automatically falls back to desktop coordinates when the cursor leaves the window |
 | 🧩 **Rich action set** | 14+ action types: keyboard / mouse / wheel / image match / OCR / jump / script reference / app launch & close / special modules |
-| 🔍 **Image match + OCR dual engines** | Template matching for fixed patterns; offline PaddleOCR reads changing text (accurate Chinese & digits) |
+| 🔍 **Image match + OCR dual engines** | Template matching for fixed patterns; RapidOCR reads changing text locally with the CPU ONNX Runtime |
 | 🗂️ **Module object repository** | Reusable recognition settings: switch / global / special modules, code segments, fallback recognition, number reading |
 | ⚙️ **Workflow orchestration** | Run multiple scripts by repeat count, global modules keep scanning, breakpoint resume, test mode |
 | 🛡️ **Focus lock mode** | System-level input lock + automatic English input method; releases held keys on abnormal exit |
@@ -33,11 +33,11 @@ Record or edit keyboard/mouse actions into scripts, use **image matching / text 
 
 ## 📦 Installation & Usage
 
-1. Download the latest release: **[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)** (~230 MB)
-2. Extract — **copy the whole folder** (`paddle_ocr` must stay in the same directory as the exe)
+1. Download the latest release: **[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)** (~126 MiB)
+2. Extract — **copy the whole folder** (`rapidocr_ocr` must stay in the same directory as the exe)
 3. Run `MacroFlowStudio.exe`; settings are stored in `app_settings.json` next to the exe
 
-> ⚠️ `paddle_ocr` (offline OCR engine & models) is loaded on demand the first time you use "Recognize Text". **OCR will not work without it**; it contains all runtime dependencies of paddleocr — do not remove anything.
+> ⚠️ `rapidocr_ocr` (offline OCR engine & models) is loaded on demand the first time you use "Recognize Text". **OCR will not work without it**; it contains RapidOCR, CPU ONNX Runtime, local models, runtime dependencies, and licenses — do not remove anything.
 
 ## 🚀 Quick Start
 
@@ -89,7 +89,7 @@ Editing: undo / redo, move up / move down (a contiguous multi-row selection move
 - **Secondary match**: optionally confirm with another template after a hit
 - The target must be visible in real time; minimum polling interval 50 ms
 
-**OCR text recognition** (reads changing text, complementary to image matching): powered by PaddleOCR (fully offline, accurate Chinese & digits)
+**OCR text recognition** (reads changing text, complementary to image matching): powered by RapidOCR 3.9.2 with local PP-OCRv6 small models and CPU ONNX Runtime
 
 - Drag-select a region (empty = full screen), or bind a target window
 - Expected text matched by "contains / equals"; empty = any recognized text hits
@@ -164,8 +164,8 @@ Created next to the exe on first launch:
 
 ```
 MacroFlowStudio/
-├── MacroFlowStudio.exe   # Main program (~70 MB)
-├── paddle_ocr/           # OCR engine + models + all runtime dependencies (loaded on demand)
+├── MacroFlowStudio.exe   # Main program (~78 MiB)
+├── rapidocr_ocr/          # RapidOCR + CPU ONNX Runtime + local models/dependencies/licenses (loaded on demand)
 ├── scripts/              # Scripts
 ├── workflows/            # Workflows
 ├── images/               # Recommended location for image-match templates
@@ -186,12 +186,13 @@ Source code lives in the `src/macroflow/` package, organized by domain (`core/` 
 
 ```powershell
 python -m pip install -r requirements.txt
+C:\Python313\python.exe -m pip install --target .deps --no-deps -r requirements-ocr.txt
 .\run.bat                 # run from source (= PYTHONPATH=.deps;src + python -m macroflow.ui.app)
 python -m unittest discover -s tests -t .   # run the full unit-test suite
-.\build.ps1               # package: outputs dist\MacroFlowStudio.exe + dist\paddle_ocr\
+.\build.ps1               # package: outputs dist\MacroFlowStudio.exe + dist\rapidocr_ocr\
 ```
 
-Running from source requires Python 3.13 + PaddleOCR dependencies (see run.bat); "OCR Text" requires the PaddleOCR model directory (`paddle_models`). Runtime data (scripts/workflows/settings) is created in the project root when running from source, matching the "next to the exe" layout of packaged builds.
+Running from source requires Python 3.13 and the OCR dependencies installed into `.deps` with the command above. RapidOCR ships the local models; first OCR use loads them on demand without downloading. Runtime data (scripts/workflows/settings) is created in the project root when running from source, matching the "next to the exe" layout of packaged builds.
 
 ## 🛡️ Safety Limits
 

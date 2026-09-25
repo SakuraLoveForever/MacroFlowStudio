@@ -35,6 +35,8 @@ FORBIDDEN = {
     "paddle": "PaddlePaddle OCR 引擎",
     "paddleocr": "PaddleOCR 引擎",
     "paddlex": "PaddleX 引擎",
+    "rapidocr": "RapidOCR 推理引擎",
+    "onnxruntime": "ONNX Runtime 推理引擎",
     "pystray": "托盘图标",
     "ttkbootstrap": "Tk 主题",
 }

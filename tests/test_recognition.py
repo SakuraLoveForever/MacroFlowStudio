@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 # 允许直接运行本文件（python tests/test_recognition.py）：先把项目根挂上，才能导入 tests.common。
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -1838,12 +1839,11 @@ class OcrTests(unittest.TestCase):
         )
 
     def test_recognize_image_with_boxes_returns_absolute_text_coordinates(self):
-        engine = Mock()
-        engine.predict.return_value = [{
-            "rec_texts": ["可领取"],
-            "rec_scores": [0.98],
-            "rec_polys": [np.array([[5, 4], [45, 4], [45, 24], [5, 24]])],
-        }]
+        engine = Mock(return_value=SimpleNamespace(
+            txts=("可领取",),
+            scores=(0.98,),
+            boxes=np.array([[[5, 4], [45, 4], [45, 24], [5, 24]]]),
+        ))
         with patch("macroflow.core.ocr._get_engine", return_value=engine):
             text, matches = recognize_image_with_boxes(
                 np.zeros((30, 50, 3), dtype=np.uint8), (100, 200),
