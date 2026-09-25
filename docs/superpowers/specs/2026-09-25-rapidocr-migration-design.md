@@ -61,7 +61,7 @@ RapidOCR 返回的 `boxes`、`txts`、`scores` 由 `recognize_image_with_boxes` 
 预计实施只触及以下 OCR 相关位置：
 
 - `src/macroflow/core/ocr.py`：替换 Paddle 初始化和结果格式适配；保留当前业务解析与文本比较代码。
-- `build.ps1`、`MacroFlowStudio.spec`、`pack.ps1`、`verify_build.py`、`build/ocr_deps_setup.py`：替换 OCR 外置依赖与模型同步、安装包收集项、排除项及静态校验。
+- `build.ps1`、`MacroFlowStudio.spec`、`pack.ps1`、`verify_build.py`、`build/ocr_deps_setup.py`：替换 OCR 外置依赖与模型同步、安装包收集项、排除项及静态校验；`AGENTS.md` 只更新安装包中的 OCR 目录名。
 - OCR 依赖安装配置、`run.bat`、OCR 模型目录与模型许可/来源说明。
 - `README.md`、`README_CN.md`、`README_EN.md` 中 OCR 部署说明，以及 OCR 相关测试。
 
