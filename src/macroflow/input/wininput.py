@@ -633,6 +633,7 @@ DM_PELSWIDTH = 0x00080000
 DM_PELSHEIGHT = 0x00100000
 DM_DISPLAYFREQUENCY = 0x00400000
 CDS_UPDATEREGISTRY = 0x00000001
+CDS_TEST = 0x00000002
 DISP_CHANGE_SUCCESSFUL = 0
 ENUM_CURRENT_SETTINGS = 0xFFFFFFFF
 QDC_ONLY_ACTIVE_PATHS = 0x00000002
@@ -828,6 +829,28 @@ def get_display_device_name_for_window(hwnd: int | None) -> str | None:
     return str(info.szDevice).strip() if info and info.szDevice else None
 
 
+def get_display_modes_for_window(hwnd: int | None) -> list[tuple[int, int, int]]:
+    """Return usable ``(width, height, hz)`` modes reported for the monitor."""
+    device_name = get_display_device_name_for_window(hwnd)
+    if not device_name:
+        return []
+    modes: set[tuple[int, int, int]] = set()
+    index = 0
+    while True:
+        mode = _DEVMODEW()
+        mode.dmSize = ctypes.sizeof(_DEVMODEW)
+        if not user32.EnumDisplaySettingsW(device_name, index, ctypes.byref(mode)):
+            break
+        width = int(mode.dmPelsWidth)
+        height = int(mode.dmPelsHeight)
+        refresh_rate = int(mode.dmDisplayFrequency)
+        if width >= 320 and height >= 200 and refresh_rate > 1 \
+                and int(mode.dmBitsPerPel) >= 32:
+            modes.add((width, height, refresh_rate))
+        index += 1
+    return sorted(modes)
+
+
 def set_display_resolution_for_window(hwnd: int | None, width: int, height: int,
                                       refresh_rate: int = 0) -> bool:
     """Change only the monitor containing ``hwnd`` to the requested mode."""
@@ -843,6 +866,23 @@ def set_display_resolution_for_window(hwnd: int | None, width: int, height: int,
     if width <= 0 or height <= 0 or refresh_rate < 0:
         return False
 
+    supported = get_display_modes_for_window(hwnd)
+    candidates = [mode for mode in supported if mode[:2] == (width, height)]
+    if refresh_rate:
+        if (width, height, refresh_rate) not in candidates:
+            return False
+        target_refresh_rate = refresh_rate
+    else:
+        current = get_display_resolution_for_window(hwnd)
+        current_refresh_rate = current[2] if current is not None else 0
+        available_rates = [mode[2] for mode in candidates]
+        if not available_rates:
+            return False
+        target_refresh_rate = (
+            current_refresh_rate if current_refresh_rate in available_rates
+            else max(available_rates)
+        )
+
     mode = _DEVMODEW()
     mode.dmSize = ctypes.sizeof(_DEVMODEW)
     if not user32.EnumDisplaySettingsW(
@@ -851,14 +891,21 @@ def set_display_resolution_for_window(hwnd: int | None, width: int, height: int,
         return False
     mode.dmPelsWidth = width
     mode.dmPelsHeight = height
-    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT
-    if refresh_rate:
-        mode.dmDisplayFrequency = refresh_rate
-        mode.dmFields |= DM_DISPLAYFREQUENCY
+    mode.dmDisplayFrequency = target_refresh_rate
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY
+    if user32.ChangeDisplaySettingsExW(
+            device_name, ctypes.byref(mode), None, CDS_TEST, None,
+    ) != DISP_CHANGE_SUCCESSFUL:
+        return False
     result = user32.ChangeDisplaySettingsExW(
         device_name, ctypes.byref(mode), None, CDS_UPDATEREGISTRY, None,
     )
-    return int(result) == DISP_CHANGE_SUCCESSFUL
+    if int(result) != DISP_CHANGE_SUCCESSFUL:
+        return False
+    applied = get_display_resolution_for_window(hwnd)
+    return applied is not None \
+        and applied[:2] == (width, height) \
+        and abs(applied[2] - target_refresh_rate) <= 1
 
 
 def _display_config_source_for_device(device_name: str) -> tuple[_LUID, int] | None:
@@ -941,6 +988,24 @@ def get_display_scaling_for_window(hwnd: int | None) -> int | None:
         return None
     percent = round(dpi / 96.0 * 100)
     return min(SUPPORTED_SCALE_PERCENTS, key=lambda value: abs(value - percent))
+
+
+def get_display_scaling_options_for_window(hwnd: int | None) -> tuple[int, ...]:
+    """Return the standard scale percentages accepted by the monitor."""
+    device_name = get_display_device_name_for_window(hwnd)
+    if not device_name:
+        return ()
+    source = _display_config_source_for_device(device_name)
+    if source is None:
+        return ()
+    info = _display_scale_info(*source)
+    if info is None:
+        return ()
+    _current, minimum, _recommended, maximum = info
+    return tuple(
+        value for value in SUPPORTED_SCALE_PERCENTS
+        if minimum <= value <= maximum
+    )
 
 
 def set_display_scaling_for_window(hwnd: int | None, scale_percent: int = 100) -> bool:
@@ -1029,7 +1094,8 @@ def make_window_no_activate(hwnd: int) -> bool:
     """Keep a status overlay visible without taking focus from a game."""
     if not hwnd:
         return False
-    handle = wintypes.HWND(hwnd)
+    # Tk winfo_id() is the client HWND; geometry/styles belong to its wrapper.
+    handle = wintypes.HWND(user32.GetAncestor(wintypes.HWND(hwnd), GA_ROOT) or hwnd)
     ex_style = user32.GetWindowLongW(handle, GWL_EXSTYLE)
     user32.SetWindowLongW(handle, GWL_EXSTYLE, ex_style | WS_EX_NOACTIVATE)
     return bool(user32.SetWindowPos(
@@ -1042,9 +1108,20 @@ def show_window_no_activate(hwnd: int) -> bool:
     """Show a hidden window at its existing geometry without taking focus."""
     if not is_window(hwnd):
         return False
-    handle = wintypes.HWND(hwnd)
+    handle = wintypes.HWND(user32.GetAncestor(wintypes.HWND(hwnd), GA_ROOT) or hwnd)
     user32.ShowWindow(handle, SW_SHOWNOACTIVATE)
     return bool(user32.SetWindowPos(
         handle, wintypes.HWND(0), 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+    ))
+
+
+def move_window_no_activate(hwnd: int, x: int, y: int) -> bool:
+    """Move an overlay after a display change without taking game focus."""
+    if not is_window(hwnd):
+        return False
+    handle = wintypes.HWND(user32.GetAncestor(wintypes.HWND(hwnd), GA_ROOT) or hwnd)
+    return bool(user32.SetWindowPos(
+        handle, wintypes.HWND(0), int(x), int(y), 0, 0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
     ))

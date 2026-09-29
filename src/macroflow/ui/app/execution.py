@@ -42,32 +42,76 @@ from macroflow.ui.dialogs.segments import module_action_for_key
 class ExecutionMixin:
     """执行入口：F9、工作流、单独执行、执行小窗与收尾。"""
 
+    def _refresh_execution_pause_controls(self):
+        active = bool(self.worker and self.worker.is_alive()
+                      and not self.workflow_stop.is_set())
+        label = "继续" if active and self.player.paused else "暂停"
+        for name in ("script_pause_button", "workflow_pause_button", "mini_pause_button"):
+            button = getattr(self, name, None)
+            if button is not None:
+                try:
+                    button.configure(text=label, state="normal" if active else "disabled")
+                except tk.TclError:
+                    pass
+        icon = getattr(self, "tray_icon", None)
+        if icon is not None:
+            icon.update_menu()
+
+    def toggle_execution_pause(self):
+        if not self.worker or not self.worker.is_alive():
+            return
+        with self._focus_state_lock:
+            if self.player.paused:
+                if self.execution_focus_requested:
+                    if not self.input_guard.set_paused(False):
+                        self._set_status("强制专注输入锁恢复失败", "error")
+                        self._log("继续执行失败：无法重新锁定键鼠。")
+                        return
+                if self.workflow_stop.is_set():
+                    self._leave_focus_mode()
+                    return
+                self.player.resume()
+                message = "执行已继续，键鼠已锁定。" if self.execution_focus_requested else "执行已继续。"
+            else:
+                self.player.pause()
+                if self.execution_focus_requested and self.input_guard.active:
+                    if not self.input_guard.set_paused(True):
+                        self._log("暂停时无法解除强制专注输入锁，已停止执行。")
+                        self.stop_all()
+                        return
+                message = "执行已暂停，键鼠已解锁。" if self.execution_focus_requested else "执行已暂停。"
+        self._set_status(message.rstrip("。"), "warning")
+        self._log(message)
+        self._append_mini_step(message)
+        self._refresh_execution_pause_controls()
+
     def _enter_focus_mode(self, hwnd: int | None, enabled: bool = True) -> bool:
-        if not force_english_input(hwnd):
-            raise RuntimeError("无法切换到英语输入法，已取消执行。")
-        if not enabled:
-            self._ui(self._log, "已切换英语输入法；强制专注模式未开启，实体键鼠不会被锁定。")
-            return False
-        # 每次进入专注模式前重新同步守卫的快捷键集合：绑定可能在最近一次
-        # 同步后变化（或上次同步丢失），守卫钩子只按这个集合识别快捷键。
-        self._apply_hotkey_bindings()
-        if not self.input_guard.start():
-            raise RuntimeError("无法启动专注模式，已取消执行以避免误触。")
-        if not self.input_guard.block():
-            self.input_guard.stop()
-            raise RuntimeError("系统级输入锁定失败，请尝试以管理员身份运行软件。")
-        if self.hotkey_scripts:
-            names = "，".join(
-                f"{item.get('key', '?')}→{Path(str(item.get('script', ''))).stem}"
-                for item in self.hotkey_scripts
-            )
-            self._ui(self._log, f"专注模式快捷键（守卫钩子识别触发）：{names}")
-        # 专注模式下输入全部由守卫钩子线程发出，发之前必须把目标窗口抢回
-        # 前台：否则焦点被抢（弹窗/误点桌面/小窗闪现）时按键会发给别的前台
-        # 窗口，游戏收不到，表现就是“某个键没反应”。回调在钩子线程上执行。
-        self.input_guard.set_before_input(self._restore_input_focus)
-        self._ui(self._log, "已切换英语输入法并进入强制专注模式；桌面及游戏原始键鼠输入均已锁定，仅 F12 可紧急停止。")
-        return True
+        with self._focus_state_lock:
+            if not force_english_input(hwnd):
+                raise RuntimeError("无法切换到英语输入法，已取消执行。")
+            if not enabled:
+                self._ui(self._log, "已切换英语输入法；强制专注模式未开启，实体键鼠不会被锁定。")
+                return False
+            # 每次进入专注模式前重新同步守卫的快捷键集合。
+            self._apply_hotkey_bindings()
+            if not self.input_guard.start():
+                raise RuntimeError("无法启动专注模式，已取消执行以避免误触。")
+            if not self.input_guard.block():
+                self.input_guard.stop()
+                raise RuntimeError("系统级输入锁定失败，请尝试以管理员身份运行软件。")
+            if self.hotkey_scripts:
+                names = "，".join(
+                    f"{item.get('key', '?')}→{Path(str(item.get('script', ''))).stem}"
+                    for item in self.hotkey_scripts
+                )
+                self._ui(self._log, f"专注模式快捷键（守卫钩子识别触发）：{names}")
+            # 专注模式下输入全部由守卫钩子线程发出，发之前抢回目标窗口前台。
+            self.input_guard.set_before_input(self._restore_input_focus)
+            if self.player.paused and not self.input_guard.set_paused(True):
+                self._leave_focus_mode()
+                raise RuntimeError("暂停时无法解除强制专注输入锁，已取消执行。")
+            self._ui(self._log, "已切换英语输入法并进入强制专注模式；桌面及游戏原始键鼠输入均已锁定，F8 暂停/继续，F12 紧急停止。")
+            return True
     def _restore_input_focus(self) -> None:
         """专注重放期间：目标窗口不在前台就先抢回来，再发这次输入。
 
@@ -83,14 +127,15 @@ class ExecutionMixin:
             return
         player._ensure_foreground_for_input(self._bound_hwnd(update_display=False))
     def _leave_focus_mode(self) -> None:
-        guard = getattr(self, "input_guard", None)
-        if guard is not None:
-            guard.set_before_input(None)
-            guard.release()
+        with self._focus_state_lock:
+            guard = getattr(self, "input_guard", None)
+            if guard is not None:
+                guard.set_before_input(None)
+                guard.release()
     def _set_execution_progress(self, text: str) -> None:
         self.execution_progress_text = text
         if getattr(self, "mini_mode", "") == "execution":
-            self.mini_count_var.set(text)
+            self.mini_count_var.set(self._compact_mini_text(text))
     def _on_ocr_progress(self, stage: str, percent: int) -> None:
         """Update OCR warmup progress in the execution mini window."""
         value = max(0, min(100, int(percent)))
@@ -100,7 +145,7 @@ class ExecutionMixin:
         if progress_var is not None:
             progress_var.set(value)
         if getattr(self, "mini_mode", "") == "execution":
-            self.mini_count_var.set(text)
+            self.mini_count_var.set(self._compact_mini_text(text))
     def _reset_execution_clock_for_new_run(self, resume_action_index: int | None) -> None:
         """Start at zero only for a newly requested run, never for internal resume."""
         if resume_action_index is not None:
@@ -130,15 +175,16 @@ class ExecutionMixin:
         if not selected:
             self._notify("从选中行运行", "请先选择一行动作。")
             return
-        self.run_current_script(start_index=selected[0])
+        self.run_current_script(start_index=selected[0], partial_run=True)
     def run_current_script(self, start_index: int = 0,
                            single_action_repeats: int | None = None,
                            segment: tuple[int, int] | None = None,
-                           segment_repeats: int = 1):
+                           segment_repeats: int = 1,
+                           partial_run: bool = False):
         """执行当前脚本；single_action_repeats = 单独执行起始行，segment = 循环执行那一段。"""
         return self._run_detection_entrypoint(
             self._run_current_script_impl, start_index, single_action_repeats,
-            segment=segment, segment_repeats=segment_repeats,
+            segment=segment, segment_repeats=segment_repeats, partial_run=partial_run,
         )
 
     def run_module_object_test(self, module_key: str, repeats: int = 1):
@@ -158,6 +204,7 @@ class ExecutionMixin:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        self._save_activation_interval()
 
         category = str(module_obj.get("category") or "switch")
         # 全局模块在独立测试时按普通识别动作执行一次完整识别/动作链；否则注册
@@ -196,6 +243,7 @@ class ExecutionMixin:
             kwargs={
                 "trigger": {}, "script_name": f"模块测试：{name}",
                 "single_action": True,
+                "activation_interval_ms": int(self.script.settings.get("activation_window_interval_ms", 0)),
             },
             daemon=True,
         )
@@ -207,12 +255,14 @@ class ExecutionMixin:
     def _run_current_script_impl(self, start_index: int = 0,
                                  single_action_repeats: int | None = None,
                                  segment: tuple[int, int] | None = None,
-                                 segment_repeats: int = 1):
+                                 segment_repeats: int = 1,
+                                 partial_run: bool = False):
         if self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        self._save_activation_interval()
         trigger = dict(self.script.settings.get("trigger") or {})
         if not self.script.actions and not trigger.get("template"):
             self._notify("没有动作", "请先录制或添加动作。")
@@ -237,6 +287,16 @@ class ExecutionMixin:
             repeats = max(1, int(segment_repeats))
         else:
             repeats = max(1, int(self.repeat_var.get()))
+        partial_run = bool(partial_run or start_index or single_action or segment_end is not None)
+        script_globals_enabled = (
+            bool(self.partial_script_globals_var.get()) if partial_run else True
+        ) if hasattr(self, "partial_script_globals_var") else True
+        workflow_global_modules = (
+            [dict(step) for step in self._global_module_steps()]
+            if partial_run and getattr(self, "workflow", None) is not None
+            and (not hasattr(self, "partial_workflow_globals_var")
+                 or self.partial_workflow_globals_var.get()) else []
+        )
         hwnd = self._bound_hwnd()
         activation_enabled, activation_signature = self._activation_settings_from_script()
         activation_hwnd = None
@@ -270,7 +330,10 @@ class ExecutionMixin:
             args=(list(self.script.actions), repeats, hwnd, activation_hwnd,
                   source_screen, focus_enabled, activate_target, start_index),
             kwargs={"trigger": trigger, "script_name": self.script.name,
-                    "single_action": single_action, "segment_end": segment_end},
+                    "single_action": single_action, "segment_end": segment_end,
+                    "script_globals_enabled": script_globals_enabled,
+                    "workflow_global_modules": workflow_global_modules,
+                    "activation_interval_ms": int(self.script.settings.get("activation_window_interval_ms", 0))},
             daemon=True,
         )
         # 先启动执行线程再收尾 UI：输入法切换/输入锁定与托盘隐藏、提示音
@@ -297,9 +360,15 @@ class ExecutionMixin:
     def _run_script_worker(self, actions, repeats, hwnd, activation_hwnd, source_screen,
                            focus_enabled, activate_target, start_index=0, trigger=None,
                            script_name: str = "", single_action: bool = False,
-                           segment_end: int | None = None):
+                           segment_end: int | None = None,
+                           start_resolution: dict | None = None,
+                           end_resolution: dict | None = None,
+                           activation_interval_ms: int = 0,
+                           script_globals_enabled: bool = True,
+                           workflow_global_modules: list[dict] | None = None):
         script_label = str(script_name).strip() or "未命名脚本"
         segment_mode = segment_end is not None
+        display_run_started = False
         # 明细日志的层级标题：先写明是哪个脚本、共几行、执行几次，再往下逐行记。
         self._set_trace_context(
             step=0, steps=0, script=script_label,
@@ -325,6 +394,14 @@ class ExecutionMixin:
         else:
             self._ui(self._log, f"开始执行脚本：{script_label}，重复 {repeats} 次。")
         try:
+            if start_resolution or end_resolution:
+                if self.workflow_stop.is_set():
+                    return
+                display_run_started = True
+                if start_resolution:
+                    self._apply_workflow_resolution(start_resolution, "启动")
+                if self.workflow_stop.is_set():
+                    return
             # 执行期间必须阻止屏保/熄屏：等待识图只截屏不发输入，空闲计满屏保
             # 时间后屏保会接管显示，此后 BitBlt 对普通进程返回「拒绝访问」，
             # 截图全部失败。声明挂在本线程上，执行结束（含报错/F12）一并撤销。
@@ -342,7 +419,11 @@ class ExecutionMixin:
             # 首次 OCR 引擎导入可能耗时数十秒且不可中断：仅在脚本动作树
             # 可能用到文字识别时提前等待（等待期间按 F12 会中止执行），
             # 纯键鼠/模板匹配脚本跳过等待立即开始。
-            if self._script_needs_ocr(actions) and not self._ensure_ocr_ready():
+            if (self._script_needs_ocr(actions)
+                    or (workflow_global_modules and self._workflow_needs_ocr([], workflow_global_modules))) \
+                    and not self._ensure_ocr_ready():
+                return
+            if workflow_global_modules and not self._register_workflow_global_modules(workflow_global_modules):
                 return
             if single_action:
                 progress_prefix = f"单独执行第 {start_index + 1}/{len(actions)} 行 · "
@@ -359,9 +440,14 @@ class ExecutionMixin:
                 script_name=script_label,
                 activate_target=activate_target, activation_hwnd=activation_hwnd,
                 activation_prepared=activation_prepared,
+                activation_interval_ms=activation_interval_ms,
+                activation_prepared_at=(
+                    getattr(self, "_activation_prepared_at", None) if activation_prepared else None
+                ),
                 start_index=start_index,
                 single_action=single_action,
                 segment_end=segment_end,
+                enable_script_globals=script_globals_enabled,
                 on_repeat=lambda current, total: self._ui(
                     self._set_execution_progress,
                     f"{progress_prefix}"
@@ -398,6 +484,10 @@ class ExecutionMixin:
                         "全局检测已启用，持续检测中：触发后执行脚本动作，按 F12 停止。",
                     )
                     while not self.player.stop_event.is_set():
+                        try:
+                            self.player.wait_while_paused()
+                        except PlaybackStopped:
+                            break
                         hit = self._evaluate_global_guards()
                         if hit is not None:
                             try:
@@ -427,6 +517,11 @@ class ExecutionMixin:
             self._clear_global_guards()
             self._shutdown_detection_worker()
             self._leave_focus_mode()
+            if display_run_started and end_resolution:
+                try:
+                    self._apply_workflow_resolution(end_resolution, "结束恢复")
+                except Exception as exc:
+                    self._ui(self._log, f"单独执行结束后恢复分辨率/缩放失败：{exc}")
             self._ui(self._finish_execution_visibility)
     def _player_status_callback(self, text: str):
         self._ui(self._set_status, text, "warning")
@@ -515,6 +610,7 @@ class ExecutionMixin:
             self.stop_recording(discard_recent=from_ui, sound=False)
         self.workflow_stop.set()
         self.player.stop()
+        self._refresh_execution_pause_controls()
         hotkey_player = getattr(self, "hotkey_player", None)
         if hotkey_player is not None:
             hotkey_player.stop()

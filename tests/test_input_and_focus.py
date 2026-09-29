@@ -8,21 +8,41 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import ctypes
+import queue
 import threading
 import time
 import unittest
 from unittest.mock import Mock, call, patch
 from macroflow.execution.player import MacroPlayer
 import macroflow.input.input_guard as input_guard_module
-from macroflow.input.input_guard import FocusInputGuard, InputCapturer, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, MouseCapturer, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F12, VK_F9, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_RBUTTONDOWN, should_block_keyboard, should_block_mouse
+import macroflow.input.wininput as wininput_module
+from macroflow.input.input_guard import FocusInputGuard, InputCapturer, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, MouseCapturer, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F8, VK_F12, VK_F9, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_RBUTTONDOWN, should_block_keyboard, should_block_mouse
 from macroflow.input.wininput import DWMWA_WINDOW_CORNER_PREFERENCE, MACROFLOW_INPUT_TAG, WindowInfo, activate_window, force_english_input, is_cursor_near_window_center, resolve_window_signature, send_move_relative, set_dark_titlebar, set_input_dispatcher, show_window, show_window_no_activate
 from macroflow.ui.app.main import MacroFlowApp
+from macroflow.ui.app.hotkeys import keyboard
 from macroflow.ui.dialogs.actions import KeyActionDialog
 from macroflow.ui.dialogs.base import KEY_HINT_CAPTURING, key_to_vk, vk_to_key_name
 from tests.helpers.patches import package_patch
 
 
 class WinInputTests(unittest.TestCase):
+    def test_overlay_operations_target_tk_wrapper_not_its_client(self):
+        import ctypes
+        for operation, args in (
+            (wininput_module.make_window_no_activate, (123,)),
+            (wininput_module.show_window_no_activate, (123,)),
+            (wininput_module.move_window_no_activate, (123, 400, 700)),
+        ):
+            with self.subTest(operation=operation.__name__), \
+                 patch.object(wininput_module, 'user32') as api, \
+                 patch.object(wininput_module, 'is_window', return_value=True):
+                api.GetAncestor.return_value = 456
+                api.GetWindowLongW.return_value = 0
+                api.SetWindowPos.return_value = True
+                operation(*args)
+                handle = api.SetWindowPos.call_args.args[0]
+                self.assertEqual(ctypes.cast(handle, ctypes.c_void_p).value, 456)
+
     def test_set_dark_titlebar_requests_rounded_window_corners(self):
         with patch("macroflow.input.wininput.user32.GetAncestor", return_value=123), \
              patch("macroflow.input.wininput.dwmapi.DwmSetWindowAttribute", return_value=0) as set_attr:
@@ -86,6 +106,16 @@ class WinInputTests(unittest.TestCase):
         flags = position.call_args.args[-1]
         self.assertTrue(flags & 0x0001)  # SWP_NOSIZE
         self.assertTrue(flags & 0x0002)  # SWP_NOMOVE
+        self.assertTrue(flags & 0x0004)  # SWP_NOZORDER
+        self.assertTrue(flags & 0x0010)  # SWP_NOACTIVATE
+
+    def test_move_window_no_activate_repositions_without_stealing_focus(self):
+        with patch("macroflow.input.wininput.is_window", return_value=True), \
+             patch("macroflow.input.wininput.user32.SetWindowPos", return_value=True) as position:
+            self.assertTrue(wininput_module.move_window_no_activate(123, 400, 700))
+        self.assertEqual(position.call_args.args[2:4], (400, 700))
+        flags = position.call_args.args[-1]
+        self.assertTrue(flags & 0x0001)  # SWP_NOSIZE
         self.assertTrue(flags & 0x0004)  # SWP_NOZORDER
         self.assertTrue(flags & 0x0010)  # SWP_NOACTIVATE
 
@@ -566,8 +596,125 @@ class KeyCaptureTests(unittest.TestCase):
 
 
 class FocusModeTests(unittest.TestCase):
+    def test_focus_pause_releases_input_and_relocks_before_resuming(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app.workflow_stop = threading.Event()
+        app.player = MacroPlayer()
+        app.execution_focus_requested = True
+        app._focus_state_lock = threading.RLock()
+        app.input_guard = Mock(active=True)
+        app.input_guard.set_paused.side_effect = lambda _paused: self.assertTrue(app.player.paused) or True
+        app._set_status = Mock()
+        app._log = Mock()
+        app._append_mini_step = Mock()
+        app._refresh_execution_pause_controls = Mock()
+
+        app.toggle_execution_pause()
+        self.assertTrue(app.player.paused)
+        app.input_guard.set_paused.assert_called_once_with(True)
+        app.toggle_execution_pause()
+        self.assertEqual([call.args[0] for call in app.input_guard.set_paused.call_args_list], [True, False])
+        self.assertFalse(app.player.paused)
+
+    def test_failed_focus_relock_keeps_execution_paused(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app.workflow_stop = threading.Event()
+        app.player = MacroPlayer()
+        app.player.pause()
+        app.execution_focus_requested = True
+        app._focus_state_lock = threading.RLock()
+        app.input_guard = Mock(active=True)
+        app.input_guard.set_paused.return_value = False
+        app._set_status = Mock()
+        app._log = Mock()
+        app._append_mini_step = Mock()
+        app._refresh_execution_pause_controls = Mock()
+
+        app.toggle_execution_pause()
+        self.assertTrue(app.player.paused)
+        app._log.assert_called_once()
+
+    def test_f8_pauses_during_normal_execution_and_records_when_idle(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.input_guard = Mock(active=False)
+        app.worker = Mock()
+        app.worker.is_alive.return_value = True
+        app._hotkey_pressed = set()
+        app._ui = lambda callback, *args: callback(*args)
+        app.toggle_execution_pause = Mock()
+        app.toggle_record = Mock()
+        listener = Mock(running=True)
+
+        with patch("macroflow.ui.app.hotkeys.keyboard.Listener", return_value=listener) as factory:
+            app._start_hotkeys()
+        on_press = factory.call_args.kwargs["on_press"]
+        on_release = factory.call_args.kwargs["on_release"]
+        on_press(keyboard.Key.f8)
+        on_press(keyboard.Key.f8)
+        app.toggle_execution_pause.assert_called_once_with()
+        app.toggle_record.assert_not_called()
+        on_release(keyboard.Key.f8)
+        app.worker.is_alive.return_value = False
+        on_press(keyboard.Key.f8)
+        app.toggle_record.assert_called_once_with(False)
+
+    def test_focus_f8_pauses_and_resumes_without_repeating_while_held(self):
+        release = threading.Event()
+        captured = {}
+        toggles = []
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._hotkey_vk_map = {}
+        app._ui = lambda callback, *args: callback(*args)
+        app.toggle_execution_pause = lambda: toggles.append("toggle")
+        guard = FocusInputGuard(on_hotkey=app._on_hotkey_vk)
+        guard.set_hotkeys({VK_F8})
+
+        def install_hook(_kind, proc, *_args):
+            if _kind == WH_KEYBOARD_LL:
+                captured["keyboard"] = proc
+            return 1
+
+        def press(message, flags=0):
+            data = KBDLLHOOKSTRUCT(vkCode=VK_F8, flags=flags)
+            return captured["keyboard"](0, message, ctypes.addressof(data))
+
+        def wait_for_stop(*_args):
+            release.wait(2)
+            return 0
+
+        with patch("macroflow.input.input_guard.user32.SetWindowsHookExW", side_effect=install_hook), \
+             patch("macroflow.input.input_guard.user32.GetMessageW", side_effect=wait_for_stop), \
+             patch("macroflow.input.input_guard.user32.PostThreadMessageW", side_effect=lambda *_: release.set() or True), \
+             patch("macroflow.input.input_guard.user32.UnhookWindowsHookEx"), \
+             patch("macroflow.input.input_guard.user32.CallNextHookEx", return_value=0), \
+             patch("macroflow.input.input_guard.user32.BlockInput", return_value=True):
+            self.assertTrue(guard.start(timeout=1))
+            try:
+                self.assertEqual(press(WM_KEYDOWN), 1)
+                self.assertEqual(press(WM_KEYDOWN), 1)
+                self.assertEqual(press(WM_KEYDOWN, LLKHF_INJECTED), 1)
+                self.assertEqual(toggles, ["toggle"])
+                self.assertEqual(press(WM_KEYUP), 1)
+                self.assertEqual(press(WM_KEYDOWN), 1)
+                self.assertEqual(toggles, ["toggle", "toggle"])
+            finally:
+                guard.stop()
+
+    def test_focus_guard_registers_f8_even_without_script_bindings(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.hotkey_scripts = []
+        app.input_guard = Mock()
+        app.recorder = None
+        app._apply_hotkey_bindings()
+        app.input_guard.set_hotkeys.assert_called_once_with({VK_F8})
+
     def test_disabled_focus_only_switches_english(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app._focus_state_lock = threading.RLock()
         app.input_guard = Mock()
         app._ui = lambda callback, *args: callback(*args)
         app._log = Mock()
@@ -601,6 +748,60 @@ class FocusModeTests(unittest.TestCase):
             [call.args[0] for call in block_input.call_args_list], [True, False],
         )
 
+    def test_focus_pause_unlocks_mouse_and_relocks_on_guard_thread(self):
+        messages = queue.Queue()
+        captured = {}
+        calls = []
+        stops = []
+        hotkeys = []
+        guard = FocusInputGuard(on_f12=lambda: stops.append("stop"),
+                                on_hotkey=hotkeys.append)
+        guard.set_hotkeys({VK_F8})
+
+        def install_hook(kind, proc, *_args):
+            captured[kind] = proc
+            return 1
+
+        def get_message(ptr, *_args):
+            message = messages.get(timeout=2)
+            if message == input_guard_module.WM_QUIT:
+                return 0
+            ctypes.cast(ptr, ctypes.POINTER(input_guard_module.wintypes.MSG)).contents.message = message
+            return 1
+
+        def block_input(blocked):
+            calls.append((bool(blocked), threading.current_thread()))
+            return True
+
+        mouse = MSLLHOOKSTRUCT(flags=0)
+        key = KBDLLHOOKSTRUCT(vkCode=0x41, flags=0)
+        f8 = KBDLLHOOKSTRUCT(vkCode=VK_F8, flags=0)
+        f12 = KBDLLHOOKSTRUCT(vkCode=VK_F12, flags=0)
+        with patch("macroflow.input.input_guard.user32.SetWindowsHookExW", side_effect=install_hook), \
+             patch("macroflow.input.input_guard.user32.GetMessageW", side_effect=get_message), \
+             patch("macroflow.input.input_guard.user32.PostThreadMessageW", side_effect=lambda _id, message, *_: messages.put(message) or True), \
+             patch("macroflow.input.input_guard.user32.UnhookWindowsHookEx"), \
+             patch("macroflow.input.input_guard.user32.CallNextHookEx", return_value=0), \
+             patch("macroflow.input.input_guard.user32.BlockInput", side_effect=block_input):
+            self.assertTrue(guard.start(timeout=1))
+            try:
+                self.assertEqual(captured[WH_MOUSE_LL](0, 0x0200, ctypes.addressof(mouse)), 1)  # WM_MOUSEMOVE
+                self.assertTrue(guard.set_paused(True))
+                self.assertTrue(guard.active)
+                self.assertEqual(captured[WH_MOUSE_LL](0, 0x0200, ctypes.addressof(mouse)), 0)
+                self.assertEqual(captured[WH_KEYBOARD_LL](0, WM_KEYDOWN, ctypes.addressof(key)), 0)
+                self.assertEqual(captured[WH_KEYBOARD_LL](0, WM_KEYDOWN, ctypes.addressof(f8)), 1)
+                self.assertEqual(hotkeys, [VK_F8])
+                self.assertEqual(captured[WH_KEYBOARD_LL](0, WM_KEYDOWN, ctypes.addressof(f12)), 0)
+                self.assertEqual(stops, ["stop"])
+                self.assertTrue(guard.set_paused(False))
+                self.assertTrue(guard.active)
+                self.assertEqual(captured[WH_MOUSE_LL](0, 0x0200, ctypes.addressof(mouse)), 1)
+            finally:
+                guard.stop()
+        self.assertEqual([blocked for blocked, _thread in calls], [True, False, True, False])
+        self.assertTrue(all(thread.name == "MacroFlowFocusGuard" for _blocked, thread in calls))
+
     def test_only_f12_and_injected_keyboard_are_allowed(self):
         self.assertTrue(should_block_keyboard(0x41, 0))
         self.assertFalse(should_block_keyboard(VK_F12, 0))
@@ -618,6 +819,8 @@ class FocusModeTests(unittest.TestCase):
 
     def test_focus_mode_switches_english_before_locking_input(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app._focus_state_lock = threading.RLock()
+        app.player = Mock(paused=False)
         order = []
         app.hotkey_scripts = []
         app.input_guard = Mock()
@@ -629,8 +832,24 @@ class FocusModeTests(unittest.TestCase):
             app._enter_focus_mode(123)
         self.assertEqual(order, ["english", "guard", "block"])
 
+    def test_focus_mode_entered_after_pause_releases_input(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._focus_state_lock = threading.RLock()
+        app.player = Mock(paused=True)
+        app.hotkey_scripts = []
+        app.input_guard = Mock()
+        app.input_guard.start.return_value = True
+        app.input_guard.block.return_value = True
+        app.input_guard.set_paused.return_value = True
+        app._apply_hotkey_bindings = Mock()
+        app._ui = Mock()
+        with package_patch('app', 'force_english_input', return_value=True):
+            app._enter_focus_mode(123)
+        app.input_guard.set_paused.assert_called_once_with(True)
+
     def test_focus_mode_failure_stops_hook(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app._focus_state_lock = threading.RLock()
         app.hotkey_scripts = []
         app.input_guard = Mock()
         app.input_guard.start.return_value = True
@@ -657,6 +876,7 @@ class FocusModeTests(unittest.TestCase):
         app._activate_execution_window_before_ocr = Mock(
             side_effect=lambda hwnd: order.append(("activate", hwnd)) or True,
         )
+        app._activation_prepared_at = 50.0
         app._ensure_ocr_ready = Mock(
             side_effect=lambda: order.append("ocr") or True,
         )
@@ -666,9 +886,12 @@ class FocusModeTests(unittest.TestCase):
 
         app._run_script_worker(
             [{"type": "text_ocr"}], 1, 123, 456, None, False, True,
+            activation_interval_ms=250,
         )
 
         self.assertEqual(order, [("activate", 456), "ocr", ("play", True)])
+        self.assertEqual(app.player.play.call_args.kwargs["activation_interval_ms"], 250)
+        self.assertEqual(app.player.play.call_args.kwargs["activation_prepared_at"], 50.0)
 
 
 class InputGuardRestartTests(unittest.TestCase):

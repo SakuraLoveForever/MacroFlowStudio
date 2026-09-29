@@ -342,6 +342,10 @@ class ImageMixin:
                     elapsed_hold_ms = (now - hold_since) * 1000
                     if elapsed_hold_ms >= hold_ms:
                         break
+                    show_overlay(
+                        match["x"], match["y"], match["width"], match["height"],
+                        label=f"{math.ceil((hold_ms - elapsed_hold_ms) / 1000)}s",
+                    )
                     start = now
                     self._wait(interval_ms)
                     continue
@@ -391,6 +395,10 @@ class ImageMixin:
                     elapsed_hold_ms = (now - hold_since) * 1000
                     if elapsed_hold_ms >= hold_ms:
                         break
+                    show_overlay(
+                        match["x"], match["y"], match["width"], match["height"],
+                        label=f"{math.ceil((hold_ms - elapsed_hold_ms) / 1000)}s",
+                    )
                     start = now
                     self._wait(interval_ms)
                     continue

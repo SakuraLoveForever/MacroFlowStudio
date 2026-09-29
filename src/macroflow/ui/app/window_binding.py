@@ -31,6 +31,7 @@ from macroflow.core.storage import (
     update_module_object,
 )
 import os
+import time
 import tkinter as tk
 import ttkbootstrap as ttk
 
@@ -83,17 +84,17 @@ class WindowBindingMixin:
         return enabled, signature
     def _activation_settings_from_workflow_step(
         self, step: dict,
-    ) -> tuple[bool, dict[str, str] | None]:
+    ) -> tuple[bool, dict[str, str] | None, int]:
         """Read pre-window settings from a workflow step's script file."""
         if step.get("kind") == "module":
-            return False, None
+            return False, None, 0
         path = resolve_path(step.get("script", ""))
         if not path.is_file():
-            return False, None
+            return False, None, 0
         try:
             script = load_script(path)
         except Exception:
-            return False, None
+            return False, None, 0
         enabled = bool(script.settings.get("activation_window_enabled", False))
         signature = script.settings.get("activation_window")
         if isinstance(signature, dict) and signature.get("title"):
@@ -104,7 +105,7 @@ class WindowBindingMixin:
             }
         else:
             signature = None
-        return enabled, signature
+        return enabled, signature, int(script.settings.get("activation_window_interval_ms", 0))
     def _persist_activation_to_script(self):
         """Write the pre-window config into the current script's settings."""
         self.script.settings["activation_window_enabled"] = bool(self.activation_enabled_var.get())
@@ -122,6 +123,7 @@ class WindowBindingMixin:
             else bool(
                 self.script.settings.get("activation_window_enabled")
                 or self.script.settings.get("activation_window")
+                or "activation_window_interval_ms" in self.script.settings
             )
         )
         if has_script_config:
@@ -133,6 +135,13 @@ class WindowBindingMixin:
             signature = dict(draft) if draft else None
         self.activation_enabled_var.set(enabled)
         self.saved_activation_signature = signature
+        interval = (
+            self.script.settings.get("activation_window_interval_ms", 0)
+            if has_script_config else getattr(self, "activation_draft_interval_ms", 0)
+        )
+        interval_var = getattr(self, "activation_interval_var", None)
+        if interval_var is not None:
+            interval_var.set(str(interval))
         if enabled and signature:
             self._restore_saved_activation_window(signature)
         else:
@@ -143,6 +152,23 @@ class WindowBindingMixin:
         self._remember_activation_draft()
         self._refresh_activation_label()
         self._persist_sidebar_settings()
+    def _save_activation_interval(self, _event=None):
+        """Save the minimum gap between the pre-window and target activations."""
+        if getattr(self, "activation_interval_var", None) is None:
+            return
+        current = int(self.script.settings.get("activation_window_interval_ms", 0))
+        try:
+            interval = int(self.activation_interval_var.get())
+            if not 0 <= interval <= 86400000:
+                raise ValueError
+        except (TypeError, ValueError):
+            self.activation_interval_var.set(str(current))
+            return
+        if interval != current:
+            self.script.settings["activation_window_interval_ms"] = interval
+            self.activation_draft_interval_ms = interval
+            self._mark_dirty()
+            self._persist_sidebar_settings()
     def _refresh_activation_label(self):
         if not self.saved_activation_signature:
             self.activation_label_var.set("跟随目标窗口")
@@ -222,12 +248,14 @@ class WindowBindingMixin:
         return self.activation_window.hwnd
     def _activate_execution_window_before_ocr(self, hwnd: int | None) -> bool:
         """Activate a resolved pre-window before any OCR engine import begins."""
+        self._activation_prepared_at = None
         if not hwnd:
             return False
         if not is_window(hwnd):
             self._ui(self._log, "前置窗口已关闭，已跳过前置窗口，继续执行。")
             return False
         if activate_window(hwnd):
+            self._activation_prepared_at = time.perf_counter()
             self._ui(self._log, "已在 OCR 准备前激活前置窗口。")
             return True
         self._ui(self._log, "前置窗口激活失败，将在脚本开始时重试。")

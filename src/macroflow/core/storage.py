@@ -281,12 +281,12 @@ def load_app_settings() -> dict:
         "sound_enabled": True,
         "mini_window_enabled": True,
         "record_mode": "auto",
-        "move_interval_ms": 20,
         "floating_notice_position": "顶部居中",
         "repeat": 1,
         "bound_window": None,
         "activation_window_draft_enabled": False,
         "activation_window_draft": None,
+        "activation_window_draft_interval_ms": 0,
         "workflow_draft": None,
         "workflow_path": "",
         "timed_backup_enabled": False,
@@ -315,7 +315,7 @@ def load_app_settings() -> dict:
             for obsolete_key in (
                 "execution_mode", "dxdy_port", "target_relative_enabled",
                 "activation_window", "activation_window_enabled",
-                "backup_interval_minutes",
+                "backup_interval_minutes", "move_interval_ms",
             ):
                 defaults.pop(obsolete_key, None)
     except (OSError, json.JSONDecodeError):

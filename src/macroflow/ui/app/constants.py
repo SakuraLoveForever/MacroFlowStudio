@@ -64,6 +64,7 @@ PRIMARY_ACTION_COMMANDS = (
 ACTION_ICONS = {
     "delay": "◷",
     "rebind_window": "◎",
+    "activate_window": "▣",
     "key": "⌨",
     "key_press": "⌨",
     "text": "T",

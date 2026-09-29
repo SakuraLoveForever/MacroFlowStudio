@@ -9,7 +9,6 @@ from typing import Any
 SCRIPT_VERSION = 1
 WORKFLOW_VERSION = 1
 DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS = 1000
-DEFAULT_MOUSE_MOVE_INTERVAL_MS = 20
 DEFAULT_RECORDED_SCREEN = {"left": 0, "top": 0, "width": 1920, "height": 1080}
 ACTION_ID_KEY = "action_id"
 # 所有“跳转到某一行对象”的字段名。复制/逐行插入时必须一起重映射，否则目标
@@ -180,7 +179,6 @@ class MacroScript:
     description: str = ""
     settings: dict[str, Any] = field(default_factory=lambda: {
         "record_mode": "auto",
-        "move_interval_ms": DEFAULT_MOUSE_MOVE_INTERVAL_MS,
         "recorded_screen": dict(DEFAULT_RECORDED_SCREEN),
     })
     is_global: bool = False
@@ -192,6 +190,7 @@ class MacroScript:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MacroScript":
         settings = dict(data.get("settings", {}))
+        settings.pop("move_interval_ms", None)
         settings.setdefault("recorded_screen", dict(DEFAULT_RECORDED_SCREEN))
         actions = list(data.get("actions", []))
         settings.setdefault("trigger", {})
@@ -238,6 +237,8 @@ class Workflow:
     start_at: str = ""
     start_delay_enabled: bool = False
     start_delay_seconds: int = 5
+    start_resolution: dict[str, Any] | None = None
+    end_resolution: dict[str, Any] | None = None
     # 「重新执行工作流」默认跳转行（1 基，0 = 未设置，按第 1 行处理）。
     # 在工作流页面统一设置，随工作流文件保存；动作级跳转行优先于它。
     restart_default_row: int = 0
@@ -274,6 +275,10 @@ class Workflow:
             start_at=str(data.get("start_at", "")),
             start_delay_enabled=bool(data.get("start_delay_enabled", False)),
             start_delay_seconds=start_delay_seconds,
+            start_resolution=(dict(data["start_resolution"])
+                              if isinstance(data.get("start_resolution"), dict) else None),
+            end_resolution=(dict(data["end_resolution"])
+                            if isinstance(data.get("end_resolution"), dict) else None),
             restart_default_row=restart_default_row,
             version=version,
         )

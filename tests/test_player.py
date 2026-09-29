@@ -1053,6 +1053,21 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(len(entered), 1)
         self.assertEqual(len(exited), 1)
 
+    def test_disabled_script_globals_skip_scope_and_global_detect_row(self):
+        entered = []
+        registered = []
+        player = MacroPlayer(
+            on_script_scope_enter=lambda *_args: entered.append(True) or (),
+            on_global_detect_request=lambda action: registered.append(action),
+        )
+        player._status = lambda _text: None
+        player.play(
+            [{"type": "global_detect", "template": "unused.png"}],
+            single_action=True, enable_script_globals=False,
+        )
+        self.assertEqual(entered, [])
+        self.assertEqual(registered, [])
+
     def test_script_scope_enter_receives_the_starting_row(self):
         # 「▶ 从此开始执行」：作用域进入时要把本次播放的起始行交给应用层，
         # 否则起始行之前的全局模块行会被照常启用（表现为“还是从头执行”）。
@@ -3364,7 +3379,57 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(find.call_count, 6)
         self.assertEqual(
             [call.kwargs.get("label") for call in overlay.call_args_list],
-            [None],
+            ["2s", "1s", "2s", "1s", None],
+        )
+
+    def test_text_module_continuous_hold_shows_match_countdown_and_resets(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        module = {
+            "name": "体力提示", "recognize": "text",
+            "expected_text": "体力不足", "match_mode": "contains",
+            "template": "", "region": [10, 20, 300, 400],
+            "blocking": False, "interval_ms": 250,
+            "hold_enabled": True, "hold_ms": 2000,
+            "delay_ms": 0, "after_action": "continue",
+            "run_code_after_action": False, "run_code_on_timeout": False,
+        }
+        found = {
+            "text": "当前体力不足", "x": 80, "y": 60, "width": 80, "height": 40,
+            "center_x": 120, "center_y": 80, "score": 0.99,
+        }
+        clock = {"now": 0.0}
+        observations = [
+            (0.0, ("当前体力不足", [found])),
+            (1.0, ("当前体力不足", [found])),
+            (1.1, ("其他文字", [])),
+            (2.0, ("当前体力不足", [found])),
+            (3.0, ("当前体力不足", [found])),
+            (4.0, ("当前体力不足", [found])),
+        ]
+
+        def recognize(*_args, **_kwargs):
+            clock["now"], result = observations.pop(0)
+            return result
+
+        with package_patch('player', 'registered_module_object', return_value=module), \
+             package_patch('player', 'recognize_region_with_boxes', side_effect=recognize) as ocr, \
+             package_patch('player', 'show_overlay') as overlay, \
+             patch("macroflow.execution.player.image.time.perf_counter",
+                   side_effect=lambda: clock["now"]):
+            result = player._execute_image({
+                "type": "image_match", "module_ref": True,
+                "module_key": "module:text", "template": "",
+            }, None)
+
+        self.assertIsNone(result)
+        self.assertEqual(ocr.call_count, 6)
+        self.assertEqual(
+            [call(80, 60, 80, 40, label="2s"),
+             call(80, 60, 80, 40, label="1s"),
+             call(80, 60, 80, 40, label="2s"),
+             call(80, 60, 80, 40, label="1s")],
+            overlay.call_args_list,
         )
 
     def test_module_overlay_counts_down_the_delay_before_action(self):
@@ -3397,7 +3462,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(find.call_count, 2)
         self.assertEqual(
             [call.kwargs.get("label") for call in overlay.call_args_list],
-            ["8s", "7s", "6s", "5s", "4s", "3s", "2s", "1s"],
+            ["1s", "8s", "7s", "6s", "5s", "4s", "3s", "2s", "1s"],
         )
         self.assertEqual([call.args[0] for call in player._wait.call_args_list], [
             50, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
@@ -4203,6 +4268,50 @@ class PlayerTests(unittest.TestCase):
             )
         # 应用层已在 OCR 等待前完成前置激活，播放器只负责继续播放，不能重复抢焦点。
         activate.assert_not_called()
+
+    def test_activation_interval_waits_only_between_two_window_activations(self):
+        player = MacroPlayer()
+        events = []
+        player._wait = lambda ms: events.append(("wait", ms))
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window', side_effect=lambda hwnd: events.append(("activate", hwnd)) or True):
+            player.play(
+                [{"type": "comment"}], hwnd=123,
+                activation_hwnd=456, activate_target=True,
+                activation_interval_ms=500,
+            )
+        self.assertEqual(
+            [event for event in events if event != ("wait", 0)],
+            [("activate", 456), ("wait", 500), ("activate", 123)],
+        )
+
+    def test_activation_interval_does_not_delay_script_without_second_activation(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'activate_window', return_value=True):
+            player.play(
+                [{"type": "comment"}], hwnd=123,
+                activation_hwnd=456, activate_target=False,
+                activation_interval_ms=500,
+            )
+        self.assertFalse(any(call.args[0] > 0 for call in player._wait.call_args_list))
+
+    def test_prepared_activation_counts_elapsed_time_before_ocr(self):
+        player = MacroPlayer()
+        player._wait = Mock()
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'is_window_process_foreground', return_value=False), \
+             package_patch('player', 'activate_window', return_value=True), \
+             patch('macroflow.execution.player.core.time.perf_counter', return_value=100.0):
+            player.play(
+                [{"type": "comment"}], hwnd=123,
+                activation_hwnd=456, activation_prepared=True,
+                activation_prepared_at=99.8, activation_interval_ms=500,
+            )
+        positive_waits = [call.args[0] for call in player._wait.call_args_list if call.args[0] > 0]
+        self.assertEqual(positive_waits, [300])
 
     def test_play_start_raises_target_only_when_not_foreground(self):
         player = MacroPlayer()

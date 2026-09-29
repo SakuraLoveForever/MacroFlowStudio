@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -26,6 +26,7 @@ from macroflow.core.storage import (
     save_script, save_workflow,
     update_module_object,
 )
+from macroflow.ui.detect_overlay import hide_overlay
 from pathlib import Path
 import time
 
@@ -125,6 +126,9 @@ class GlobalDetectMixin:
                 self.global_guards.pop(key, None)
                 if cooldowns is not None:
                     cooldowns.pop(key, None)
+        for key in key_set:
+            hide_overlay(key)
+            hide_overlay(f"{key}:fallback")
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending and key_set:
             pending[:] = [

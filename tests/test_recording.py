@@ -460,6 +460,60 @@ class RecordingDisplayTests(unittest.TestCase):
             app._watch_display_dpi()
         app._apply_display_dpi.assert_not_called()
 
+    def test_watch_display_dpi_fits_high_dpi_to_smaller_resolution(self):
+        app, _root = self._dpi_watch_app(192 / 72.0)
+        app._apply_display_dpi = Mock()
+        area = {"left": 0, "top": 0, "width": 1920, "height": 1040}
+        with package_patch('app', 'get_window_dpi', return_value=192), \
+             package_patch('app', 'get_monitor_work_area_for_window', return_value=area):
+            app._watch_display_dpi()
+        app._apply_display_dpi.assert_called_once_with(96)
+
+    def test_apply_display_dpi_rebuilds_fixed_pixel_layout(self):
+        app, root = self._dpi_watch_app(96 / 72.0)
+        app._configure_dark_theme = Mock()
+        app._rebuild_ui_for_display_change = Mock()
+        app._log = Mock()
+        app.action_tree = Mock()
+        app.workflow_tree = Mock()
+        app.global_tree = Mock()
+        with package_patch('app', 'set_ui_scale'), \
+             patch("macroflow.ui.dialogs.set_ui_scale"):
+            app._apply_display_dpi(120)
+        root.tk.call.assert_any_call("tk", "scaling", 120 / 72.0)
+        app._rebuild_ui_for_display_change.assert_called_once_with()
+
+    def test_watch_display_dpi_refits_window_when_work_area_changes(self):
+        app, root = self._dpi_watch_app(96 / 72.0)
+        app._display_work_area = {
+            "left": 0, "top": 0, "width": 2560, "height": 1400,
+        }
+        new_area = {"left": 0, "top": 0, "width": 1920, "height": 1040}
+        with package_patch('app', 'get_window_dpi', return_value=96), \
+             package_patch('app', 'get_monitor_work_area_for_window', return_value=new_area):
+            app._watch_display_dpi()
+        root.geometry.assert_called_once_with("1920x1040+0+0")
+        self.assertEqual(app._display_work_area, new_area)
+
+    def test_watch_display_dpi_moves_saved_mini_position_with_work_area(self):
+        app, _root = self._dpi_watch_app(96 / 72.0)
+        app._display_work_area = {"left": 0, "top": 0, "width": 2560, "height": 1400}
+        app.execution_mini_position = [1070, 656]
+        app.mini_window = Mock()
+        app.mini_window.winfo_id.return_value = 123
+        app._persist_sidebar_settings = Mock()
+        area = {"left": 0, "top": 0, "width": 1920, "height": 1040}
+        with package_patch('app', 'get_window_dpi', return_value=96), \
+             package_patch('app', 'get_monitor_work_area_for_window', return_value=area), \
+             package_patch('app', 'is_window', return_value=True), \
+             patch('macroflow.ui.app.guards.get_window_rect', return_value=(1070, 656, 420, 100)), \
+             patch('macroflow.ui.app.guards.make_window_no_activate'), \
+             patch('macroflow.ui.app.guards.move_window_no_activate') as move:
+            app._watch_display_dpi()
+        self.assertEqual(app.execution_mini_position, [750, 474])
+        move.assert_called_once_with(123, 750, 474)
+        app._persist_sidebar_settings.assert_called_once_with()
+
     def test_sync_ui_scale_uses_the_window_monitor_dpi(self):
         app, root = self._dpi_watch_app(192 / 72.0)
         with package_patch('app', 'get_window_dpi', return_value=96), \
@@ -537,6 +591,44 @@ class RecordingDisplayTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
+    def test_key_and_mouse_edges_keep_elapsed_time(self):
+        from types import SimpleNamespace
+        from pynput.mouse import Button
+
+        recorder = MacroRecorder()
+        recorder.running = True
+        recorder._recording_started_at = recorder._last_action_time = 10.0
+        key = SimpleNamespace(vk=65, char="a")
+        with patch("macroflow.input.recorder.time.perf_counter", side_effect=[10.010, 10.035, 10.040, 10.090]):
+            recorder._on_press(key)
+            recorder._on_release(key)
+            recorder._on_click(100, 200, Button.left, True)
+            recorder._on_click(100, 200, Button.left, False)
+        self.assertEqual([a["delay_ms"] for a in recorder.actions], [10, 25, 5, 50])
+        self.assertEqual([a["down"] for a in recorder.actions], [True, False, True, False])
+
+    def test_desktop_moves_are_recorded_on_every_event(self):
+        recorder = MacroRecorder()
+        recorder.running = True
+        recorder.mode = "absolute"
+        recorder._recording_started_at = recorder._last_action_time = 10.0
+        with patch("macroflow.input.recorder.time.perf_counter", side_effect=[10.010, 10.011]):
+            recorder._on_move(10, 20)
+            recorder._on_move(11, 21)
+        self.assertEqual([(a["x"], a["y"]) for a in recorder.actions], [(10, 20), (11, 21)])
+        self.assertEqual([a["delay_ms"] for a in recorder.actions], [10, 1])
+
+    def test_raw_moves_are_recorded_on_every_event(self):
+        recorder = MacroRecorder()
+        recorder.running = True
+        recorder.mode = "relative"
+        recorder._recording_started_at = recorder._last_action_time = 10.0
+        with patch("macroflow.input.recorder.time.perf_counter", side_effect=[10.010, 10.011]):
+            recorder._on_raw_move(3, 4)
+            recorder._on_raw_move(5, 6)
+        self.assertEqual([(a["dx"], a["dy"]) for a in recorder.actions], [(3, 4), (5, 6)])
+        self.assertEqual([a["delay_ms"] for a in recorder.actions], [10, 1])
+
     def test_discard_recent_ui_events(self):
         recorder = MacroRecorder()
         recorder.running = True
@@ -552,7 +644,6 @@ class RecorderTests(unittest.TestCase):
         recorder.running = True
         recorder.mode = "auto"
         recorder.target_hwnd = 123
-        recorder.interval_ms = 10
         recorder._last_action_time = time.perf_counter()
         with patch("macroflow.input.recorder.is_window_process_foreground", return_value=False):
             recorder._on_move(10, 20)
@@ -561,7 +652,6 @@ class RecorderTests(unittest.TestCase):
         with patch("macroflow.input.recorder.is_window_process_foreground", return_value=True):
             recorder._on_move(30, 40)
             recorder._on_raw_move(7, -3)
-            recorder._flush_raw(force=True)
         self.assertEqual(recorder.actions[-1]["mode"], "relative")
         self.assertEqual((recorder.actions[-1]["dx"], recorder.actions[-1]["dy"]), (7, -3))
 
@@ -571,9 +661,7 @@ class RecorderTests(unittest.TestCase):
         recorder.mode = "auto"
         recorder.target_hwnd = 123
         recorder.relative_requires_center_lock = True
-        recorder.interval_ms = 100
         recorder._last_action_time = time.perf_counter()
-        recorder._raw_last_flush = time.perf_counter() - 1
         with patch("macroflow.input.recorder.is_window_process_foreground", return_value=True), \
              patch("macroflow.input.recorder.is_cursor_near_window_center", return_value=True):
             recorder._on_raw_move(2, 1)
@@ -583,13 +671,11 @@ class RecorderTests(unittest.TestCase):
             self.assertEqual(recorder.current_mode(), "relative")
         self.assertEqual(recorder.actions[-1]["mode"], "relative")
 
-    def test_relative_capture_uses_game_frequency_cap(self):
+    def test_relative_capture_records_raw_packet(self):
         recorder = MacroRecorder()
         recorder.running = True
         recorder.mode = "relative"
-        recorder.interval_ms = 100
         recorder._last_action_time = time.perf_counter()
-        recorder._raw_last_flush = time.perf_counter() - 0.02
         recorder._on_raw_move(9, -2)
         self.assertEqual(recorder.actions[-1]["mode"], "relative")
         self.assertEqual((recorder.actions[-1]["dx"], recorder.actions[-1]["dy"]), (9, -2))

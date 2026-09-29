@@ -301,10 +301,6 @@
  "__file__": [
   "macroflow.core.ocr",
   "macroflow.core.storage",
-  "macroflow.diag.diag_blockinput",
-  "macroflow.diag.diag_click",
-  "macroflow.diag.diag_cursor_monitor",
-  "macroflow.diag.diag_input",
   "macroflow.ui.app.__main__",
   "macroflow.ui.app.scripts",
   "macroflow.ui.app.startup",
@@ -463,10 +459,6 @@
   "macroflow.ui.app.window_binding"
  ],
  "get_cursor_pos": [
-  "macroflow.diag.diag_blockinput",
-  "macroflow.diag.diag_click",
-  "macroflow.diag.diag_cursor_monitor",
-  "macroflow.diag.diag_input",
   "macroflow.execution.player",
   "macroflow.execution.player.apps",
   "macroflow.execution.player.base",
@@ -1001,8 +993,6 @@
   "macroflow.ui.dialogs.recognition"
  ],
  "send_button": [
-  "macroflow.diag.diag_click",
-  "macroflow.diag.diag_input",
   "macroflow.execution.player",
   "macroflow.execution.player.apps",
   "macroflow.execution.player.base",
@@ -1034,9 +1024,6 @@
   "macroflow.execution.player.window"
  ],
  "send_move_absolute": [
-  "macroflow.diag.diag_blockinput",
-  "macroflow.diag.diag_click",
-  "macroflow.diag.diag_input",
   "macroflow.execution.player",
   "macroflow.execution.player.apps",
   "macroflow.execution.player.base",

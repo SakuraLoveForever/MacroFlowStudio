@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -12,6 +12,7 @@ from macroflow.core.models import (
     recorded_input_steps,
     script_ref_repeat_count, scroll_clicks, scroll_direction_label,
 )
+from macroflow.core.resolution import build_resolution_action
 from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
     AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
@@ -383,6 +384,7 @@ class WorkflowMixin:
         self.workflow_start_delay_seconds_var.unit.set("ms")
         self.workflow_start_delay_seconds_var.set("5000")
         self._toggle_workflow_start_delay_control(persist=False)
+        self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
         self._persist_workflow_draft()
     def open_workflow(self):
@@ -407,9 +409,30 @@ class WorkflowMixin:
             str(int(workflow.start_delay_seconds) * 1000)
         )
         self._toggle_workflow_start_delay_control(persist=False)
+        self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
         self._persist_workflow_draft()
         self._log(log_text)
+    def _refresh_workflow_resolution_options(self):
+        choices = ["不修改", *(str(style["name"]) for style in self.resolution_styles)]
+        for name in ("workflow_start_resolution_combo", "workflow_end_resolution_combo"):
+            combo = getattr(self, name, None)
+            if combo is not None:
+                combo.configure(values=choices)
+    def _sync_workflow_resolution_ui(self):
+        for phase, field in (("start", "start_resolution"), ("end", "end_resolution")):
+            variable = getattr(self, f"workflow_{phase}_resolution_var", None)
+            if variable is not None:
+                action = getattr(self.workflow, field, None) or {}
+                variable.set(str(action.get("name") or "不修改"))
+    def _set_workflow_resolution(self, phase: str):
+        variable = getattr(self, f"workflow_{phase}_resolution_var")
+        choice = variable.get()
+        action = None if choice == "不修改" else build_resolution_action(
+            {"resolution_styles": self.resolution_styles}, choice,
+        )
+        setattr(self.workflow, f"{phase}_resolution", action)
+        self._persist_workflow_draft()
     def rename_workflow(self):
         """弹窗修改当前工作流名称；确认后立即保存（文件同步改名，绝不覆盖已有文件）。"""
         current = self.workflow_name_var.get().strip() or self.workflow.name
@@ -972,24 +995,50 @@ class WorkflowMixin:
         self._persist_workflow_draft()
         self._set_status(f"已撤销删除，恢复工作流第 {target + 1} 行", "success")
     def move_workflow_step(self, offset: int):
-        index = self._selected_workflow_index()
-        if index is None:
+        selected = self._selected_workflow_indices()
+        if not selected:
+            return
+        self._move_selected_workflow_steps(selected, selected[0] + offset)
+    def move_workflow_step_to_row(self):
+        selected = self._selected_workflow_indices()
+        if not selected:
+            return
+        if selected != list(range(selected[0], selected[-1] + 1)):
+            self._notify("无法移动", "请选择连续的多行工作流任务后再移动。")
+            return
+        row = simpledialog.askinteger(
+            "移动工作流任务", "将选中任务的第一行移到第几行？",
+            parent=self.root, initialvalue=selected[0] + 1,
+            minvalue=1, maxvalue=len(self._workflow_only_steps()) - len(selected) + 1,
+        )
+        if row is not None:
+            self._move_selected_workflow_steps(selected, row - 1)
+    def _move_selected_workflow_steps(self, selected: list[int], target: int):
+        if selected != list(range(selected[0], selected[-1] + 1)):
+            self._notify("无法移动", "请选择连续的多行工作流任务后再移动。")
             return
         workflow_steps = self._workflow_only_steps()
-        target = index + offset
-        if not 0 <= target < len(workflow_steps):
+        if not 0 <= target <= len(workflow_steps) - len(selected) or target == selected[0]:
             return
-        workflow_steps[index], workflow_steps[target] = workflow_steps[target], workflow_steps[index]
+        block = workflow_steps[selected[0]:selected[-1] + 1]
+        del workflow_steps[selected[0]:selected[-1] + 1]
+        workflow_steps[target:target] = block
         self.workflow.steps = self._global_module_steps() + workflow_steps
         self.rebuild_workflow_tree()
-        self.workflow_tree.selection_set(str(target))
+        rows = tuple(str(index) for index in range(target, target + len(block)))
+        self.workflow_tree.selection_set(*rows)
+        self.workflow_tree.see(rows[0])
+        self._update_workflow_selection_color()
         self._persist_workflow_draft()
     def _workflow_drag_start(self, event):
         row = self.workflow_tree.identify_row(event.y)
-        self.workflow_drag_index = int(row) if row else None
+        modifiers = getattr(event, "state", 0) & 0x0005
+        selected = self.workflow_tree.selection()
+        self.workflow_drag_index = int(row) if row and not modifiers else None
         self.workflow_was_dragged = False
-        if row:
-            self.workflow_tree.selection_set(row)
+        if row and not modifiers and row in selected and len(selected) > 1:
+            self.workflow_drag_index = None
+            return "break"
     def _workflow_drag_motion(self, event):
         if self.workflow_drag_index is None:
             return
@@ -1250,19 +1299,21 @@ class WorkflowMixin:
         if index is None:
             self._notify("未选择任务", "请先单击选择要开始执行的工作流任务。")
             return
-        self.run_workflow(start_index=index)
+        self.run_workflow(start_index=index, partial_run=True)
     def run_workflow(self, start_index: int = 0, start_repeat: int = 0,
                      resume_action_index: int | None = None,
                      preserve_global_cooldowns: bool = False,
                      test_mode: bool | None = None,
                      suppress_start_sound: bool = False,
                      segment: tuple[int, int] | None = None,
-                     segment_repeats: int = 1):
+                     segment_repeats: int = 1,
+                     partial_run: bool = False):
         """执行工作流；segment = 只循环执行「开头行 → 结尾行」这一段。"""
         return self._run_detection_entrypoint(
             self._run_workflow_impl, start_index, start_repeat,
             resume_action_index, preserve_global_cooldowns, test_mode,
             suppress_start_sound, segment=segment, segment_repeats=segment_repeats,
+            partial_run=partial_run,
         )
     def _run_workflow_impl(self, start_index: int = 0, start_repeat: int = 0,
                       resume_action_index: int | None = None,
@@ -1270,15 +1321,24 @@ class WorkflowMixin:
                       test_mode: bool | None = None,
                       suppress_start_sound: bool = False,
                       segment: tuple[int, int] | None = None,
-                      segment_repeats: int = 1):
+                      segment_repeats: int = 1,
+                      partial_run: bool = False):
         recorder = getattr(self, "recorder", None)
         if recorder is not None and recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        self._save_activation_interval()
         workflow_steps = self._workflow_only_steps()
         global_modules = [dict(step) for step in self._global_module_steps()]
+        partial_run = bool(partial_run or start_index or segment is not None)
+        script_globals_enabled = (
+            bool(self.partial_script_globals_var.get()) if partial_run else True
+        ) if hasattr(self, "partial_script_globals_var") else True
+        if partial_run and hasattr(self, "partial_workflow_globals_var") \
+                and not self.partial_workflow_globals_var.get():
+            global_modules = []
         if not workflow_steps and not global_modules:
             self._notify("没有步骤", "请先向工作流添加脚本或模块。")
             return
@@ -1335,10 +1395,15 @@ class WorkflowMixin:
         # 当前侧栏选择作为整个工作流的默认前置窗口；步骤脚本若保存了自己的
         # 前置窗口，则在 _run_workflow_worker 中覆盖这个默认值。
         workflow_activation_enabled, workflow_activation_signature = self._activation_settings_from_script()
+        editor_script = getattr(self, "script", None)
+        workflow_activation_interval_ms = int(
+            editor_script.settings.get("activation_window_interval_ms", 0)
+            if editor_script is not None else 0
+        )
         if start_index > 0 and start_index < len(workflow_steps):
             # 从选中行运行时，优先使用所选工作流脚本自己的前置窗口，
             # 而不是编辑器当前打开的另一份脚本配置。
-            workflow_activation_enabled, workflow_activation_signature = (
+            workflow_activation_enabled, workflow_activation_signature, workflow_activation_interval_ms = (
                 self._activation_settings_from_workflow_step(workflow_steps[start_index])
             )
         activation_toggle = getattr(self, "activation_enabled_var", None)
@@ -1370,6 +1435,8 @@ class WorkflowMixin:
         if not preserve_global_cooldowns:
             self._clear_global_detect_cooldowns()
         self.workflow_stop.clear()
+        if getattr(self, "player", None) is not None:
+            self.player.reset()
         if not suppress_start_sound:
             self._sound("run_start")
         self._hide_main_for_execution()
@@ -1394,6 +1461,8 @@ class WorkflowMixin:
                   start_repeat, resume_action_index, workflow_activation_hwnd,
                   self.workflow_test_mode_active, start_delay_seconds,
                   workflow_activation_allowed, segment_end, segment_rounds),
+            kwargs={"workflow_activation_interval_ms": workflow_activation_interval_ms,
+                    "script_globals_enabled": script_globals_enabled},
             daemon=True,
         )
         self.worker.start()
@@ -1418,13 +1487,19 @@ class WorkflowMixin:
                              resume_action_index=None, workflow_activation_hwnd=None,
                              test_mode=False, start_delay_seconds=0,
                              activation_allowed=True, segment_end=None,
-                             segment_repeats=1):
+                             segment_repeats=1,
+                             workflow_activation_interval_ms=0,
+                             script_globals_enabled=True):
+        workflow = getattr(self, "workflow", None)
+        start_resolution = dict(getattr(workflow, "start_resolution", None) or {})
+        end_resolution = dict(getattr(workflow, "end_resolution", None) or {})
+        display_run_started = False
         try:
             if start_at and start_at > datetime.now():
                 seconds = (start_at - datetime.now()).total_seconds()
                 self._ui(self._set_status, f"工作流已排期：{start_at:%m-%d %H:%M:%S}", "warning")
                 self._ui(self._log, f"工作流等待至 {start_at:%Y-%m-%d %H:%M:%S} 开始。")
-                if self.workflow_stop.wait(seconds):
+                if not self._guard_wait(seconds):
                     return
             if start_delay_seconds > 0:
                 delay_text = f"工作流启动延时 {start_delay_seconds} 秒，等待结束后执行。"
@@ -1432,9 +1507,16 @@ class WorkflowMixin:
                 self._ui(self._set_execution_progress, f"{delay_text} · F12 停止")
                 self._ui(self._append_mini_step, delay_text)
                 self._ui(self._log, delay_text)
-                if self.workflow_stop.wait(start_delay_seconds):
+                if not self._guard_wait(start_delay_seconds):
                     return
                 self._ui(self._log, "工作流启动延时结束，开始执行。")
+            if self.workflow_stop.is_set():
+                return
+            display_run_started = True
+            if start_resolution:
+                self._apply_workflow_resolution(start_resolution, "启动")
+                if self.workflow_stop.is_set():
+                    return
             # 执行期间必须阻止屏保/熄屏（工作流整轮都算执行期：步骤之间还有
             # 开始前等待与重复间隔，等待中屏保一起来同样会让截图全部失败）。
             if not keep_display_awake():
@@ -1494,46 +1576,15 @@ class WorkflowMixin:
                 self._ui(self._log, "所有计次脚本已执行完毕，工作流结束。")
                 self._ui(self._sound, "run_done")
                 return
-            for module in (global_modules or []):
-                if self.workflow_stop.is_set():
-                    return
-                if not bool(module.get("enabled", True)):
-                    continue
-                registry_state = self._workflow_global_module_registry_state(module)
-                if registry_state in {"disabled", "missing"}:
-                    module_label = self._global_module_label(module)
-                    reason = "模块管理中已禁用" if registry_state == "disabled" else "模块对象不存在"
-                    message = f"— 跳过工作流全局模块：{module_label}，{reason}"
-                    self._ui(self._append_mini_step, message)
-                    self._ui(self._log, message)
-                    continue
-                before = max(0, int(module.get("before_ms", 0)))
-                if before and not self._guard_wait(before / 1000):
-                    return
-                config = dict(module.get("config") or {})
-                script_value = str(module.get("script", "")).strip()
-                if not config and script_value:
-                    script_path = resolve_path(script_value)
-                    if script_path.is_file():
-                        try:
-                            script = load_script(script_path)
-                            config = self._script_trigger_config(script)
-                        except Exception:
-                            pass
-                if config:
-                    # 守卫注册与播放器评估同线程（worker），直接调用避免跨线程竞态。
-                    self._activate_global_detect_from_config(config, module)
-                    self._ui(self._append_mini_step, "全局检测模块已启用。")
-                else:
-                    self._ui(
-                        self._log,
-                        f"全局模块 {workflow_script_name(script_value) or '未配置'}："
-                        "未找到全局检测配置，未启用检测。",
-                    )
+            if not self._register_workflow_global_modules(global_modules or []):
+                return
             # “执行前置窗口”是整个工作流的一次性准备动作，只交给第一个实际
             # 执行的脚本。后续脚本以及全局模块断点恢复都直接以目标窗口为准。
             pending_activation_hwnd = workflow_activation_hwnd
             pending_activation_prepared = activation_prepared
+            pending_activation_at = (
+                getattr(self, "_activation_prepared_at", None) if activation_prepared else None
+            )
             activation_consumed = False
             # 片段循环的执行顺序摊平成一张计划表：每轮从开头行到结尾行各走一遍。
             # 不循环时（整轮执行 / 从选中行执行）就是原来的 start_index → 末尾。
@@ -1662,6 +1713,10 @@ class WorkflowMixin:
                 )
                 step_activation = pending_activation_hwnd
                 step_activation_prepared = pending_activation_prepared
+                step_activation_at = pending_activation_at
+                step_activation_interval_ms = (
+                    workflow_activation_interval_ms if step_activation is not None else 0
+                )
                 if not is_module and not activation_consumed and step_activation is None \
                         and workflow_activation_hwnd is None \
                         and activation_allowed \
@@ -1674,6 +1729,9 @@ class WorkflowMixin:
                         step_activation = self._execution_activation_hwnd(
                             hwnd, True, script.settings.get("activation_window"),
                         )
+                        step_activation_interval_ms = int(
+                            script.settings.get("activation_window_interval_ms", 0)
+                        )
                     except RuntimeError:
                         message = (
                             f"工作流第 {script_number}/{len(steps)} 行：前置窗口未打开，"
@@ -1684,6 +1742,7 @@ class WorkflowMixin:
                         self._ui(self._log, message)
                         step_activation = None
                         step_activation_prepared = False
+                        step_activation_at = None
                 self._set_trace_context(
                     step=script_number, steps=len(steps), script=script.name,
                     total=len(script.actions), repeat=0, repeats=repeats,
@@ -1695,12 +1754,15 @@ class WorkflowMixin:
                     script_name=script.name,
                     activate_target=activate_target, activation_hwnd=step_activation,
                     activation_prepared=step_activation_prepared,
+                    activation_interval_ms=step_activation_interval_ms,
+                    activation_prepared_at=step_activation_at,
                     start_repeat=start_repeat if index == start_index else 0,
                     resume_action_index=(
                         resume_action_index if index == start_index else None
                     ),
                     repeat_start_action_id=repeat_start_action_id,
                     workflow_context=True,
+                    enable_script_globals=script_globals_enabled,
                     on_action=lambda next_index, _total: self._record_workflow_action(
                         next_index,
                     ),
@@ -1720,6 +1782,7 @@ class WorkflowMixin:
                     activation_consumed = True
                 pending_activation_hwnd = None
                 pending_activation_prepared = False
+                pending_activation_at = None
                 if self.workflow_stop.is_set() or self.player.stop_event.is_set():
                     return
             # 纯全局模块工作流（没有任何实际执行的脚本步骤）：守卫没有播放器
@@ -1731,6 +1794,10 @@ class WorkflowMixin:
                 self._ui(self._append_mini_step, "工作流无可执行脚本步骤，持续运行全局检测（F12 停止）。")
                 self._ui(self._log, "工作流无可执行脚本步骤，持续运行全局检测（F12 停止）。")
                 while not self.workflow_stop.is_set() and not self.player.stop_event.is_set():
+                    try:
+                        self.player.wait_while_paused()
+                    except PlaybackStopped:
+                        break
                     hit = self._evaluate_global_guards()
                     if hit is not None:
                         try:
@@ -1763,7 +1830,58 @@ class WorkflowMixin:
             self._shutdown_detection_worker()
             # 特殊模块「重新执行工作流」继续沿用当前执行的输入锁；
             # 其余情况（普通完成/报错/F12）正常收尾。
-            if not getattr(self, "workflow_restart_requested", False):
+            restarting = bool(getattr(self, "workflow_restart_requested", False))
+            if not restarting:
                 self._leave_focus_mode()
+            if display_run_started and end_resolution:
+                try:
+                    self._apply_workflow_resolution(end_resolution, "结束恢复")
+                except Exception as exc:
+                    self._ui(self._log, f"工作流结束后恢复分辨率/缩放失败：{exc}")
+            if not restarting:
                 self._ui(self._finish_execution_visibility)
                 self.workflow_test_mode_active = False
+    def _register_workflow_global_modules(self, modules: list[dict]) -> bool:
+        """Register the workflow guards for a workflow or a partial script run."""
+        for module in modules:
+            if self.workflow_stop.is_set():
+                return False
+            if not bool(module.get("enabled", True)):
+                continue
+            registry_state = self._workflow_global_module_registry_state(module)
+            if registry_state in {"disabled", "missing"}:
+                module_label = self._global_module_label(module)
+                reason = "模块管理中已禁用" if registry_state == "disabled" else "模块对象不存在"
+                message = f"— 跳过工作流全局模块：{module_label}，{reason}"
+                self._ui(self._append_mini_step, message)
+                self._ui(self._log, message)
+                continue
+            before = max(0, int(module.get("before_ms", 0)))
+            if before and not self._guard_wait(before / 1000):
+                return False
+            config = dict(module.get("config") or {})
+            script_value = str(module.get("script", "")).strip()
+            if not config and script_value:
+                script_path = resolve_path(script_value)
+                if script_path.is_file():
+                    try:
+                        script = load_script(script_path)
+                        config = self._script_trigger_config(script)
+                    except Exception:
+                        pass
+            if config:
+                self._activate_global_detect_from_config(config, module)
+                self._ui(self._append_mini_step, "全局检测模块已启用。")
+            else:
+                self._ui(
+                    self._log,
+                    f"全局模块 {workflow_script_name(script_value) or '未配置'}："
+                    "未找到全局检测配置，未启用检测。",
+                )
+        return True
+
+    def _apply_workflow_resolution(self, action: dict, phase: str) -> None:
+        self._ui(self._log, f"工作流{phase}：设置 {action.get('name', '')} 分辨率与缩放。")
+        self.player._execute_action(
+            dict(action), None, interruptible_display_wait=False,
+        )

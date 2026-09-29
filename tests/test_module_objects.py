@@ -219,26 +219,27 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.sort_direction = "asc"
         for tab_key in ("all", "workflow_global"):
             tree = Mock()
-            tree.get_children.return_value = ()
+            view = Mock()
+            dialog.virtual_trees = {tab_key: view}
             dialog._reload_tree(tab_key, tree)
-            inserted = {item.kwargs["iid"]: item.kwargs for item in tree.insert.call_args_list}
-            self.assertEqual(inserted["module:blocking"]["text"], "【阻塞识别】退出队伍")
-            self.assertEqual(inserted["module:blocking"]["tags"], ("blocking",))
-            self.assertEqual(inserted["module:normal"]["text"], "结算确定")
-            self.assertEqual(inserted["module:normal"]["tags"], ())
+            inserted = {row.key: row for row in view.set_rows.call_args.args[0]}
+            self.assertEqual(inserted["module:blocking"].text, "【阻塞识别】退出队伍")
+            self.assertEqual(inserted["module:blocking"].tags, ("blocking",))
+            self.assertEqual(inserted["module:normal"].text, "结算确定")
+            self.assertEqual(inserted["module:normal"].tags, ())
             self.assertEqual(
-                inserted["module:special-code"]["text"],
+                inserted["module:special-code"].text,
                 "【特殊代码段】结算退出",
             )
             self.assertEqual(
-                inserted["module:special-code"]["values"],
+                inserted["module:special-code"].values,
                 (
                     "未设置区域（全屏）",
                     "附加：重新执行工作流；超时：结束当前最里层脚本，继续执行",
                 ),
             )
             self.assertEqual(
-                inserted["module:special-code"]["tags"], ("special_action",),
+                inserted["module:special-code"].tags, ("special_action",),
             )
 
     def test_manager_toggle_selected_enabled_persists_and_reselects(self):
@@ -247,8 +248,10 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {"module:item": obj}
         dialog.current = "workflow_global"
         tree = Mock()
-        tree.selection.return_value = ("module:item",)
         dialog.trees = {"workflow_global": tree}
+        view = Mock()
+        view.selected_keys.return_value = ("module:item",)
+        dialog.virtual_trees = {"workflow_global": view}
         dialog._update_action_buttons = Mock()
         with package_patch('dialogs', 'save_module_objects') as save, \
              patch.object(TemplateRegionManagerDialog, "_reload_trees") as reload_trees:
@@ -256,8 +259,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertFalse(obj["enabled"])
         save.assert_called_once_with(dialog.objects)
         reload_trees.assert_called_once_with()
-        tree.selection_set.assert_called_once_with("module:item")
-        tree.see.assert_called_once_with("module:item")
+        view.select_key.assert_called_once_with("module:item")
         dialog._update_action_buttons.assert_called_once_with()
 
     def test_pinyin_sort_key_orders_chinese_names(self):
@@ -298,7 +300,9 @@ class TemplateRegionTests(unittest.TestCase):
         dialog._reload_tree = Mock()
         dialog._set_inventory_filter("unused")
         self.assertEqual(dialog.inventory_filter, "unused")
-        dialog._reload_tree.assert_called_once_with()
+        self.assertEqual(dialog._reload_tree.call_args.kwargs["animate"], True)
+        dialog.inventory_filter_buttons["unused"].configure.assert_not_called()
+        dialog._reload_tree.call_args.kwargs["commit_ui"]()
         self.assertEqual(
             dialog.inventory_filter_buttons["unused"].configure.call_args.kwargs["background"],
             "#244D78",
@@ -647,9 +651,8 @@ class TemplateRegionTests(unittest.TestCase):
                 "all", "switch", "workflow_global", "script_global", "special",
             )
         }
-        for tree in trees.values():
-            tree.get_children.return_value = ["old"]
         dialog.trees = trees
+        dialog.virtual_trees = {key: Mock() for key in trees}
         dialog.objects = {
             "images/a.png": self._object(),
             "images/b.png": self._object(region=(0, 0, 0, 0)),
@@ -660,34 +663,34 @@ class TemplateRegionTests(unittest.TestCase):
             },
         }
         dialog._reload_trees()
-        for tree in trees.values():
-            tree.delete.assert_called_once_with("old")
+        for view in dialog.virtual_trees.values():
+            view.set_rows.assert_called_once()
         # 全部页签：switch / global 显示区域，纯动作显示名称与区域 "—"。
-        calls = trees["all"].insert.call_args_list
-        by_iid = {call.kwargs["iid"]: call.kwargs for call in calls}
-        self.assertEqual(by_iid["images/a.png"]["values"], ("10,20,300,400", "—"))
-        self.assertEqual(by_iid["images/b.png"]["values"], ("未设置区域（全屏）", "—"))
-        self.assertEqual(by_iid["images/g.png"]["values"], ("10,20,300,400", "—"))
-        self.assertEqual(by_iid["重新执行工作流"]["text"], "重新执行工作流")
-        self.assertEqual(by_iid["重新执行工作流"]["values"], ("—", "固定特殊模块"))
+        calls = dialog.virtual_trees["all"].set_rows.call_args.args[0]
+        by_iid = {row.key: row for row in calls}
+        self.assertEqual(by_iid["images/a.png"].values, ("10,20,300,400", "—"))
+        self.assertEqual(by_iid["images/b.png"].values, ("未设置区域（全屏）", "—"))
+        self.assertEqual(by_iid["images/g.png"].values, ("10,20,300,400", "—"))
+        self.assertEqual(by_iid["重新执行工作流"].text, "重新执行工作流")
+        self.assertEqual(by_iid["重新执行工作流"].values, ("—", "固定特殊模块"))
         # 切换 / 全局页签各列所属类别；特殊页签只列纯动作（名称 + 类型）。
         self.assertEqual(
-            [call.kwargs["iid"] for call in trees["switch"].insert.call_args_list],
+            [row.key for row in dialog.virtual_trees["switch"].set_rows.call_args.args[0]],
             ["images/a.png", "images/b.png"],
         )
         self.assertEqual(
-            [call.kwargs["iid"] for call in trees["workflow_global"].insert.call_args_list],
+            [row.key for row in dialog.virtual_trees["workflow_global"].set_rows.call_args.args[0]],
             ["images/g.png"],
         )
         self.assertEqual(
-            [call.kwargs["iid"] for call in trees["script_global"].insert.call_args_list],
+            [row.key for row in dialog.virtual_trees["script_global"].set_rows.call_args.args[0]],
             ["images/sg.png"],
         )
-        special_calls = trees["special"].insert.call_args_list
+        special_calls = dialog.virtual_trees["special"].set_rows.call_args.args[0]
         self.assertEqual(
-            [call.kwargs["iid"] for call in special_calls], ["重新执行工作流"],
+            [row.key for row in special_calls], ["重新执行工作流"],
         )
-        self.assertEqual(special_calls[0].kwargs["values"], ("特殊",))
+        self.assertEqual(special_calls[0].values, ("特殊",))
 
     def _form(self, image="", region="", after_action="点击识别区域", recognize="模板图片"):
         """构造表单桩：__new__ 跳过 __init__，用 Mock 变量代替控件。"""
@@ -1497,6 +1500,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {}
         dialog.current = "switch"
         dialog.trees = {"switch": Mock()}
+        dialog.virtual_trees = {"switch": Mock()}
         form = Mock()
         obj = self._object()
         form.show.return_value = ("", "images/g.png", obj)
@@ -1507,16 +1511,17 @@ class TemplateRegionTests(unittest.TestCase):
         form_class.assert_called_once_with(dialog, "", object_dict=None, category="switch")
         save.assert_called_once_with("images/g.png", obj, old_key="")
         self.assertEqual(dialog.objects, {"images/g.png": obj})
-        dialog.trees["switch"].selection_set.assert_called_once_with("images/g.png")
-        dialog.trees["switch"].see.assert_called_once_with("images/g.png")
+        dialog.virtual_trees["switch"].select_key.assert_called_once_with("images/g.png")
 
     def test_manager_open_edit_switches_file_keeps_region(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
         dialog.objects = {"images/a.png": self._object()}
         dialog.current = "switch"
         tree = Mock()
-        tree.selection.return_value = ("images/a.png",)
         dialog.trees = {"switch": tree}
+        view = Mock()
+        view.selected_keys.return_value = ("images/a.png",)
+        dialog.virtual_trees = {"switch": view}
         original = dialog.objects["images/a.png"]
         form = Mock()
         obj = self._object()
@@ -1530,15 +1535,17 @@ class TemplateRegionTests(unittest.TestCase):
         )
         save.assert_called_once_with("images/b.png", obj, old_key="images/a.png")
         self.assertEqual(dialog.objects, {"images/b.png": obj})
-        tree.selection_set.assert_called_once_with("images/b.png")
+        view.select_key.assert_called_once_with("images/b.png")
 
     def test_manager_open_edit_without_selection_does_nothing(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
         dialog.objects = {"images/a.png": self._object()}
         dialog.current = "switch"
         tree = Mock()
-        tree.selection.return_value = ()
         dialog.trees = {"switch": tree}
+        view = Mock()
+        view.selected_keys.return_value = ()
+        dialog.virtual_trees = {"switch": view}
         with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
              package_patch('dialogs', 'update_module_object') as save, \
              package_patch('dialogs', 'show_floating_notice') as notice:
@@ -1554,6 +1561,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {"images/a.png": obj}
         dialog.current = "switch"
         dialog.trees = {"switch": Mock()}
+        dialog.virtual_trees = {"switch": Mock()}
         form = Mock()
         form.show.return_value = None
         with package_patch('dialogs', 'TemplateRegionFormDialog', return_value=form), \
@@ -1568,8 +1576,9 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {"images/a.png": self._object(region=(0, 0, 0, 0))}
         dialog.current = "switch"
         tree = Mock()
-        tree.selection_set.side_effect = tk.TclError
         dialog.trees = {"switch": tree}
+        view = Mock()
+        dialog.virtual_trees = {"switch": view}
         form = Mock()
         obj = self._object(region=(10, 20, 300, 400), after_action="continue")
         form.show.return_value = ("images/a.png", "images/a.png", obj)
@@ -1579,7 +1588,7 @@ class TemplateRegionTests(unittest.TestCase):
             dialog._open_form("images/a.png", dialog.objects["images/a.png"])
         self.assertEqual(dialog.objects, {"images/a.png": obj})
         save.assert_called_once_with("images/a.png", obj, old_key="images/a.png")
-        tree.selection_set.assert_called_once_with("images/a.png")
+        view.select_key.assert_called_once_with("images/a.png")
 
     def test_manager_special_module_cannot_be_edited(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
@@ -1590,8 +1599,10 @@ class TemplateRegionTests(unittest.TestCase):
             },
         }
         tree = Mock()
-        tree.selection.return_value = ("重新执行工作流",)
         dialog.trees = {"all": tree}
+        view = Mock()
+        view.selected_keys.return_value = ("重新执行工作流",)
+        dialog.virtual_trees = {"all": view}
         with package_patch('dialogs', 'TemplateRegionFormDialog') as form_class, \
              package_patch('dialogs', 'show_floating_notice') as notice:
             dialog._open_edit()
@@ -1603,8 +1614,10 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {"images/g.png": self._object()}
         dialog.current = "switch"
         tree = Mock()
-        tree.selection.return_value = ("images/g.png",)
         dialog.trees = {"switch": tree}
+        view = Mock()
+        view.selected_keys.return_value = ("images/g.png",)
+        dialog.virtual_trees = {"switch": view}
         dialog._undo_stack = []
         dialog.undo_button = Mock()
         with package_patch('dialogs', 'save_module_objects') as save, \
@@ -1623,6 +1636,8 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.current = "switch"
         tree = Mock()
         dialog.trees = {"switch": tree}
+        view = Mock()
+        dialog.virtual_trees = {"switch": view}
         dialog._undo_stack = [("images/g.png", obj)]
         dialog.undo_button = Mock()
         with package_patch('dialogs', 'save_module_objects') as save, \
@@ -1631,8 +1646,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(dialog.objects, {"images/g.png": obj})
         save.assert_called_once_with({"images/g.png": obj})
         self.assertEqual(dialog._undo_stack, [])
-        tree.selection_set.assert_called_once_with("images/g.png")
-        tree.see.assert_called_once_with("images/g.png")
+        view.select_key.assert_called_once_with("images/g.png")
         dialog.undo_button.configure.assert_called_with(state="disabled")
 
     def test_manager_undo_remove_empty_stack_does_nothing(self):
@@ -1640,6 +1654,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {}
         dialog.current = "switch"
         dialog.trees = {"switch": Mock()}
+        dialog.virtual_trees = {"switch": Mock()}
         dialog._undo_stack = []
         with package_patch('dialogs', 'save_module_objects') as save:
             dialog._undo_remove()
@@ -1651,8 +1666,10 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {"images/g.png": obj}
         dialog.current = "switch"
         tree = Mock()
-        tree.selection.return_value = ()
         dialog.trees = {"switch": tree}
+        view = Mock()
+        view.selected_keys.return_value = ()
+        dialog.virtual_trees = {"switch": view}
         with package_patch('dialogs', 'save_module_objects') as save:
             dialog._remove_selected()
         self.assertEqual(dialog.objects, {"images/g.png": obj})
@@ -1720,8 +1737,12 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.objects = {
             "module:source": self._object(category="script_global", name="全局"),
         }
+        dialog.current = "script_global"
+        view = Mock()
+        view.key_for_iid.return_value = "module:source"
+        dialog.virtual_trees = {"script_global": view}
         tree = Mock()
-        tree.identify_row.return_value = "module:source"
+        tree.identify_row.return_value = "virtual:normal:0"
         event = Mock(widget=tree, y=30, x_root=100, y_root=120)
         with patch("tkinter.Menu") as menu_class:
             dialog._show_module_context_menu(event)
@@ -1729,7 +1750,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(labels, [
             "▶ 测试指定次数…", "改成工作流全局", "复制成工作流全局",
         ])
-        tree.selection_set.assert_called_once_with("module:source")
+        tree.selection_set.assert_called_once_with("virtual:normal:0")
         menu_class.return_value.tk_popup.assert_called_once_with(100, 120)
 
     def test_manager_context_menu_offers_test_for_every_module_category(self):
@@ -1739,8 +1760,12 @@ class TemplateRegionTests(unittest.TestCase):
                 dialog.objects = {
                     "module:source": self._object(category=category, name="测试模块"),
                 }
+                dialog.current = category
+                view = Mock()
+                view.key_for_iid.return_value = "module:source"
+                dialog.virtual_trees = {category: view}
                 tree = Mock()
-                tree.identify_row.return_value = "module:source"
+                tree.identify_row.return_value = "virtual:normal:0"
                 event = Mock(widget=tree, y=30, x_root=100, y_root=120)
                 with patch("tkinter.Menu") as menu_class:
                     dialog._show_module_context_menu(event)
@@ -1749,7 +1774,7 @@ class TemplateRegionTests(unittest.TestCase):
                     for item in menu_class.return_value.add_command.call_args_list
                 ]
                 self.assertIn("▶ 测试指定次数…", labels)
-                tree.selection_set.assert_called_once_with("module:source")
+                tree.selection_set.assert_called_once_with("virtual:normal:0")
 
     def test_manager_module_test_asks_for_count_and_runs_selected_module(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
@@ -1932,9 +1957,11 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.script_paths = [Path("a.json"), Path("b.json"), Path("c.json")]
         dialog.script_categories = ["switch", "level_pack", "switch"]
         dialog.current_filter = "switch"
+        dialog.mode = "add"
         dialog.checked = {1}
         dialog.tree = Mock()
         dialog.tree.exists.return_value = False
+        dialog.virtual_rows = Mock()
 
         dialog._select_all()
 
@@ -1954,7 +1981,12 @@ class TemplateRegionTests(unittest.TestCase):
             dialog._set_filter("level_pack")
         self.assertEqual(dialog.current_filter, "level_pack")
         self.assertEqual(dialog.checked, {2})
-        reload.assert_called_once()
+        self.assertEqual(reload.call_args.kwargs["animate"], True)
+        reload.call_args.kwargs["commit_ui"]()
+        self.assertEqual(
+            dialog.filter_buttons["level_pack"].configure.call_args.kwargs["background"],
+            "#244D78",
+        )
 
     def test_module_picker_switch_choose_returns_module_ref_action(self):
         picker = ModulePickerDialog.__new__(ModulePickerDialog)

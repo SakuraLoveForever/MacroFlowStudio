@@ -17,6 +17,24 @@ DEFAULT_RESOLUTION_STYLES = [
 ]
 
 
+def group_display_modes(
+        modes: list[tuple[int, int, int]] | tuple[tuple[int, int, int], ...],
+) -> list[tuple[int, int, tuple[int, ...]]]:
+    """Group Windows display modes by resolution for dependent UI choices."""
+    grouped: dict[tuple[int, int], set[int]] = {}
+    for width, height, refresh_rate in modes:
+        grouped.setdefault((int(width), int(height)), set()).add(int(refresh_rate))
+    resolutions = sorted(
+        grouped,
+        key=lambda size: (size[0] * size[1], size[0], size[1]),
+        reverse=True,
+    )
+    return [
+        (width, height, tuple(sorted(grouped[(width, height)])))
+        for width, height in resolutions
+    ]
+
+
 def normalize_resolution_style(raw: Any) -> dict[str, int | str]:
     if not isinstance(raw, dict):
         raise ValueError("分辨率样式必须是对象")

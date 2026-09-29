@@ -18,6 +18,7 @@ WH_MOUSE_LL = 14
 HC_ACTION = 0
 WM_QUIT = 0x0012
 WM_MACROFLOW_INPUT = 0x8001
+WM_MACROFLOW_BLOCK = 0x8002
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
@@ -96,7 +97,7 @@ class FocusInputGuard:
                  on_hotkey: Callable[[int], None] | None = None):
         self._on_f12 = on_f12
         # 快捷键回调（虚键码）：专注模式下实体输入被整体锁定，普通监听器
-        # 可能收不到被拦截的按键，这里在钩子线程里直接识别绑定键。
+        # 可能收不到被拦截的按键，这里在钩子线程里识别 F8 和绑定键。
         self._on_hotkey = on_hotkey
         self._hotkey_vks: frozenset[int] = frozenset()
         self._hotkey_down: set[int] = set()
@@ -112,6 +113,7 @@ class FocusInputGuard:
         self._f12_down = False
         self._system_blocked = False
         self._input_requests: queue.Queue = queue.Queue()
+        self._block_requests: queue.Queue = queue.Queue()
         # 每次发输入前在钩子线程上执行的回调（抢回目标窗口前台）。
         self._before_input: Callable[[], None] | None = None
         # 会话号：每次 start() 递增。正在退出的旧线程据此判断自己是否还是
@@ -149,6 +151,20 @@ class FocusInputGuard:
     def unblock(self) -> bool:
         self._stop_hooks()
         return not self._system_blocked
+
+    def set_paused(self, paused: bool) -> bool:
+        """Toggle BlockInput on its owner thread, keeping F8/F12 hooks alive."""
+        if not self.active or not self._thread_id:
+            return False
+        request = {"blocked": not paused, "done": threading.Event(), "ok": False}
+        self._block_requests.put(request)
+        if not user32.PostThreadMessageW(self._thread_id, WM_MACROFLOW_BLOCK, 0, 0):
+            request["done"].set()
+            return False
+        if not request["done"].wait(2.0):
+            request["done"].set()
+            return False
+        return bool(request["ok"])
 
     def stop(self) -> None:
         self._stop_hooks()
@@ -262,6 +278,20 @@ class FocusInputGuard:
             request["error"] = RuntimeError("强制专注模式已停止，回放动作未发送。")
             request["done"].set()
 
+    def _drain_block_requests(self) -> None:
+        while True:
+            try:
+                request = self._block_requests.get_nowait()
+            except queue.Empty:
+                return
+            if request["done"].is_set():
+                continue
+            blocked = bool(request["blocked"])
+            if blocked == self._system_blocked or user32.BlockInput(blocked):
+                self._system_blocked = blocked
+                request["ok"] = True
+            request["done"].set()
+
     def _run(self) -> None:
         session = self._session
         self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
@@ -290,7 +320,10 @@ class FocusInputGuard:
                                 pass
                     elif message in (WM_KEYUP, WM_SYSKEYUP):
                         self._f12_down = False
-                if should_block_keyboard(data.vkCode, data.flags, data.dwExtraInfo):
+                if self._system_blocked and should_block_keyboard(data.vkCode, data.flags, data.dwExtraInfo):
+                    return 1
+                if not self._system_blocked and vk in self._hotkey_vks \
+                        and not (int(data.flags) & LLKHF_INJECTED):
                     return 1
             return user32.CallNextHookEx(self._keyboard_hook, code, wparam, lparam)
 
@@ -298,7 +331,7 @@ class FocusInputGuard:
         def mouse_proc(code, wparam, lparam):
             if code == HC_ACTION:
                 data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if should_block_mouse(data.flags, data.dwExtraInfo):
+                if self._system_blocked and should_block_mouse(data.flags, data.dwExtraInfo):
                     return 1
             return user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
 
@@ -324,12 +357,17 @@ class FocusInputGuard:
             while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
                 if int(message.message) == WM_MACROFLOW_INPUT:
                     self._drain_input_requests()
+                elif int(message.message) == WM_MACROFLOW_BLOCK:
+                    self._drain_block_requests()
         except Exception as exc:
             self._error = exc
             self._ready.set()
         finally:
             self._release_dispatcher(session)
             self._fail_input_requests()
+            while not self._block_requests.empty():
+                request = self._block_requests.get_nowait()
+                request["done"].set()
             if self._system_blocked:
                 user32.BlockInput(False)
                 self._system_blocked = False

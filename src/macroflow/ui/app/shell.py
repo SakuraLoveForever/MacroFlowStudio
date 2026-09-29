@@ -14,7 +14,7 @@ from macroflow.core.storage import (
     update_module_object,
 )
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -206,6 +206,9 @@ class ShellMixin:
         self.activation_draft_enabled = bool(
             self.app_settings.get("activation_window_draft_enabled", False)
         )
+        self.activation_draft_interval_ms = int(
+            self.app_settings.get("activation_window_draft_interval_ms", 0)
+        )
         self.script = self._blank_script_with_activation_draft()
         self.action_undo_stack: list[list[dict]] = []
         self.action_redo_stack: list[list[dict]] = []
@@ -321,9 +324,9 @@ class ShellMixin:
         self.mini_ocr_progress_var = tk.DoubleVar(value=0)
         self.mini_ocr_progressbar: ttk.Progressbar | None = None
         self.mini_context_var = tk.StringVar(value="")
-        self.mini_window_var = tk.StringVar(value="当前窗口：未知")
+        self.mini_window_var = tk.StringVar(value="目标 | 未设置")
+        self.mini_event_var = tk.StringVar(value="等待执行信息")
         self.mini_mode = ""
-        self.mini_steps_text: tk.Text | None = None
         self.mini_update_after_id = None
         self.mini_binding_label = None
         self.bind_label_widget = None
@@ -331,6 +334,7 @@ class ShellMixin:
         self.execution_started_at = 0.0
         self.execution_progress_text = ""
         self.execution_focus_requested = False
+        self._focus_state_lock = threading.RLock()
         self.execution_notice_window: tk.Toplevel | None = None
         self.execution_notice_label = None
         self.execution_notice_after_id = None
@@ -367,7 +371,7 @@ class ShellMixin:
         self._refresh_hotkey_summary()
         self.refresh_script_files()
         self.refresh_workflow_files()
-        self._log("应用已就绪。F8 录制/停止，F9 执行当前脚本，F12 紧急停止。")
+        self._log("应用已就绪。F8 空闲时录制/停止、执行时暂停/继续，F9 执行当前脚本，F12 紧急停止。")
         self._set_status("就绪", "success")
         self._sync_windows_startup(log_errors=True)
         self._schedule_timed_backup()
@@ -548,9 +552,6 @@ class ShellMixin:
         self.root.option_add("*TCombobox*Listbox*Background", COLOR_SURFACE_ALT)
         self.root.option_add("*TCombobox*Listbox*Foreground", COLOR_TEXT)
     def _create_variables(self):
-        # 空白脚本的鼠标轨迹间隔固定从 20 ms 开始。该值属于脚本，不能从
-        # 旧版 app_settings 或上一个脚本继承成 100 ms。
-        interval = DEFAULT_MOUSE_MOVE_INTERVAL_MS
         try:
             repeat = max(1, min(999999, int(self.app_settings.get("repeat", 1))))
         except (TypeError, ValueError):
@@ -560,11 +561,13 @@ class ShellMixin:
         # older script/settings files remain compatible without exposing three
         # overlapping choices in the UI.
         self.record_mode_var = tk.StringVar(value="auto")
-        self.interval_var = DurationVar(value=interval)
         self.repeat_var = tk.IntVar(value=repeat)
         self.bind_label_var = tk.StringVar(value="未绑定窗口")
         self.activation_enabled_var = tk.BooleanVar(value=False)
         self.activation_label_var = tk.StringVar(value="跟随目标窗口")
+        self.activation_interval_var = tk.StringVar(
+            value=str(self.script.settings.get("activation_window_interval_ms", 0)),
+        )
         self.cursor_position_var = tk.StringVar(value="光标坐标：尚未读取")
         self.cursor_tracking_mini_var = tk.StringVar(value="X: 0    Y: 0")
         self.status_var = tk.StringVar(value="就绪")
@@ -587,6 +590,12 @@ class ShellMixin:
         self.workflow_start_delay_seconds_var = DurationVar(
             value=int(self.workflow.start_delay_seconds) * 1000,
         )
+        self.workflow_start_resolution_var = tk.StringVar(
+            value=str((self.workflow.start_resolution or {}).get("name") or "不修改"),
+        )
+        self.workflow_end_resolution_var = tk.StringVar(
+            value=str((self.workflow.end_resolution or {}).get("name") or "不修改"),
+        )
         self.workflow_test_mode_var = tk.BooleanVar(value=False)
         self.sound_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("sound_enabled", True)))
         self.mini_window_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("mini_window_enabled", True)))
@@ -602,6 +611,8 @@ class ShellMixin:
         self.playback_speed_label_var = tk.StringVar(value=f"{playback_speed:.1f}×")
         self.focus_mode_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("focus_mode_enabled", False)))
         self.activate_target_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("activate_target_enabled", True)))
+        self.partial_script_globals_var = tk.BooleanVar(value=bool(self.app_settings.get("partial_script_globals", True)))
+        self.partial_workflow_globals_var = tk.BooleanVar(value=bool(self.app_settings.get("partial_workflow_globals", True)))
         self.resolution_styles = resolution_styles_from_settings(self.app_settings)
         self.resolution_styles_summary_var = tk.StringVar(value="")
         notice_position = str(self.app_settings.get("floating_notice_position", "顶部居中"))
@@ -648,6 +659,7 @@ class ShellMixin:
         self.insert_position_var = tk.StringVar(value="below")
     def _build_ui(self):
         root_frame = ttk.Frame(self.root, style="Workspace.TFrame")
+        self.root_frame = root_frame
         root_frame.pack(fill="both", expand=True)
         status = ttk.Frame(root_frame, padding=pad(14, 5, 14, 5), style="Status.TFrame")
         status.pack(side="bottom", fill="x")
@@ -669,20 +681,53 @@ class ShellMixin:
         self.notebook.add(self.script_tab, text="脚本编辑")
         self.notebook.add(self.workflow_tab, text="工作流")
         self.notebook.add(self.log_tab, text="运行日志")
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         self._build_script_tab()
         self._build_workflow_tab()
         self._build_log_tab()
         apply_pointer_cursors(root_frame)
-    def _on_tab_changed(self, _event=None):
-        """Refresh workflow displays when the workflow tab is shown."""
-        if getattr(self, "workflow_tree", None) is None:
+    def _rebuild_ui_for_display_change(self):
+        """Recreate widgets whose pixel sizes were fixed when they were built."""
+        old_frame = getattr(self, "root_frame", None)
+        if old_frame is None:
             return
         try:
-            if self.notebook.index(self.notebook.select()) == 1:
-                self.rebuild_workflow_tree()
-        except (tk.TclError, ValueError):
-            pass
+            tab_index = self.notebook.index(self.notebook.select())
+        except (AttributeError, tk.TclError, ValueError):
+            tab_index = 0
+        log_view = self._active_log_view()
+        tree_views = {}
+        for name in ("action_tree", "workflow_tree", "global_tree"):
+            tree = getattr(self, name, None)
+            if tree is not None:
+                try:
+                    tree_views[name] = (tuple(tree.selection()), float(tree.yview()[0]))
+                except (tk.TclError, TypeError, IndexError, ValueError):
+                    pass
+        for view in ("event", "trace"):
+            job = getattr(self, f"_{view}_view_job", None)
+            if job is not None:
+                self.root.after_cancel(job)
+            self._flush_log_view(view)
+        event_buffer = self._event_view_buffer
+        trace_buffer = self._trace_view_buffer
+        old_frame.destroy()
+        self._build_ui()
+        self._event_view_buffer = event_buffer
+        self._trace_view_buffer = trace_buffer
+        self.rebuild_action_tree()
+        self.rebuild_workflow_tree()
+        for name, (selection, top) in tree_views.items():
+            tree = getattr(self, name)
+            selected = tuple(row for row in selection if tree.exists(row))
+            if selected:
+                tree.selection_set(selected)
+            tree.yview_moveto(top)
+        self._sync_activation_ui_from_script()
+        self._refresh_hotkey_summary()
+        self.refresh_script_files()
+        self.refresh_workflow_files()
+        self.notebook.select(tab_index)
+        self._show_log_view(log_view)
     def _build_sidebar(self, parent):
         # Keep the configuration panel usable on shorter screens. The inner
         # frame keeps its existing layout while the canvas provides vertical
@@ -726,6 +771,9 @@ class ShellMixin:
         self.record_button.pack(fill="x", ipady=px(3))
         self.run_button = ttk.Button(sidebar, text="执行当前脚本    F9", command=self.run_current_script, bootstyle="success")
         self.run_button.pack(fill="x", ipady=px(3), pady=pad(5, 0))
+        self.script_pause_button = ttk.Button(sidebar, text="暂停", command=self.toggle_execution_pause,
+                                              style="SidebarGhost.TButton", state="disabled")
+        self.script_pause_button.pack(fill="x", pady=pad(5, 0))
         ttk.Button(sidebar, text="紧急停止    F12", command=self.stop_all, style="SidebarGhost.TButton").pack(fill="x", pady=pad(5, 0))
         ttk.Button(
             sidebar, text="游戏设置说明…", command=self.open_game_setup_note,
@@ -782,35 +830,6 @@ class ShellMixin:
             "桌面自动记录坐标；绑定游戏窗口，或在游戏中按 F8，可自动记录锁中心的视角转向。",
             background=COLOR_SIDEBAR,
         ).pack(side="left", padx=pad(7, 0))
-        # 标题与控件分两行：单行会把标题、帮助徽章、数字框、单位框和按钮
-        # 全部挤在 318px 内，高 DPI 下整行溢出侧栏，按钮文字被裁切。
-        interval_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        interval_title.pack(fill="x", pady=pad(0, 5))
-        ttk.Label(interval_title, text="桌面轨迹间隔", style="Sidebar.TLabel").pack(side="left")
-        self._help_badge(
-            interval_title, "录制桌面鼠标移动时，相邻轨迹点的最小间隔；数值越小记录越细。",
-            background=COLOR_SIDEBAR,
-        ).pack(side="left", padx=pad(6, 0))
-        interval_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        interval_row.pack(fill="x", pady=pad(0, 15))
-        self.interval_spin = ttk.Spinbox(
-            interval_row, from_=10, to=500, increment=5,
-            textvariable=self.interval_var, width=7,
-        )
-        self.interval_spin.pack(side="left")
-        ttk.Combobox(
-            interval_row, textvariable=self.interval_var.unit, values=TIME_UNITS,
-            state="readonly", width=4,
-        ).pack(side="left", padx=pad(5, 0))
-        self.interval_edit_button = ttk.Button(
-            interval_row, text="修改", width=5, style="SidebarGhost.TButton",
-            command=lambda: self._toggle_locked_spinbox(
-                self.interval_spin, self.interval_edit_button, self._settings_changed,
-            ),
-        )
-        self.interval_edit_button.pack(side="left", padx=pad(8, 0))
-        self.interval_spin.configure(state="disabled")
-
         ttk.Separator(sidebar).pack(fill="x", pady=px(4))
         target_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         target_title.pack(fill="x", pady=pad(16, 7))
@@ -900,6 +919,15 @@ class ShellMixin:
             activate_row, "勾选后每次执行前激活目标窗口；取消勾选只停止前置，不会清除已保存的目标窗口。",
             background=COLOR_SIDEBAR,
         ).pack(side="left", padx=pad(6, 0))
+        ttk.Label(sidebar, text="局部执行时启用", style="SidebarMuted.TLabel").pack(anchor="w")
+        for label, variable in (
+            ("脚本全局模块", self.partial_script_globals_var),
+            ("工作流全局模块", self.partial_workflow_globals_var),
+        ):
+            tk.Checkbutton(
+                sidebar, text=label, variable=variable,
+                command=self._settings_changed, **check_style,
+            ).pack(anchor="w")
         activation_toggle_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
         activation_toggle_row.pack(fill="x", pady=pad(0, 4))
         tk.Checkbutton(
@@ -927,6 +955,16 @@ class ShellMixin:
             activation_row, text="跟随目标", command=self.unbind_activation_window,
             width=8, style="SidebarGhost.TButton",
         ).pack(side="left", padx=pad(8, 0))
+        activation_interval_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
+        activation_interval_row.pack(fill="x", pady=pad(0, 8))
+        ttk.Label(activation_interval_row, text="两次前置间隔", style="SidebarMuted.TLabel").pack(side="left")
+        interval_entry = ttk.Entry(
+            activation_interval_row, textvariable=self.activation_interval_var, width=9,
+        )
+        interval_entry.pack(side="left", padx=pad(8, 4))
+        interval_entry.bind("<FocusOut>", self._save_activation_interval)
+        interval_entry.bind("<Return>", self._save_activation_interval)
+        ttk.Label(activation_interval_row, text="ms", style="SidebarMuted.TLabel").pack(side="left")
         # 同“桌面轨迹间隔”：标题与控件分两行，避免高 DPI 下控件被挤出侧栏。
         repeat_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         repeat_title.pack(fill="x", pady=pad(0, 7))
@@ -1036,7 +1074,7 @@ class ShellMixin:
             style="SidebarMuted.TLabel",
         ).pack(anchor="w", pady=pad(0, 4))
 
-        ttk.Label(sidebar, text="专注执行：F12 停止；无响应时按 Ctrl + Alt + Del。",
+        ttk.Label(sidebar, text="专注执行：F8 暂停/继续，F12 停止；无响应时按 Ctrl + Alt + Del。",
                   wraplength=px(318), style="SidebarMuted.TLabel").pack(anchor="w", pady=pad(10, 0))
 
         bind_sidebar_wheel(sidebar)
@@ -1111,6 +1149,7 @@ class ShellMixin:
         return (
             ("◷ 延时", "add_delay", "ScriptTool.TButton"),
             ("◎ 重新绑定", "add_rebind_window", "ScriptTool.TButton"),
+            ("▣ 前置窗口", "add_activate_window", "ScriptTool.TButton"),
             ("⌨ 键盘", "add_key", "ScriptTool.TButton"),
             ("T 文本", "add_text", "ScriptTool.TButton"),
             ("i 提醒", "add_notice", "ScriptTool.TButton"),
@@ -1384,6 +1423,11 @@ class ShellMixin:
             workflow_action_bar, text="运行工作流", command=self.run_workflow,
             bootstyle="success",
         ).pack(side="right")
+        self.workflow_pause_button = ttk.Button(
+            workflow_action_bar, text="暂停", command=self.toggle_execution_pause,
+            style="CompactGhost.TButton", state="disabled",
+        )
+        self.workflow_pause_button.pack(side="right", padx=pad(0, 8))
         ttk.Checkbutton(
             workflow_action_bar, text="测试模式", variable=self.workflow_test_mode_var,
             bootstyle="round-toggle",
@@ -1409,6 +1453,32 @@ class ShellMixin:
         ttk.Label(start_delay_bar, text="后开始（从头运行和从选中行运行均生效）",
                   style="Muted.TLabel").pack(side="left")
         self._toggle_workflow_start_delay_control(persist=False)
+
+        resolution_bar = ttk.Frame(self.workflow_tab, padding=pad(16, 0, 16, 8), style="Workspace.TFrame")
+        resolution_bar.pack(fill="x")
+        ttk.Label(resolution_bar, text="启动时分辨率/缩放").pack(side="left")
+        self.workflow_start_resolution_combo = ttk.Combobox(
+            resolution_bar, textvariable=self.workflow_start_resolution_var,
+            state="readonly", width=18, postcommand=self._refresh_workflow_resolution_options,
+        )
+        self.workflow_start_resolution_combo.pack(side="left", padx=pad(8, 20))
+        self.workflow_start_resolution_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("start"),
+        )
+        ttk.Label(resolution_bar, text="结束或停止后恢复为").pack(side="left")
+        self.workflow_end_resolution_combo = ttk.Combobox(
+            resolution_bar, textvariable=self.workflow_end_resolution_var,
+            state="readonly", width=18, postcommand=self._refresh_workflow_resolution_options,
+        )
+        self.workflow_end_resolution_combo.pack(side="left", padx=pad(8, 0))
+        self.workflow_end_resolution_combo.bind(
+            "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("end"),
+        )
+        ttk.Button(
+            resolution_bar, text="编辑分辨率样式", command=self._configure_resolution_styles,
+            style="CompactGhost.TButton",
+        ).pack(side="left", padx=pad(10, 0))
+        self._refresh_workflow_resolution_options()
 
         restart_default_bar = ttk.Frame(self.workflow_tab, padding=pad(16, 0, 16, 8), style="Workspace.TFrame")
         restart_default_bar.pack(fill="x")
@@ -1542,6 +1612,8 @@ class ShellMixin:
                    style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1), style="CompactGhost.TButton").pack(side="left", padx=pad(5, 2))
         ttk.Button(edit_toolbar, text="下移", command=lambda: self.move_workflow_step(1), style="CompactGhost.TButton").pack(side="left")
+        ttk.Button(edit_toolbar, text="移到行…", command=self.move_workflow_step_to_row,
+                   style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(edit_toolbar, text="删除", command=self.delete_workflow_step, bootstyle="danger-outline").pack(side="left", padx=px(5))
         self.workflow_delete_undo_button = ttk.Button(
             edit_toolbar, text="↶ 撤销删除", command=self.undo_delete_workflow_step,

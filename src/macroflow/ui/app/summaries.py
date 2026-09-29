@@ -14,7 +14,7 @@ from macroflow.core.storage import (
     update_module_object,
 )
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -213,6 +213,9 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return action_kind_label(kind, "延时"), f"等待 {action.get('ms', 0)} ms", delay
     if kind == "rebind_window":
         return action_kind_label(kind, "重新绑定"), "根据已保存的目标窗口信息重新获取窗口", delay
+    if kind == "activate_window":
+        signature = action.get("window") or {}
+        return action_kind_label(kind, "前置窗口"), str(signature.get("title") or signature.get("process_path") or "未设置"), delay
     if kind == "key":
         state = "按下" if action.get("down") else "松开"
         return action_kind_label(kind, "键盘"), f"{state} {action.get('name', action.get('vk'))}", delay

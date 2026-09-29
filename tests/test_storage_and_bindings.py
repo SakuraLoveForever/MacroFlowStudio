@@ -14,7 +14,7 @@ import os
 import tempfile
 import unittest
 from unittest.mock import Mock, call, patch
-from macroflow.core.models import ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN, DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow, clone_actions_with_new_ids, ensure_action_ids, is_global_script
+from macroflow.core.models import ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN, DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow, clone_actions_with_new_ids, ensure_action_ids, is_global_script
 from macroflow.core.resolution import DEFAULT_RESOLUTION_STYLES, build_resolution_action, normalize_resolution_styles, resolve_resolution_style
 from macroflow.core.storage import available_script_path, backup_script, display_path, load_app_settings, load_module_images_dir, load_module_objects, load_script, load_workflow, migrate_workflow_templates, module_image_inventory, registered_module_object, remap_hotkey_script_bindings, save_app_settings, save_module_images_dir, save_module_objects, save_script, save_workflow
 from macroflow.execution.player import MacroPlayer
@@ -185,11 +185,8 @@ class StorageTests(unittest.TestCase):
         clones = clone_actions_with_new_ids(actions)
         self.assertEqual(clones[1]["jump_action_id"], clones[0][ACTION_ID_KEY])
 
-    def test_default_move_interval_is_20_ms(self):
-        self.assertEqual(DEFAULT_MOUSE_MOVE_INTERVAL_MS, 20)
-        self.assertEqual(
-            MacroScript().settings["move_interval_ms"], DEFAULT_MOUSE_MOVE_INTERVAL_MS,
-        )
+    def test_default_script_has_recorded_screen_without_move_interval(self):
+        self.assertNotIn("move_interval_ms", MacroScript().settings)
         self.assertEqual(MacroScript().settings["recorded_screen"], DEFAULT_RECORDED_SCREEN)
 
     def test_script_round_trip(self):
@@ -374,7 +371,7 @@ class StorageTests(unittest.TestCase):
             with patch("macroflow.core.storage.SETTINGS_PATH", path):
                 save_app_settings(value)
                 loaded = load_app_settings()
-            self.assertEqual(loaded["move_interval_ms"], 125)
+            self.assertNotIn("move_interval_ms", loaded)
             self.assertEqual(loaded["repeat"], 7)
             self.assertEqual(loaded["bound_window"]["title"], "测试窗口")
             self.assertEqual(loaded["workflow_draft"]["name"], "上次流程")
@@ -576,20 +573,25 @@ class BindingTests(unittest.TestCase):
             r"^\[\d{2}:\d{2}:\d{2}\] \[鼠标 958,415\] 全局检测已点击\n$",
         )
 
-    def test_every_floating_log_line_contains_current_cursor_position(self):
+    def test_floating_log_removes_noise_and_adjacent_duplicates(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
-        app.mini_steps_text = Mock()
-        app.mini_steps_text.winfo_exists.return_value = True
-        app.mini_steps_text.index.return_value = "2.0"
+        app.mini_event_var = Mock()
 
         with package_patch('app', 'get_cursor_pos', return_value=(640, 360)):
             app._append_mini_step("工作流继续")
+            app._append_mini_step("工作流继续")
 
-        inserted = app.mini_steps_text.insert.call_args.args[1]
-        self.assertRegex(
-            inserted,
-            r"^\d{2}:\d{2}:\d{2}  \[鼠标 640,360\] 工作流继续\n$",
-        )
+        self.assertEqual(app.mini_event_var.set.call_args.args[0], "工作流继续")
+        self.assertEqual(app.mini_event_var.set.call_count, 1)
+
+    def test_floating_log_bounds_long_events_but_keeps_result_at_end(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.mini_event_var = Mock()
+        app._append_mini_step('模块 宝箱：' + '检测区域说明' * 30 + '超时 30s')
+        shown = app.mini_event_var.set.call_args.args[0]
+        self.assertLessEqual(len(shown), 48)
+        self.assertTrue(shown.startswith('模块 宝箱：'))
+        self.assertTrue(shown.endswith('超时 30s'))
 
     def test_saved_binding_rebinds_restarted_window_by_foreground_class(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -782,6 +784,29 @@ class ResolutionActionTests(unittest.TestCase):
         get_screen.assert_called_once_with(456)
         self.assertEqual(player._target_screen, after)
 
+    def test_resolution_action_refreshes_scaling_before_the_next_click(self):
+        source = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        before = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        after = {"left": 0, "top": 0, "width": 1280, "height": 720}
+        player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_playback_screen_rect', side_effect=[before, after]), \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(1920, 1080, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=100), \
+             package_patch('player', 'set_display_resolution_for_window', return_value=True), \
+             package_patch('player', 'set_display_scaling_for_window', return_value=True), \
+             package_patch('player', 'get_cursor_pos', return_value=(0, 0)), \
+             package_patch('player', 'send_move_absolute') as move, \
+             package_patch('player', 'send_button'):
+            player.play([
+                {
+                    "type": "set_resolution", "width": 1280, "height": 720,
+                    "refresh_rate": 60, "scale_percent": 100,
+                },
+                {"type": "click", "x": 960, "y": 540, "hold_ms": 0},
+            ], source_screen=source)
+        move.assert_called_once_with(640, 360)
+
     def test_player_rejects_resolution_action_without_reference_or_monitor(self):
         player = MacroPlayer()
 
@@ -856,6 +881,24 @@ class ResolutionActionTests(unittest.TestCase):
         set_scale.assert_called_once_with(999, 100)
         self.assertTrue(any("无需切换分辨率" in text for text in logs))
         self.assertTrue(any("不支持程序化修改缩放" in text for text in logs))
+
+    def test_matching_resolution_and_scaling_do_not_refresh_display(self):
+        player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        player._wait = Mock()
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_display_resolution_for_window', return_value=(1920, 1080, 59)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=100), \
+             package_patch('player', 'set_display_resolution_for_window') as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window') as set_scale, \
+             package_patch('player', 'get_playback_screen_rect') as get_screen:
+            player._execute_action({
+                "type": "set_resolution", "width": 1920, "height": 1080,
+                "refresh_rate": 60, "scale_percent": 100,
+            }, None)
+        set_mode.assert_not_called()
+        set_scale.assert_not_called()
+        player._wait.assert_not_called()
+        get_screen.assert_not_called()
 
     def test_player_rejects_resolution_action_without_any_resolvable_monitor(self):
         player = MacroPlayer()

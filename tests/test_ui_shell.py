@@ -99,6 +99,168 @@ class GameSetupNoteTests(unittest.TestCase):
 
 
 class StartupVisibilityTests(unittest.TestCase):
+    def test_new_execution_mini_has_compact_status_rows_and_fixed_pixel_fonts(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.mini_window = None
+        app._hide_operation_mini = Mock()
+        app._execution_mini_position = Mock(return_value=(100, 200))
+        app._bind_operation_mini_drag = Mock()
+        app._update_operation_mini = Mock()
+        app.mini_context_var = Mock()
+        app.mini_elapsed_var = Mock()
+        app.mini_count_var = Mock()
+        app.mini_window_var = Mock()
+        app.mini_event_var = Mock()
+        with patch('macroflow.ui.app.guards.tk.Toplevel'), \
+             patch('macroflow.ui.app.guards.ttk.Frame'), \
+             patch('macroflow.ui.app.guards.ttk.Label'), \
+             patch('macroflow.ui.app.guards.tk.Label') as labels, \
+             patch('macroflow.ui.app.guards.tk.Text') as events, \
+             patch('macroflow.ui.app.guards.make_window_no_activate'), \
+             patch('macroflow.ui.app.guards.set_dark_titlebar'), \
+             patch('macroflow.ui.app.guards.set_rounded_window'):
+            app._show_operation_mini('execution')
+        events.assert_not_called()
+        self.assertEqual(len(labels.call_args_list), 3)
+        self.assertEqual(labels.call_args_list[0].kwargs['height'], 1)
+        self.assertEqual(labels.call_args_list[1].kwargs['textvariable'], app.mini_window_var)
+        self.assertEqual(labels.call_args_list[2].kwargs['textvariable'], app.mini_event_var)
+        self.assertTrue(all(call.kwargs['font'][1] < 0 for call in labels.call_args_list))
+
+    def test_mini_recovers_size_mapping_and_topmost_after_display_change(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.mini_window = Mock()
+        app.mini_window.winfo_id.return_value = 123
+        app.mini_window.winfo_ismapped.return_value = False
+        app._execution_mini_position = Mock(return_value=(100, 200))
+        with patch('macroflow.ui.app.guards.get_window_rect', return_value=(100, 200, 840, 176)), \
+             patch('macroflow.ui.app.guards.make_window_no_activate') as topmost, \
+             patch('macroflow.ui.app.guards.show_window_no_activate') as show, \
+             patch('macroflow.ui.app.guards.set_rounded_window'):
+            app._reposition_operation_mini()
+        app.mini_window.geometry.assert_called_once_with('420x100+100+200')
+        topmost.assert_called_once_with(123)
+        show.assert_called_once_with(123)
+
+    def test_compact_progress_keeps_workflow_name_and_repeat_fraction(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.mini_mode = 'execution'
+        app.mini_count_var = Mock()
+        app._set_execution_progress('工作流 2/8 · 每日任务\n共执行 10 次 · 当前第 3/10 次 · F12 停止')
+        self.assertEqual(app.mini_count_var.set.call_args.args[0],
+                         '工作流 2/8 | 每日任务 | 3/10 次')
+
+    def test_display_rebuild_keeps_current_tab_and_log_messages(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        old_frame = Mock()
+        app.root_frame = old_frame
+        app.notebook = Mock()
+        app.notebook.select.return_value = "old-workflow-tab"
+        app.notebook.index.return_value = 1
+        app._active_log_view = Mock(return_value="trace")
+        app._event_view_buffer = ["event\n"]
+        app._trace_view_buffer = ["trace\n"]
+        app._flush_log_view = Mock()
+        old_action_tree, new_action_tree = Mock(), Mock()
+        old_action_tree.selection.return_value = ("2",)
+        old_action_tree.yview.return_value = (0.4, 0.7)
+        app.action_tree = old_action_tree
+        def build_ui():
+            app._event_view_buffer = []
+            app._trace_view_buffer = []
+            app.action_tree = new_action_tree
+        app._build_ui = Mock(side_effect=build_ui)
+        app.rebuild_action_tree = Mock()
+        app.rebuild_workflow_tree = Mock()
+        app._sync_activation_ui_from_script = Mock()
+        app._refresh_hotkey_summary = Mock()
+        app.refresh_script_files = Mock()
+        app.refresh_workflow_files = Mock()
+        app._show_log_view = Mock()
+
+        app._rebuild_ui_for_display_change()
+
+        old_frame.destroy.assert_called_once_with()
+        app._build_ui.assert_called_once_with()
+        self.assertEqual(app._event_view_buffer, ["event\n"])
+        self.assertEqual(app._trace_view_buffer, ["trace\n"])
+        app.notebook.select.assert_called_with(1)
+        app._show_log_view.assert_called_once_with("trace")
+        new_action_tree.selection_set.assert_called_once_with(("2",))
+        new_action_tree.yview_moveto.assert_called_once_with(0.4)
+
+    def test_position_preview_drags_from_its_body_and_saves_on_release(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.execution_mini_position_editor = None
+        app.execution_mini_position = []
+        app._execution_mini_position = Mock(return_value=(100, 200))
+        app._persist_sidebar_settings = Mock()
+        preview, body, label = Mock(), Mock(), Mock()
+        preview.winfo_x.side_effect = [120, 140]
+        preview.winfo_y.side_effect = [230, 260]
+        with patch("macroflow.ui.app.guards.tk.Toplevel", return_value=preview), \
+             patch("macroflow.ui.app.guards.ttk.Frame", return_value=body), \
+             patch("macroflow.ui.app.guards.ttk.Label", return_value=label), \
+             patch("macroflow.ui.app.guards.ttk.Button", return_value=Mock()):
+            app._adjust_execution_mini_position()
+
+        callbacks = {entry.args[0]: entry.args[1] for entry in body.bind.call_args_list}
+        callbacks["<ButtonPress-1>"](Mock(x_root=300, y_root=400))
+        callbacks["<B1-Motion>"](Mock(x_root=320, y_root=430))
+        preview.geometry.assert_any_call("+140+260")
+        callbacks["<ButtonRelease-1>"](Mock())
+        self.assertEqual(app.execution_mini_position, [140, 260])
+        app._persist_sidebar_settings.assert_called_once_with()
+
+    def test_running_mini_can_be_dragged_and_remembers_position(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.mini_window = Mock()
+        app.mini_window.winfo_id.return_value = 123
+        app.execution_mini_position = []
+        app._execution_mini_position = Mock(return_value=(120, 230))
+        app._persist_sidebar_settings = Mock()
+        drag_surface = Mock()
+        with patch("macroflow.ui.app.guards.get_window_rect", return_value=(100, 200, 420, 88)), \
+             patch("macroflow.ui.app.guards.move_window_no_activate") as move:
+            app._bind_operation_mini_drag(drag_surface)
+            callbacks = {entry.args[0]: entry.args[1] for entry in drag_surface.bind.call_args_list}
+            callbacks["<ButtonPress-1>"](Mock(x_root=110, y_root=210))
+            callbacks["<B1-Motion>"](Mock(x_root=130, y_root=240))
+            callbacks["<ButtonRelease-1>"](Mock())
+        move.assert_any_call(123, 120, 230)
+        self.assertEqual(app.execution_mini_position, [120, 230])
+        app._persist_sidebar_settings.assert_called_once_with()
+
+    def test_operation_mini_keeps_reference_footprint_after_dpi_change(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        with patch("macroflow.ui.app.guards.px", side_effect=lambda value: value * 2):
+            self.assertEqual(app._operation_mini_size(), (420, 100))
+
+    def test_operation_mini_keeps_corner_margin_after_dpi_change(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.winfo_id.return_value = 123
+        app.execution_mini_position = []
+        area = {'left': 0, 'top': 0, 'width': 1000, 'height': 800}
+        with package_patch('app', 'get_monitor_work_area_for_window', return_value=area), \
+             package_patch('app', 'is_window', return_value=True), \
+             patch("macroflow.ui.app.guards.px", side_effect=lambda value: value * 2):
+            self.assertEqual(app._execution_mini_position(), (556, 628))
+
+    def test_operation_mini_moves_back_to_corner_after_resolution_change(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.mini_window = Mock()
+        app.mini_window.winfo_id.return_value = 123
+        app._execution_mini_position = Mock(return_value=(556, 640))
+        with patch("macroflow.ui.app.guards.get_window_rect", return_value=(900, 700, 420, 100)), \
+             patch("macroflow.ui.app.guards.move_window_no_activate") as move, \
+             patch("macroflow.ui.app.guards.make_window_no_activate"):
+            app._reposition_operation_mini()
+        move.assert_called_once_with(123, 556, 640)
+
     def test_execution_mini_position_is_clamped_to_the_app_monitor(self):
         # 多屏下必须按"软件所在显示器"的可用区域收敛，不能用虚拟桌面尺寸，
         # 否则小窗会被推到屏幕外面。
@@ -197,6 +359,7 @@ class CloseActionTests(unittest.TestCase):
         for name in (
             "sound_enabled_var", "mini_window_enabled_var", "execution_mini_enabled_var",
             "focus_mode_enabled_var", "activate_target_enabled_var",
+            "partial_script_globals_var", "partial_workflow_globals_var",
             "timed_backup_enabled_var", "windows_startup_enabled_var",
             "start_minimized_to_tray_var", "startup_run_workflow_var",
             "activation_enabled_var",

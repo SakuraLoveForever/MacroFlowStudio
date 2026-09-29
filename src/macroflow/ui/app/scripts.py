@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -283,7 +283,6 @@ class ScriptsMixin:
         self.script_requires_new_file = False
         self.script_name_var.set(self.script.name)
         self.record_mode_var.set("auto")
-        self.interval_var.set(DEFAULT_MOUSE_MOVE_INTERVAL_MS)
         self.script_category_var.set("关卡")
         self.dirty = False
         self._clear_action_undo()
@@ -305,7 +304,6 @@ class ScriptsMixin:
             "script_path": self.script_path,
             "script_requires_new_file": self.script_requires_new_file,
             "name": self.script_name_var.get(),
-            "interval": self.interval_var.get(),
             "category": self.script_category_var.get(),
             "dirty": self.dirty,
             "action_undo": copy.deepcopy(history.undo),
@@ -332,7 +330,6 @@ class ScriptsMixin:
         self.script_path = snapshot["script_path"]
         self.script_requires_new_file = snapshot["script_requires_new_file"]
         self.script_name_var.set(snapshot["name"])
-        self.interval_var.set(snapshot["interval"])
         self.script_category_var.set(snapshot["category"])
         self.dirty = snapshot["dirty"]
         history = self._action_history
@@ -386,7 +383,7 @@ class ScriptsMixin:
         )
         menu.add_command(
             label="▶ 从此行开始运行",
-            command=lambda: self.run_current_script(start_index=index),
+            command=lambda: self.run_current_script(start_index=index, partial_run=True),
         )
         menu.add_command(
             label="▶ 单独执行此动作…",
@@ -605,11 +602,26 @@ class ScriptsMixin:
         self.execution_started_at = time.perf_counter()
         self._set_execution_progress(
             f"单独测试 · {script.name} · 共执行 {repeats} 次 · 正在准备 · F12 停止")
+        workflow = getattr(self, "workflow", None)
         self.worker = threading.Thread(
             target=self._run_script_worker,
             args=(list(script.actions), repeats, hwnd, activation_hwnd,
                   source_screen, focus_enabled, activate_target, 0),
-            kwargs={"trigger": trigger, "script_name": script.name},
+            kwargs={
+                "trigger": trigger, "script_name": script.name,
+                "script_globals_enabled": (
+                    bool(self.partial_script_globals_var.get())
+                    if hasattr(self, "partial_script_globals_var") else True
+                ),
+                "workflow_global_modules": (
+                    [dict(module) for module in self._global_module_steps()]
+                    if not hasattr(self, "partial_workflow_globals_var")
+                    or self.partial_workflow_globals_var.get() else []
+                ),
+                "start_resolution": dict(getattr(workflow, "start_resolution", None) or {}),
+                "end_resolution": dict(getattr(workflow, "end_resolution", None) or {}),
+                "activation_interval_ms": int(script.settings.get("activation_window_interval_ms", 0)),
+            },
             daemon=True,
         )
         self.worker.start()
@@ -637,13 +649,6 @@ class ScriptsMixin:
         self.script_requires_new_file = bool(draft.get("script_requires_new_file", False))
         self.script_name_var.set(script.name)
         self.record_mode_var.set("auto")
-        try:
-            interval = max(10, min(500, int(script.settings.get(
-                "move_interval_ms", DEFAULT_MOUSE_MOVE_INTERVAL_MS,
-            ))))
-        except (TypeError, ValueError):
-            interval = DEFAULT_MOUSE_MOVE_INTERVAL_MS
-        self.interval_var.set(interval)
         self.script_category_var.set(script_category_label(
             script_category_for_path(
                 self.script_path, getattr(self, "app_settings", None), script,
@@ -685,7 +690,6 @@ class ScriptsMixin:
             configured = bool(self.activation_enabled_var.get() or self.saved_activation_signature)
         settings.update({
             "record_mode": "auto",
-            "move_interval_ms": int(self.interval_var.get()),
             "activation_window_enabled": bool(self.activation_enabled_var.get()),
             "activation_window": (
                 dict(self.saved_activation_signature) if self.saved_activation_signature else None
@@ -829,9 +833,6 @@ class ScriptsMixin:
             self.script_requires_new_file = False
             self.script_name_var.set(self.script.name)
             self.record_mode_var.set("auto")
-            self.interval_var.set(int(self.script.settings.get(
-                "move_interval_ms", DEFAULT_MOUSE_MOVE_INTERVAL_MS,
-            )))
             # 类别显示脚本自己的类别：以所在目录为准（保存时按类别进目录），
             # 文件不在任何脚本目录内才用脚本里保存的类别。
             self.script_category_var.set(script_category_label(
@@ -1155,6 +1156,20 @@ class ScriptsMixin:
             self._insert_action({"type": "delay", "ms": value, "delay_ms": 0})
     def add_rebind_window(self):
         self._insert_action({"type": "rebind_window", "delay_ms": 0})
+    def add_activate_window(self):
+        selected = WindowPicker(
+            self.root, title="选择要前置的窗口", confirm_text="前置此窗口",
+        ).show()
+        if selected:
+            self._insert_action({
+                "type": "activate_window",
+                "window": {
+                    "title": selected.title,
+                    "class_name": selected.class_name,
+                    "process_path": selected.process_path,
+                },
+                "delay_ms": 0,
+            })
     def add_jump(self):
         ensure_action_ids(self.script.actions)
         action = JumpActionDialog(self.root, actions=self.script.actions).show()

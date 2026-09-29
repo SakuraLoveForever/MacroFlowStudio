@@ -87,9 +87,14 @@ _class_name = "MacroFlowDetectOverlay"
 
 _lock = threading.Lock()
 _pending: tuple[int, int, int, int, int, int, str | None] | None = None
+_pending_by_hwnd: dict[int, tuple[int, int, int, int, int, int, str | None] | None] = {}
 _window_hwnd: int | None = None
 _window_thread: threading.Thread | None = None
 _ready = threading.Event()
+_key_windows: dict[str, int] = {}
+_key_threads: dict[str, threading.Thread] = {}
+_key_ready: dict[str, threading.Event] = {}
+_blink_active_hwnds: set[int] = set()
 
 
 def _monitor_dpi(x: int, y: int) -> int:
@@ -153,7 +158,7 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         rect = wintypes.RECT()
         _user32.GetClientRect(hwnd, ctypes.byref(rect))
         with _lock:
-            data = _pending
+            data = _pending_by_hwnd.get(int(hwnd), _pending)
             border_color = data[4] if data else DEFAULT_COLOR
             label = data[6] if data else None
         # 背景填充为键色（透明），再画一圈细边框。
@@ -187,12 +192,19 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         _user32.EndPaint(hwnd, ctypes.byref(paint))
         return 0
     if msg == WM_TIMER:
+        if wparam == 2:
+            if int(hwnd) in _blink_active_hwnds:
+                visible = bool(_user32.IsWindowVisible(hwnd))
+                _user32.ShowWindow(hwnd, SW_HIDE if visible else SW_SHOWNOACTIVATE)
+            return 0
         _user32.KillTimer(hwnd, 1)
+        _user32.KillTimer(hwnd, 2)
+        _blink_active_hwnds.discard(int(hwnd))
         _user32.ShowWindow(hwnd, SW_HIDE)
         return 0
     if msg == WM_OVERLAY_SHOW:
         with _lock:
-            data = _pending
+            data = _pending_by_hwnd.get(int(hwnd), _pending)
         if data is None:
             return 0
         left, top, width, height, _color, duration_ms, label = data
@@ -207,23 +219,41 @@ def _wnd_proc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
             True,
         )
         _user32.InvalidateRect(hwnd, None, True)
-        _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        if label:
+            if int(hwnd) not in _blink_active_hwnds:
+                _blink_active_hwnds.add(int(hwnd))
+                _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+                _user32.SetTimer(hwnd, 2, 250, None)
+        else:
+            _blink_active_hwnds.discard(int(hwnd))
+            _user32.KillTimer(hwnd, 2)
+            _user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
         _user32.SetTimer(hwnd, 1, max(50, duration_ms), None)
         return 0
     if msg == WM_OVERLAY_HIDE:
+        _blink_active_hwnds.discard(int(hwnd))
+        _user32.KillTimer(hwnd, 1)
+        _user32.KillTimer(hwnd, 2)
         _user32.ShowWindow(hwnd, SW_HIDE)
         return 0
     if msg == WM_CLOSE:
+        _blink_active_hwnds.discard(int(hwnd))
+        _user32.KillTimer(hwnd, 1)
+        _user32.KillTimer(hwnd, 2)
         _user32.DestroyWindow(hwnd)
+        _user32.PostQuitMessage(0)
         return 0
     return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
-def _window_loop() -> None:
+_wnd_proc_callback = WNDPROC(_wnd_proc)
+
+
+def _window_loop(key: str | None = None, ready: threading.Event | None = None) -> None:
     global _window_hwnd
-    wnd_proc = WNDPROC(_wnd_proc)
+    ready = ready or _ready
     wc = WNDCLASSW()
-    wc.lpfnWndProc = wnd_proc
+    wc.lpfnWndProc = _wnd_proc_callback
     wc.hInstance = wintypes.HINSTANCE(ctypes.windll.kernel32.GetModuleHandleW(None))
     wc.lpszClassName = _class_name
     _user32.RegisterClassW(ctypes.byref(wc))
@@ -234,23 +264,54 @@ def _window_loop() -> None:
         0, 0, 1, 1, None, None, wc.hInstance, None,
     )
     if not hwnd:
+        if key is not None:
+            with _lock:
+                if _key_ready.get(key) is ready:
+                    _key_threads.pop(key, None)
+                    _key_ready.pop(key, None)
+        ready.set()
         return
     # 高亮框对用户可见，但不能出现在下一轮屏幕截图中；否则边框会污染模板，
     # 造成“命中 → 显示倒计时 → 下一帧未命中 → 计时重置”的自干扰循环。
     _user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
     _user32.SetLayeredWindowAttributes(hwnd, KEY_COLOR, 0, LWA_COLORKEY)
     with _lock:
-        _window_hwnd = int(hwnd)
-    _ready.set()
+        if key is None:
+            _window_hwnd = int(hwnd)
+        else:
+            _key_windows[key] = int(hwnd)
+            _pending_by_hwnd[int(hwnd)] = None
+    ready.set()
     message = wintypes.MSG()
     while _user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
         _user32.TranslateMessage(ctypes.byref(message))
         _user32.DispatchMessageW(ctypes.byref(message))
     _user32.DestroyWindow(hwnd)
+    if key is not None:
+        with _lock:
+            _pending_by_hwnd.pop(int(hwnd), None)
+            if _key_windows.get(key) == int(hwnd):
+                _key_windows.pop(key, None)
+                _key_threads.pop(key, None)
+                _key_ready.pop(key, None)
 
 
-def _ensure_window() -> int | None:
+def _ensure_window(key: str | None = None) -> int | None:
     global _window_thread
+    if key is not None:
+        with _lock:
+            hwnd = _key_windows.get(key)
+            if hwnd is not None:
+                return hwnd
+            ready = _key_ready.get(key)
+            if ready is None:
+                ready = _key_ready[key] = threading.Event()
+                thread = threading.Thread(target=_window_loop, args=(key, ready), daemon=True)
+                _key_threads[key] = thread
+                thread.start()
+        ready.wait(2.0)
+        with _lock:
+            return _key_windows.get(key)
     with _lock:
         hwnd = _window_hwnd
         if hwnd is None and _window_thread is None:
@@ -265,7 +326,7 @@ def _ensure_window() -> int | None:
 
 def show_overlay(x: int, y: int, width: int, height: int,
                  color: int = DEFAULT_COLOR, duration_ms: int = DEFAULT_DURATION_MS,
-                 label: str | None = None) -> None:
+                 label: str | None = None, key: str | None = None) -> None:
     """Show a thin border around (x, y, width, height) for a short while.
 
     Coordinates are physical desktop pixels. Repeated calls refresh the
@@ -273,20 +334,32 @@ def show_overlay(x: int, y: int, width: int, height: int,
     """
     if width <= 0 or height <= 0:
         return
-    hwnd = _ensure_window()
+    hwnd = _ensure_window(key)
     if not hwnd:
         return
     with _lock:
         global _pending
-        _pending = (
+        data = (
             int(x), int(y), int(width), int(height), int(color), int(duration_ms),
             str(label) if label else None,
         )
+        if key is None:
+            _pending = data
+        else:
+            _pending_by_hwnd[hwnd] = data
     _user32.PostMessageW(hwnd, WM_OVERLAY_SHOW, 0, 0)
 
 
-def hide_overlay() -> None:
+def hide_overlay(key: str | None = None) -> None:
     """Hide the border immediately."""
+    if key is not None:
+        with _lock:
+            hwnd = _key_windows.pop(key, None)
+            _key_threads.pop(key, None)
+            _key_ready.pop(key, None)
+        if hwnd:
+            _user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        return
     hwnd = _ensure_window()
     if hwnd:
         _user32.PostMessageW(hwnd, WM_OVERLAY_HIDE, 0, 0)

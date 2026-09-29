@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -102,12 +102,10 @@ class RecordingMixin:
                 hwnd = foreground.hwnd
                 relative_requires_center_lock = True
         try:
-            interval = max(10, min(500, int(self.interval_var.get())))
-            self.interval_var.set(interval)
             if not force_english_input(hwnd):
                 raise RuntimeError("无法切换到英语输入法，请确认系统已安装英语（美国）键盘。")
             self.recorder.start(
-                "auto", interval,
+                "auto",
                 target_hwnd=hwnd,
                 target_relative_enabled=True,
                 relative_requires_center_lock=relative_requires_center_lock,
@@ -133,7 +131,7 @@ class RecordingMixin:
         target_note = "已绑定目标" if self.saved_window_signature else (
             "正在识别锁中心游戏" if relative_requires_center_lock else "桌面坐标"
         )
-        self._log(f"开始智能录制：{target_note}；桌面间隔 {interval} ms，游戏转向间隔不高于 16 ms。")
+        self._log(f"开始智能录制：{target_note}；键鼠事件到达时立即记录。")
         self._log("录制前已强制切换为英语（美国）输入法，并关闭中文输入状态。")
         self._sound("record_start")
         self._show_recording_mini()

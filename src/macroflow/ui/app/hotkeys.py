@@ -14,7 +14,7 @@ from macroflow.execution.player import (
     screen_template_scale,
 )
 from macroflow.input.input_guard import (
-    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS,
+    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS, VK_F8,
 )
 from macroflow.input.wininput import (
     WindowInfo, activate_window, enum_windows, get_cursor_pos,
@@ -79,7 +79,13 @@ class HotkeysMixin:
                         self._ui(self.stop_all)
                     return
                 if key == keyboard.Key.f8:
-                    self._ui(self.toggle_record, False)
+                    if VK_F8 in self._hotkey_pressed:
+                        return
+                    self._hotkey_pressed.add(VK_F8)
+                    if self.worker and self.worker.is_alive():
+                        self._ui(self.toggle_execution_pause)
+                    else:
+                        self._ui(self.toggle_record, False)
                 elif key == keyboard.Key.f9:
                     self._ui(self.run_current_script)
                 elif key == keyboard.Key.f12:
@@ -102,7 +108,7 @@ class HotkeysMixin:
 
         def on_release(key):
             try:
-                self._hotkey_pressed.discard(_key_vk(key))
+                self._hotkey_pressed.discard(VK_F8 if key == keyboard.Key.f8 else _key_vk(key))
             except Exception:
                 pass
 
@@ -149,7 +155,7 @@ class HotkeysMixin:
         self._hotkey_recorder_filter_vks = set(vk_map)
         guard = getattr(self, "input_guard", None)
         if guard is not None:
-            guard.set_hotkeys(set(vk_map))
+            guard.set_hotkeys(set(vk_map) | {VK_F8})
         recorder = getattr(self, "recorder", None)
         if recorder is not None:
             # 录制中改绑定也要立刻生效：recorder 持有的是 start() 时的拷贝。
@@ -186,6 +192,9 @@ class HotkeysMixin:
         )
     def _on_hotkey_vk(self, vk: int):
         """专注模式守卫钩子线程触发的快捷键回调。"""
+        if int(vk) == VK_F8:
+            self._ui(self.toggle_execution_pause)
+            return
         binding = self._hotkey_vk_map.get(int(vk))
         if binding is None:
             self._ui(

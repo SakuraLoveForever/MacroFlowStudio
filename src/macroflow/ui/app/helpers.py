@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_MOUSE_MOVE_INTERVAL_MS, DEFAULT_RECORDED_SCREEN,
+    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
     DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
     END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -399,6 +399,9 @@ class HelpersMixin:
                 "class_name": str(signature.get("class_name", "")),
                 "process_path": str(signature.get("process_path", "")),
             }
+            script.settings["activation_window_interval_ms"] = int(
+                app_settings.get("activation_window_draft_interval_ms", 0)
+            )
         return script
     def _restore_main_window_geometry(self) -> None:
         """Restore the main window size and position saved at the last close."""
@@ -431,18 +434,36 @@ class HelpersMixin:
             # the safe default geometry assigned during window creation.
             return
     def _watch_display_dpi(self) -> None:
-        """窗口拖到另一块屏（缩放不同）后重算缩放并重刷界面。"""
+        """显示器缩放或工作区变化后，重刷界面并让窗口重新适配。"""
         if getattr(self, "exiting", False):
             return
         try:
-            dpi = get_window_dpi(self.root.winfo_id())
+            hwnd = self.root.winfo_id()
+            dpi = get_window_dpi(hwnd)
         except (AttributeError, tk.TclError, OSError, ValueError):
+            hwnd = None
             dpi = 0
-        # 与"界面当前实际用的缩放"比，而不是与上次记下的值比：启动时若取错 DPI，
-        # 上一次实现只在第二次探测才纠正，窗口开在另一块屏上时永远等不到。
-        if dpi and dpi != self._ui_scaling_dpi():
-            self._apply_display_dpi(dpi)
+        area = get_monitor_work_area_for_window(hwnd) if hwnd else None
+        # 固定像素布局需要足够的物理屏幕空间；高缩放配低分辨率时按工作区收敛。
+        target_dpi = self._fitted_display_dpi(dpi, area)
+        if target_dpi and target_dpi != self._ui_scaling_dpi():
+            self._apply_display_dpi(target_dpi)
+        if area is not None:
+            area = dict(area)
+            previous_area = getattr(self, "_display_work_area", None)
+            if previous_area is not None and area != previous_area:
+                self.root.geometry(
+                    f"{area['width']}x{area['height']}+{area['left']}+{area['top']}"
+                )
+                self._adapt_execution_mini_position(previous_area, area)
+            self._display_work_area = area
         self.root.after(600, self._watch_display_dpi)
+    def _fitted_display_dpi(self, dpi: int, area: dict | None) -> int:
+        if not dpi or not area:
+            return dpi
+        # 1920×1080 是主界面双栏在 100% 时的完整工作面积。
+        fit = min(area["width"] / 1920, area["height"] / 1080)
+        return min(dpi, max(96, round(96 * fit)))
     def _ui_scaling_dpi(self) -> int:
         """Tk 当前 scaling 对应的 DPI——px() 就是按它换算的。"""
         try:
@@ -450,15 +471,13 @@ class HelpersMixin:
         except (AttributeError, tk.TclError, ValueError):
             return 0
     def _apply_display_dpi(self, dpi: int) -> None:
-        """按新显示器 DPI 重算像素缩放，并重刷样式、列宽与最小尺寸。"""
+        """按适合当前屏幕的 DPI 重建固定像素布局。"""
         self.root.tk.call("tk", "scaling", max(1.0, dpi / 72.0))
         set_ui_scale(self.root)
         dialogs_ui.set_ui_scale(self.root)
         self._configure_dark_theme()
-        self._apply_column_widths(self.action_tree, ACTION_TREE_COLUMNS, "detail")
-        self._apply_column_widths(self.workflow_tree, WORKFLOW_TREE_COLUMNS, "script")
-        self._apply_column_widths(self.global_tree, GLOBAL_TREE_COLUMNS, "module")
         self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
+        self._rebuild_ui_for_display_change()
         self._log(f"检测到显示器缩放变化（{dpi} DPI），界面已按新缩放刷新。")
     def _app_window_hwnd(self) -> int | None:
         """MacroFlow 主窗口句柄（用于判断软件在哪块屏上）。"""
@@ -497,6 +516,7 @@ class HelpersMixin:
         铺满工作区的普通窗口在 Windows 11 上仍保留圆角，任务栏也不会被盖住。
         """
         area = self._startup_monitor_area()
+        self._display_work_area = dict(area)
         if area["width"] < 800 or area["height"] < 500:
             return
         self.root.geometry(
@@ -517,6 +537,8 @@ class HelpersMixin:
             return
         if dpi <= 0:
             return
+        area = get_monitor_work_area_for_window(self.root.winfo_id())
+        dpi = self._fitted_display_dpi(dpi, area)
         self.root.tk.call("tk", "scaling", max(1.0, dpi / 72.0))
         set_ui_scale(self.root)
         dialogs_ui.set_ui_scale(self.root)
@@ -562,11 +584,10 @@ class HelpersMixin:
         self.activation_draft_signature = (
             dict(self.saved_activation_signature) if self.saved_activation_signature else None
         )
+        self.activation_draft_interval_ms = int(
+            self.script.settings.get("activation_window_interval_ms", 0)
+        )
     def _collect_sidebar_settings(self) -> dict:
-        try:
-            interval = max(10, min(500, int(self.interval_var.get())))
-        except (tk.TclError, TypeError, ValueError):
-            interval = DEFAULT_MOUSE_MOVE_INTERVAL_MS
         try:
             repeat = max(1, min(999999, int(self.repeat_var.get())))
         except (tk.TclError, TypeError, ValueError):
@@ -574,7 +595,6 @@ class HelpersMixin:
         backup_interval = self.backup_interval_var.get()
         if backup_interval not in BACKUP_INTERVAL_CHOICES:
             backup_interval = "1h"
-        self.interval_var.set(interval)
         self.repeat_var.set(repeat)
         self.backup_interval_var.set(backup_interval)
         return {
@@ -587,6 +607,8 @@ class HelpersMixin:
             "record_mode": "auto",
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
             "activate_target_enabled": bool(self.activate_target_enabled_var.get()),
+            "partial_script_globals": bool(self.partial_script_globals_var.get()),
+            "partial_workflow_globals": bool(self.partial_workflow_globals_var.get()),
             "resolution_styles": [
                 dict(style) for style in getattr(
                     self, "resolution_styles",
@@ -603,6 +625,9 @@ class HelpersMixin:
             "activation_window_draft": (
                 dict(self.activation_draft_signature)
                 if getattr(self, "activation_draft_signature", None) else None
+            ),
+            "activation_window_draft_interval_ms": int(
+                getattr(self, "activation_draft_interval_ms", 0)
             ),
             "workflow_draft": self._workflow_snapshot(),
             "workflow_path": display_path(self.workflow_path) if self.workflow_path else "",
@@ -683,6 +708,7 @@ class HelpersMixin:
             return
         self.resolution_styles = result
         self._refresh_resolution_styles_summary()
+        self._refresh_workflow_resolution_options()
         if self._persist_sidebar_settings(show_feedback=True):
             self._set_status("分辨率样式已保存", "success")
             self._log(f"已保存 {len(result)} 个分辨率样式。")
@@ -811,6 +837,7 @@ class HelpersMixin:
                 str(int(self.workflow.start_delay_seconds) * 1000)
             )
             self._toggle_workflow_start_delay_control(persist=False)
+            self._sync_workflow_resolution_ui()
             self.rebuild_workflow_tree()
             self._persist_workflow_draft()
             self._log(f"启动时自动执行工作流：{path}")

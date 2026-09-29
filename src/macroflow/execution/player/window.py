@@ -25,12 +25,17 @@ from .base import (
 class WindowMixin:
     """显示分辨率 / 缩放、前置窗口与坐标缩放。"""
 
+    @staticmethod
+    def _resolution_matches(current: tuple[int, int, int] | None,
+                            width: int, height: int, refresh_rate: int) -> bool:
+        return current is not None and current[:2] == (width, height) \
+            and (not refresh_rate or abs(current[2] - refresh_rate) <= 1)
+
     def _ensure_display_resolution(self, hwnd: int, width: int, height: int,
                                    refresh_rate: int, label: str) -> bool:
         """确保显示器处于目标分辨率；已经是目标值就跳过（不再重复切换）。"""
         current = get_display_resolution_for_window(hwnd)
-        if current is not None and current[0] == width and current[1] == height \
-                and (not refresh_rate or current[2] == refresh_rate):
+        if self._resolution_matches(current, width, height, refresh_rate):
             self._log_event(f"{label}已经是 {width}×{height}，无需切换分辨率。")
             return True
         if set_display_resolution_for_window(hwnd, width, height, refresh_rate):

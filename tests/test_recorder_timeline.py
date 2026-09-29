@@ -42,10 +42,9 @@ class RecorderTimelineTests(unittest.TestCase):
         self.assertEqual(rec.actions[-1]["mode"], "absolute")
         self.assertEqual((rec.actions[-1]["x"], rec.actions[-1]["y"]), (320, 240))
 
-    def test_relative_click_flushes_pending_move_before_button(self):
+    def test_relative_click_follows_raw_move(self):
         rec = make_running_recorder(mode="relative")
-        rec._raw_dx, rec._raw_dy = 4, -2
-        rec._raw_last_flush = 0.0
+        rec._on_raw_move(4, -2)
         rec._on_click(900, 700, mouse.Button.left, True)
 
         self.assertEqual([action["type"] for action in rec.actions], ["mouse_move", "mouse_button"])
@@ -54,21 +53,14 @@ class RecorderTimelineTests(unittest.TestCase):
     def test_click_uses_callback_timestamp_captured_before_flush(self):
         rec = make_running_recorder(mode="relative")
         rec._recording_started_at = 100.0
-        rec._raw_dx, rec._raw_dy = 4, -2
-        rec._raw_last_flush = 0.0
-        with patch("macroflow.input.recorder.time.perf_counter", side_effect=[
-            100.123456,
-            200.0,
-            201.0,
-        ]):
+        with patch("macroflow.input.recorder.time.perf_counter", return_value=100.123456):
             rec._on_click(900, 700, mouse.Button.left, True)
 
         self.assertAlmostEqual(rec.actions[-1][RECORDED_AT_KEY], 123.456, places=3)
 
-    def test_relative_scroll_flushes_pending_move_before_scroll(self):
+    def test_relative_scroll_follows_raw_move(self):
         rec = make_running_recorder(mode="relative")
-        rec._raw_dx, rec._raw_dy = 4, -2
-        rec._raw_last_flush = 0.0
+        rec._on_raw_move(4, -2)
         rec._on_scroll(900, 700, 3, -1)
 
         self.assertEqual([action["type"] for action in rec.actions], ["mouse_move", "scroll"])

@@ -24,6 +24,7 @@ from macroflow.core.storage import (
 import os
 import threading
 import time
+import math
 
 from .base import (
     CAPTURE_FAILURE_GRACE_S,
@@ -95,6 +96,9 @@ class CoreMixin:
         # 时刻突然变短、动作成串爆发，因此只在 play() 开始时取一次快照。
         self._timeline_speed = 1.0
         self.stop_event = threading.Event()
+        self._resume_event = threading.Event()
+        self._resume_event.set()
+        self._pause_started_at: float | None = None
         self.running = False
         self._held_keys: set[int] = set()
         self._held_buttons: set[str] = set()
@@ -139,11 +143,36 @@ class CoreMixin:
         if self._stop_requested_at is None:
             self._stop_requested_at = time.perf_counter()
         self.stop_event.set()
+        self._resume_event.set()
     def reset(self) -> None:
         self.stop_event.clear()
         # 上一次播放的落点不该影响这一轮：新一轮的第一次点击总是照常发出。
         self._last_click = None
         self._guard_settle_deadline = None
+    @property
+    def paused(self) -> bool:
+        return not self._resume_event.is_set()
+    def pause(self) -> None:
+        if not self.paused:
+            self._pause_started_at = time.perf_counter()
+            self._resume_event.clear()
+    def resume(self) -> None:
+        if self.paused:
+            elapsed = max(0.0, time.perf_counter() - max(
+                self._pause_started_at or 0.0, self._timeline._base_wall_time,
+            ))
+            self._timeline._base_wall_time += elapsed
+            self._pause_started_at = None
+            self._resume_event.set()
+    def wait_while_paused(self) -> float:
+        if not self.paused:
+            return 0.0
+        started = time.perf_counter()
+        while self.paused and not self.stop_event.is_set():
+            self._resume_event.wait(0.1)
+        if self.stop_event.is_set():
+            raise PlaybackStopped()
+        return time.perf_counter() - started
     def set_playback_speed(self, speed: float) -> None:
         """Set the global delay multiplier; key/button hold durations stay unchanged."""
         try:
@@ -240,6 +269,7 @@ class CoreMixin:
         if result_sink is not None:
             result_sink(text)
     def _wait(self, milliseconds: int) -> None:
+        self.wait_while_paused()
         if milliseconds <= 0:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
@@ -248,14 +278,16 @@ class CoreMixin:
         # 长等待切成 100ms 片并逐片检查守卫：异常在等待期间也能被处理，
         # 处理段内联执行完继续剩余等待。短等待（按键按住/点击间隙）保持
         # 单次等待，避免逐片开销。
-        if milliseconds >= 200 and self.on_guard_poll is not None:
+        if milliseconds >= 200:
             remaining = milliseconds / 1000
             while remaining > 0:
+                self.wait_while_paused()
                 slice_ms = min(0.1, remaining)
                 if self.stop_event.wait(slice_ms):
                     raise PlaybackStopped()
                 remaining -= slice_ms
-                self._poll_guards()
+                if self.on_guard_poll is not None:
+                    self._poll_guards()
                 # 长等待只轮询守卫：前台恢复由播放开始时的激活与每次截图后的
                 # 校验负责（见 app._restore_workflow_scan_foreground），等待
                 # 期间不再反复检测/激活目标窗口。
@@ -271,6 +303,8 @@ class CoreMixin:
              activate_target: bool = True,
              activation_hwnd: int | None = None,
              activation_prepared: bool = False,
+             activation_interval_ms: int = 0,
+             activation_prepared_at: float | None = None,
              on_repeat: Callable[[int, int], None] | None = None,
              on_repeat_complete: Callable[[int, int], None] | None = None,
              start_index: int = 0, start_repeat: int = 0,
@@ -280,7 +314,8 @@ class CoreMixin:
              propagate_current_script_jump: bool = False,
              workflow_context: bool = False,
              single_action: bool = False,
-             segment_end: int | None = None) -> bool | str:
+             segment_end: int | None = None,
+             enable_script_globals: bool = True) -> bool | str:
         if self.running:
             raise RuntimeError("已有脚本正在执行")
         self.running = True
@@ -306,6 +341,7 @@ class CoreMixin:
         self._activation_hwnd = int(activation_hwnd) if activation_hwnd else None
         self._activation_prepared = bool(activation_prepared and self._activation_hwnd)
         self._workflow_context = bool(workflow_context)
+        self._enable_script_globals = bool(enable_script_globals)
         # 单独执行单个动作：动作列表仍是完整脚本（动作ID、跳转目标、脚本上下文
         # 都在），但每次重复只执行所选的那一个顶层动作，控制流不逃出这一行。
         self._single_action = bool(single_action)
@@ -332,11 +368,14 @@ class CoreMixin:
                 self._activation_hwnd = None
                 self._activation_prepared = False
                 self._log_event("前置窗口已关闭，已跳过前置窗口，继续执行。")
+            activation_at = activation_prepared_at if self._activation_prepared else None
             # “执行前置窗口”只在本次播放开始前激活一次，用于完成准备动作；
             # 它不是输入目标，不能在之后的相对鼠标动作中反复抢回前台。
-            if self._activation_hwnd and not self._activation_prepared \
-                    and not activate_window(self._activation_hwnd):
-                self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
+            if self._activation_hwnd and not self._activation_prepared:
+                if activate_window(self._activation_hwnd):
+                    activation_at = time.perf_counter()
+                else:
+                    self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
             focus_hwnd = hwnd
             if focus_hwnd:
                 if self._activate_target:
@@ -346,10 +385,20 @@ class CoreMixin:
                         # “需要真人点击”，随即弹出“点击游戏画面继续操作”；
                         # 工作流每次重启都会走到这里，保持原样才能不打断游戏。
                         self._relative_target_hwnd = int(focus_hwnd)
-                    elif not activate_window(focus_hwnd):
-                        self._status("未能强制前置目标窗口，将继续尝试发送输入")
                     else:
-                        self._relative_target_hwnd = int(focus_hwnd)
+                        if self._activation_hwnd and self._activation_prepared and activation_at is None:
+                            activation_at = time.perf_counter()
+                        if activation_at is not None and activation_interval_ms > 0:
+                            remaining_ms = math.ceil(
+                                int(activation_interval_ms)
+                                - (time.perf_counter() - activation_at) * 1000
+                            )
+                            if remaining_ms > 0:
+                                self._wait(remaining_ms)
+                        if not activate_window(focus_hwnd):
+                            self._status("未能强制前置目标窗口，将继续尝试发送输入")
+                        else:
+                            self._relative_target_hwnd = int(focus_hwnd)
                 elif is_window_process_foreground(focus_hwnd):
                     self._relative_target_hwnd = int(focus_hwnd)
                 else:
@@ -408,7 +457,7 @@ class CoreMixin:
                 # 重复间隔之前退出，因此每次"执行 x 次"都有独立的全局检测
                 # 监控，超时等计时从本次重复开始重新计算。起始行一并告诉应用层：
                 # 「▶ 从此开始执行」时，本次重复之前那些全局模块行并不会被执行到。
-                if self.on_script_scope_enter:
+                if enable_script_globals and self.on_script_scope_enter:
                     script_scope = self._enter_script_scope(
                         actions, action_start, segment_last,
                     )
@@ -645,6 +694,7 @@ class CoreMixin:
             max(0, int(segment_end)), max(0, total - 1),
         )
         while index < len(actions) and index <= segment_last:
+            self.wait_while_paused()
             action = actions[index]
             try:
                 # 动作边界守卫评估：命中时内联执行处理段（可携带跳转/结束/推进语义）。
@@ -776,7 +826,8 @@ class CoreMixin:
             )
     def _execute_action(self, action: dict, hwnd: int | None,
                         script_stack: set[str] | None = None,
-                        depth: int = 0) -> tuple[str, str | int] | None:
+                        depth: int = 0, *,
+                        interruptible_display_wait: bool = True) -> tuple[str, str | int] | None:
         # 每个输入动作前确保目标窗口在前台：焦点被抢（其他软件弹窗、误点桌面、
         # 执行小窗/通知闪现）后，接下来的输入会发给当时的前台窗口——只有鼠标
         # 坐标点击还带坐标，按键则完全丢失（表现就是“某个键没反应”）。
@@ -983,6 +1034,8 @@ class CoreMixin:
         elif kind == "row_list_condition_click":
             return self._execute_row_list_condition_click(action, hwnd, script_stack, depth)
         elif kind == "global_detect":
+            if not getattr(self, "_enable_script_globals", True):
+                return
             if self.on_global_detect_request and not self._script_scope_managed:
                 self.on_global_detect_request(action)
             if self._single_action and depth == 0:
@@ -1159,6 +1212,12 @@ class CoreMixin:
                 raise RuntimeError("分辨率动作参数无效") from exc
             if width <= 0 or height <= 0:
                 raise RuntimeError("分辨率动作缺少有效的宽高")
+            if self._resolution_matches(
+                    get_display_resolution_for_window(resolution_hwnd),
+                    width, height, refresh_rate,
+            ) and get_display_scaling_for_window(resolution_hwnd) == scale_percent:
+                self._log_event(f"{monitor_label}已是 {width}×{height}、缩放 {scale_percent}%，无需切换。")
+                return None
             if not self._ensure_display_resolution(
                     resolution_hwnd, width, height, refresh_rate, monitor_label):
                 raise RuntimeError(f"无法将{monitor_label}切换到 {width}×{height}")
@@ -1166,7 +1225,11 @@ class CoreMixin:
             self._status(
                 f"{monitor_label}已确认 {width}×{height}，缩放目标 {scale_percent}%"
             )
-            self._wait(500)
+            if interruptible_display_wait:
+                self._wait(500)
+            else:
+                # 工作流结束恢复必须在 F12 后完成；播放器停止事件不能打断显示稳定等待。
+                time.sleep(0.5)
             # 分辨率/缩放变了，执行参考屏必须重新取：优先本次执行的目标窗口
             # 所在显示器（分辨率动作可能改的是另一块屏），没有目标窗口时退回
             # 被修改的那块屏。

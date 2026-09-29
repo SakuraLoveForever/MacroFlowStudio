@@ -27,7 +27,7 @@ from macroflow.input.wininput import (
     get_window_dpi,
     force_english_input, get_foreground_window_info, get_window_rect,
     is_current_process_window, is_window, is_window_process_foreground,
-    make_window_no_activate, send_button, send_move_absolute,
+    make_window_no_activate, move_window_no_activate, send_button, send_move_absolute,
     set_dark_titlebar, set_rounded_window, show_window,
     show_window_no_activate,
 )
@@ -40,8 +40,9 @@ from macroflow.core.ocr import (
     set_progress_callback,
 )
 import os
+import re
 from macroflow.core.alerts import play_alert, prewarm_alert
-from macroflow.ui.detect_overlay import show_overlay
+from macroflow.ui.detect_overlay import hide_overlay, show_overlay
 import threading
 import time
 import tkinter as tk
@@ -56,6 +57,8 @@ from .constants import (
     COLOR_BG,
     COLOR_GREEN,
     COLOR_RED,
+    COLOR_SURFACE,
+    COLOR_MUTED,
     COLOR_SURFACE_ALT,
     COLOR_TEXT,
     FONT_BODY,
@@ -152,26 +155,29 @@ class GuardsMixin:
             elif kind == "mini_step":
                 self._ui(self._append_mini_step, event["text"])
             elif kind == "overlay":
-                show_overlay(
-                    event["x"], event["y"], event["width"], event["height"],
-                    label=event.get("label"),
-                )
+                options = {"label": event.get("label")}
+                if event.get("key"):
+                    options["key"] = event["key"]
+                show_overlay(event["x"], event["y"], event["width"],
+                             event["height"], **options)
             elif kind == "restore_foreground":
                 self._restore_workflow_scan_foreground()
             elif kind == "fallback_click":
                 self._guard_fallback_click(
                     event["guard"], event["match"], event["fallback_name"],
                 )
-    def _detection_overlay(self, x, y, width, height, label=None) -> None:
+    def _detection_overlay(self, x, y, width, height, label=None, key=None) -> None:
         detection_context = getattr(self, "_detection_event_context", None)
         deferred_events = getattr(detection_context, "events", None)
         if deferred_events is not None:
-            self._defer_detection_event(
-                deferred_events, "overlay", x=x, y=y, width=width, height=height,
-                label=label,
-            )
+            event = {"x": x, "y": y, "width": width, "height": height,
+                     "label": label}
+            if key:
+                event["key"] = key
+            self._defer_detection_event(deferred_events, "overlay", **event)
             return
-        show_overlay(x, y, width, height, label=label)
+        options = {"key": key} if key else {}
+        show_overlay(x, y, width, height, label=label, **options)
     def _evaluate_global_guards_sync(self, _run_id: int | None = None,
                                      _config_version: int | None = None) -> DetectionEvaluation:
         """守卫引擎单轮评估（播放器线程调用），按顺序返回命中处理段。
@@ -263,8 +269,6 @@ class GuardsMixin:
         deferred_events = deferred_events if deferred_events is not None else []
         if guard.get("module_ref"):
             self._refresh_guard_from_module(guard)
-        if guard.get("region_mode") == "window":
-            guard["region"] = get_window_rect(self._bound_hwnd(update_display=False))
         recognize = str(guard.get("recognize", ""))
         detected = False
         match = None
@@ -297,6 +301,7 @@ class GuardsMixin:
                 self._detection_overlay(
                     fallback_match["x"], fallback_match["y"],
                     fallback_match["width"], fallback_match["height"],
+                    key=f"{guard['key']}:fallback",
                 )
                 if guard.get("fallback_click"):
                     self._guard_fallback_click(guard, fallback_match, fallback_name)
@@ -347,10 +352,12 @@ class GuardsMixin:
                 self._detection_overlay(
                     match["x"], match["y"], match["width"], match["height"],
                     label=f"{remaining_seconds}s",
+                    key=guard["key"],
                 )
             elif match and first_detection:
                 self._detection_overlay(
                     match["x"], match["y"], match["width"], match["height"],
+                    key=guard["key"],
                 )
             cooldown_until = float(guard.get("cooldown_until", 0.0))
             if now >= cooldown_until and elapsed_ms >= hold_ms:
@@ -498,10 +505,11 @@ class GuardsMixin:
         # 引擎未就绪时等待加载（可中断轮询）：F12 能中止，不会卡死在导入里。
         if not self._wait_ocr_ready():
             return False, None
+        region = self._guard_runtime_region(guard)
         try:
-            ocr_screen, ocr_origin = self._ocr_region_in_frame(screen, origin, guard.get("region"))
+            ocr_screen, ocr_origin = self._ocr_region_in_frame(screen, origin, region)
             if ocr_screen is None:
-                recognized, ocr_matches = recognize_region_with_boxes(guard.get("region"))
+                recognized, ocr_matches = recognize_region_with_boxes(region)
             else:
                 recognized, ocr_matches = recognize_image_with_boxes(ocr_screen, ocr_origin)
         except Exception as exc:
@@ -516,7 +524,7 @@ class GuardsMixin:
         present = match is not None
         if not present and matches_expected(recognized, expected, mode):
             present = True
-            match = ocr_match_center(guard.get("region"))
+            match = ocr_match_center(region)
         observation = format_ocr_observation(
             recognized, expected, present,
             str(guard.get("expected_text", "")).strip() or "全局文字模块",
@@ -540,6 +548,30 @@ class GuardsMixin:
             getattr(player, "_source_screen", None),
             getattr(player, "_target_screen", None),
         )
+    def _guard_scale_point(self, point) -> tuple[int, int]:
+        """把守卫配置里的录制坐标换算到播放器当前目标屏。"""
+        x, y = int(point[0]), int(point[1])
+        player = getattr(self, "player", None)
+        return player._scale_point(x, y) if player is not None else (x, y)
+    def _guard_scale_region(self, region):
+        if not isinstance(region, (list, tuple)) or len(region) != 4:
+            return None
+        values = tuple(int(part) for part in region)
+        player = getattr(self, "player", None)
+        return player._scale_region(values) if player is not None else values
+    def _guard_scale_offset(self, x: int, y: int) -> tuple[int, int]:
+        player = getattr(self, "player", None)
+        source = getattr(player, "_source_screen", None) if player is not None else None
+        if player is None or not source:
+            return int(x), int(y)
+        left, top = int(source.get("left", 0)), int(source.get("top", 0))
+        base_x, base_y = player._scale_point(left, top)
+        end_x, end_y = player._scale_point(left + int(x), top + int(y))
+        return end_x - base_x, end_y - base_y
+    def _guard_runtime_region(self, guard: dict):
+        if guard.get("region_mode") == "window":
+            return get_window_rect(self._bound_hwnd(update_display=False))
+        return self._guard_scale_region(guard.get("region"))
     def _guard_image_detect(self, guard: dict, screen, origin) -> tuple[bool, dict | None]:
         template = guard["template"]
         if not template.is_file():
@@ -548,17 +580,18 @@ class GuardsMixin:
                 self._ui(self._log, f"全局检测：模板图片不存在，跳过检测：{template}")
             return False, None
         guard["warned_missing_template"] = False
+        region = self._guard_runtime_region(guard)
         try:
             if screen is not None and origin is not None:
                 match = find_template_in_image(
                     template, screen, float(guard["threshold"]), origin,
-                    guard.get("region"),
+                    region,
                     ignore_background=bool(guard.get("ignore_background", False)),
                     scale=self._guard_template_scale(),
                 )
             else:
                 match = find_template(
-                    template, float(guard["threshold"]), guard.get("region"),
+                    template, float(guard["threshold"]), region,
                     ignore_background=bool(guard.get("ignore_background", False)),
                     scale=self._guard_template_scale(),
                 )
@@ -574,7 +607,7 @@ class GuardsMixin:
             return None
         raw_region = obj.get("region") or []
         region = (
-            tuple(int(part) for part in raw_region)
+            self._guard_scale_region(raw_region)
             if len(raw_region) == 4 and int(raw_region[2]) > 0 and int(raw_region[3]) > 0
             else None
         )
@@ -677,6 +710,7 @@ class GuardsMixin:
             "match": guard.get("match_data"),
         }
         click = guard.get("click")
+        custom_click = isinstance(click, (list, tuple)) and len(click) == 2
         # 旧配置兼容：没有显式点击位置、没有语句体回放时，点击识别到的位置
         # （与识图动作默认行为一致）。配置了跳转目标且跳转已启用时同样点击
         # （旧引擎语义：先点击识别处再跳转）；跳转停用的行是纯触发（不点击）。
@@ -695,14 +729,21 @@ class GuardsMixin:
                 and str(guard.get("after_action", "click_match")) == "click_match" \
                 and guard.get("match_data"):
             match = guard["match_data"]
-            click = (
-                match["center_x"] + int(guard.get("ocr_offset_right", 0))
+            offset_x, offset_y = self._guard_scale_offset(
+                int(guard.get("ocr_offset_right", 0))
                 - int(guard.get("ocr_offset_left", 0)),
-                match["center_y"] + int(guard.get("ocr_offset_down", 0))
+                int(guard.get("ocr_offset_down", 0))
                 - int(guard.get("ocr_offset_up", 0)),
             )
+            click = (
+                match["center_x"] + offset_x,
+                match["center_y"] + offset_y,
+            )
         if click and len(click) == 2:
-            hit["click"] = (int(click[0]), int(click[1]))
+            hit["click"] = (
+                self._guard_scale_point(click)
+                if custom_click else (int(click[0]), int(click[1]))
+            )
             hit["button"] = str(guard.get("button", "left"))
             hit["click_count"] = max(1, min(9999, int(guard.get("click_count", 1))))
         second = guard.get("second")
@@ -818,9 +859,14 @@ class GuardsMixin:
         lock = getattr(self, "guards_lock", None)
         if lock is not None:
             with lock:
+                keys = tuple(guards)
                 guards.clear()
         else:
+            keys = tuple(guards)
             guards.clear()
+        for key in keys:
+            hide_overlay(key)
+            hide_overlay(f"{key}:fallback")
     def _clear_global_detect_cooldowns(self):
         cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
         if cooldowns is not None:
@@ -835,6 +881,10 @@ class GuardsMixin:
         deadline = time.perf_counter() + max(0.0, float(seconds))
         while True:
             if self.workflow_stop.is_set() or self.player.stop_event.is_set():
+                return False
+            try:
+                deadline += self.player.wait_while_paused()
+            except PlaybackStopped:
                 return False
             hit = self._evaluate_global_guards()
             if hit is not None:
@@ -961,9 +1011,14 @@ class GuardsMixin:
             return
         self._show_operation_mini("recording")
     def _show_execution_mini(self):
+        self._refresh_execution_pause_controls()
         if not self.execution_mini_enabled_var.get():
             return
         self._show_operation_mini("execution")
+        self._refresh_execution_pause_controls()
+    def _operation_mini_size(self) -> tuple[int, int]:
+        # 保持物理像素占用不随 DPI 增大，避免缩放后遮挡游戏识图区域。
+        return 420, 100
     def _show_operation_mini(self, mode: str):
         if self.mini_window and self.mini_window.winfo_exists() and self.mini_mode == mode:
             # 窗口创建后一直保持可见并置顶，无需重新显示。Tk 的 deiconify 会
@@ -981,6 +1036,7 @@ class GuardsMixin:
         mini = tk.Toplevel(self.root)
         self.mini_window = mini
         mini.title("MacroFlow 录制中" if mode == "recording" else "MacroFlow 执行中")
+        mini.overrideredirect(True)
         mini.configure(background=COLOR_BG)
         mini.resizable(False, False)
         mini.attributes("-topmost", True)
@@ -988,9 +1044,7 @@ class GuardsMixin:
             mini.wm_attributes("-toolwindow", True)
         except tk.TclError:
             pass
-        # Keep the panel compact so it does not cover the game. The denser log
-        # below carries the useful detail instead of spending space on chrome.
-        width, height = (px(420), px(248)) if mode == "recording" else (px(420), px(292))
+        width, height = self._operation_mini_size()
         # 录制小窗和执行小窗共用同一个用户调节的位置。
         x, y = self._execution_mini_position(width, height)
         mini.geometry(f"{width}x{height}+{x}+{y}")
@@ -1000,87 +1054,72 @@ class GuardsMixin:
         # 新顶层窗口时会先激活它，小窗弹出的瞬间就会抢走激活窗口。
         make_window_no_activate(mini.winfo_id())
 
-        body = ttk.Frame(mini, padding=px(8), style="Surface.TFrame")
+        # Negative font sizes and unscaled padding keep this fixed-pixel overlay
+        # readable when the main UI's Tk scaling changes during execution.
+        body = ttk.Frame(mini, padding=6, style="Surface.TFrame")
         body.pack(fill="both", expand=True)
         top = ttk.Frame(body, style="Surface.TFrame")
         top.pack(fill="x")
-        ttk.Label(top, textvariable=self.mini_context_var, style="MiniTitle.TLabel").pack(side="left")
-        ttk.Label(top, textvariable=self.mini_elapsed_var, style="MiniTime.TLabel").pack(side="right")
-        ttk.Label(body, textvariable=self.mini_count_var, style="MiniText.TLabel",
-                  wraplength=px(390), justify="left").pack(anchor="w", pady=pad(5, 2))
         if mode == "execution":
-            self.mini_ocr_progressbar = ttk.Progressbar(
-                body, maximum=100, variable=self.mini_ocr_progress_var,
-                mode="determinate", length=390,
+            self.mini_pause_button = ttk.Button(
+                top, text="暂停", command=self.toggle_execution_pause,
+                style="CompactGhost.TButton",
             )
-            self.mini_ocr_progressbar.pack(fill="x", pady=pad(0, 5))
-        else:
-            self.mini_ocr_progressbar = None
-        self.mini_binding_label = ttk.Label(body, textvariable=self.mini_window_var,
-                                            style="MiniText.TLabel", wraplength=px(390))
-        self.mini_binding_label.pack(anchor="w", pady=pad(0, 5))
-        steps_frame = ttk.Frame(body, style="Surface.TFrame")
-        steps_frame.pack(fill="both", expand=True, pady=pad(0, 7))
-        self.mini_steps_text = tk.Text(
-            steps_frame, height=5, state="disabled", wrap="word",
-            background=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
-            insertbackground=COLOR_TEXT, selectbackground="#244D78",
-            relief="flat", bd=0, font=(FONT_FAMILY, FONT_BODY),
-            padx=px(6), pady=px(4), takefocus=False,
+            self.mini_pause_button.pack(side="right", padx=(8, 0))
+        context_label = ttk.Label(top, textvariable=self.mini_context_var, style="MiniTitle.TLabel",
+                                  font=(FONT_FAMILY, -13, "bold"))
+        context_label.pack(side="left")
+        close_label = ttk.Label(top, text="×", style="MiniTitle.TLabel", cursor="hand2",
+                                font=(FONT_FAMILY, -14))
+        close_label.pack(side="right")
+        close_label.bind("<Button-1>", lambda _event: self._hide_operation_mini())
+        elapsed_label = ttk.Label(top, textvariable=self.mini_elapsed_var, style="MiniTime.TLabel",
+                                  font=(FONT_FAMILY, -13))
+        elapsed_label.pack(side="right", padx=8)
+        count_label = tk.Label(body, textvariable=self.mini_count_var,
+                              background=COLOR_SURFACE, foreground=COLOR_MUTED,
+                              anchor="w", justify="left", font=(FONT_FAMILY, -12),
+                              height=1, borderwidth=0, padx=0, pady=0)
+        count_label.pack(fill="x", pady=(4, 2))
+        self.mini_binding_label = tk.Label(
+            body, textvariable=self.mini_window_var,
+            background=COLOR_SURFACE, foreground=COLOR_MUTED,
+            anchor="w", font=(FONT_FAMILY, -11),
+            height=1, borderwidth=0, padx=0, pady=0,
         )
-        self.mini_steps_text.pack(side="left", fill="both", expand=True)
-        mini_scroll = ttk.Scrollbar(steps_frame, orient="vertical",
-                                    command=self.mini_steps_text.yview, takefocus=False)
-        mini_scroll.pack(side="right", fill="y")
-        self.mini_steps_text.configure(yscrollcommand=mini_scroll.set)
+        self.mini_binding_label.pack(fill="x", pady=(0, 4))
+        event_label = tk.Label(
+            body, textvariable=self.mini_event_var,
+            background=COLOR_SURFACE_ALT, foreground=COLOR_TEXT,
+            anchor="w", font=(FONT_FAMILY, -12),
+            height=1, borderwidth=0, padx=6, pady=4,
+        )
+        event_label.pack(fill="x")
+        self.mini_event_var.set("等待执行信息" if mode == "execution" else "等待录制动作")
+        self._mini_last_step = ""
+        for widget in (mini, body, top, context_label, elapsed_label, count_label,
+                       self.mini_binding_label, event_label):
+            self._bind_operation_mini_drag(widget)
+        self.mini_ocr_progressbar = None
         # A normal top-level window may make an exclusive/fullscreen game leave
         # fullscreen. WS_EX_NOACTIVATE has already been applied above, before the
         # window was first mapped, so it never takes activation.
         mini.update_idletasks()
         set_dark_titlebar(mini.winfo_id())
         # 无边框悬浮小窗的圆角只能靠窗口区域（DWM 只处理标准边框窗口）。
-        set_rounded_window(mini.winfo_id(), px(10))
-        buttons = ttk.Frame(body, style="Surface.TFrame")
-        buttons.pack(fill="x")
-        if mode == "recording":
-            buttons.columnconfigure(0, weight=3)
-            buttons.columnconfigure(1, weight=3)
-            buttons.columnconfigure(2, weight=2)
-            ttk.Button(buttons, text="停止录制  F8", command=lambda: self.toggle_record(from_ui=True),
-                       bootstyle="danger", takefocus=False).grid(row=0, column=0, sticky="ew")
-            ttk.Button(buttons, text="紧急停止  F12", command=lambda: self.stop_all(from_ui=True),
-                       bootstyle="danger-outline", takefocus=False).grid(row=0, column=1, sticky="ew", padx=px(6))
-            ttk.Button(buttons, text="隐藏", command=self._hide_operation_mini,
-                       bootstyle="secondary-outline", takefocus=False).grid(row=0, column=2, sticky="ew")
-            self._append_mini_step("实时记录已打开，不会切换或恢复游戏窗口。")
-        else:
-            buttons.columnconfigure(0, weight=1)
-            if self.execution_focus_requested:
-                ttk.Label(
-                    body,
-                    text="紧急恢复：先按 F12；若无响应，按 Ctrl + Alt + Del",
-                    style="MiniWarning.TLabel", wraplength=px(390), justify="center",
-                ).pack(fill="x", pady=pad(0, 7), before=buttons)
-                ttk.Button(buttons, text="强制专注中 · 按 F12 停止并解除",
-                           command=lambda: None, bootstyle="danger",
-                           takefocus=False).grid(row=0, column=0, sticky="ew")
-                self._append_mini_step("强制专注已开启：实体键鼠已锁定，按 F12 停止并解除。")
-            else:
-                ttk.Button(buttons, text="普通执行模式 · 按 F12 停止",
-                           command=lambda: None, bootstyle="secondary",
-                           takefocus=False).grid(row=0, column=0, sticky="ew")
-                self._append_mini_step("普通执行模式：未锁定实体键鼠，点击正常发送。")
+        set_rounded_window(mini.winfo_id(), 10)
         self._update_operation_mini()
     def _execution_mini_position(self, width: int | None = None,
                                  height: int | None = None) -> tuple[int, int]:
-        width = px(420) if width is None else int(width)
-        height = px(292) if height is None else int(height)
+        default_width, default_height = self._operation_mini_size()
+        width = default_width if width is None else int(width)
+        height = default_height if height is None else int(height)
         # 用"软件所在显示器的可用区域"，不能用 winfo_screenwidth/height：
         # 多屏下后者返回虚拟桌面尺寸，小窗会被推到屏幕外面（右下角外）。
         area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
             or get_primary_screen_rect()
-        default_x = area["left"] + area["width"] - width - px(24)
-        default_y = area["top"] + area["height"] - height - px(72)
+        default_x = area["left"] + area["width"] - width - 24
+        default_y = area["top"] + area["height"] - height - 72
         x, y = default_x, default_y
         saved = getattr(self, "execution_mini_position", None)
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
@@ -1092,14 +1131,35 @@ class GuardsMixin:
             max(area["left"], min(x, area["left"] + max(0, area["width"] - width))),
             max(area["top"], min(y, area["top"] + max(0, area["height"] - height))),
         )
+    def _adapt_execution_mini_position(self, old_area: dict, new_area: dict) -> None:
+        saved = getattr(self, "execution_mini_position", None)
+        if isinstance(saved, (list, tuple)) and len(saved) == 2:
+            width, height = self._operation_mini_size()
+            old_x_span = max(1, old_area["width"] - width)
+            old_y_span = max(1, old_area["height"] - height)
+            new_x_span = max(0, new_area["width"] - width)
+            new_y_span = max(0, new_area["height"] - height)
+            x_fraction = max(0.0, min(1.0, (int(saved[0]) - old_area["left"]) / old_x_span))
+            y_fraction = max(0.0, min(1.0, (int(saved[1]) - old_area["top"]) / old_y_span))
+            position = [
+                new_area["left"] + round(x_fraction * new_x_span),
+                new_area["top"] + round(y_fraction * new_y_span),
+            ]
+            if position != list(saved):
+                self.execution_mini_position = position
+                self._persist_sidebar_settings()
+        mini = getattr(self, "mini_window", None)
+        if mini is not None and mini.winfo_exists():
+            self._reposition_operation_mini()
     def _adjust_execution_mini_position(self):
         """Show a draggable, bordered preview and persist its top-left position."""
         if getattr(self, "execution_mini_position_editor", None):
             return
-        width, height = px(420), px(316)
+        width, height = self._operation_mini_size()
         preview = tk.Toplevel(self.root)
         self.execution_mini_position_editor = preview
         preview.title("调节执行小窗位置")
+        preview.overrideredirect(True)
         preview.geometry(
             f"{width}x{height}+{self._execution_mini_position(width, height)[0]}+"
             f"{self._execution_mini_position(width, height)[1]}"
@@ -1107,22 +1167,10 @@ class GuardsMixin:
         preview.resizable(False, False)
         preview.attributes("-topmost", True)
         preview.configure(background="#E04444", highlightthickness=3, highlightbackground="#FF6B6B")
-        body = ttk.Frame(preview, padding=px(12), style="Surface.TFrame")
-        body.pack(fill="both", expand=True, padx=px(3), pady=px(3))
-        ttk.Label(
-            body, text="执行小窗边界（拖动标题区域调整位置）",
-            style="MiniWarning.TLabel", wraplength=px(380), justify="center",
-        ).pack(fill="x", pady=pad(4, 12))
-        ttk.Label(
-            body, text="红色边框就是执行小窗的完整占用范围\n确认后执行小窗会固定在此位置。",
-            style="MiniText.TLabel", justify="center",
-        ).pack(expand=True)
-        buttons = ttk.Frame(body, style="Surface.TFrame")
-        buttons.pack(fill="x", pady=pad(10, 0))
-        ttk.Button(buttons, text="确认并保存", command=lambda: self._confirm_execution_mini_position(preview),
-                   bootstyle="success").pack(side="left", fill="x", expand=True)
-        ttk.Button(buttons, text="取消", command=lambda: self._close_execution_mini_position_editor(preview),
-                   bootstyle="secondary").pack(side="left", fill="x", expand=True, padx=pad(8, 0))
+        body = ttk.Frame(preview, padding=px(4), style="Surface.TFrame")
+        body.pack(fill="both", expand=True, padx=3, pady=3)
+        drag_label = ttk.Label(body, text="拖动定位 · 松开保存", style="MiniText.TLabel")
+        drag_label.pack(fill="both", expand=True)
         drag = {"x": 0, "y": 0}
         def begin(event):
             drag["x"], drag["y"] = event.x_root, event.y_root
@@ -1130,10 +1178,13 @@ class GuardsMixin:
             current_x, current_y = preview.winfo_x(), preview.winfo_y()
             preview.geometry(f"+{current_x + event.x_root - drag['x']}+{current_y + event.y_root - drag['y']}")
             drag["x"], drag["y"] = event.x_root, event.y_root
-        for widget in (preview, body):
+        for widget in (preview, body, drag_label):
             widget.bind("<ButtonPress-1>", begin)
             widget.bind("<B1-Motion>", move)
+            widget.bind("<ButtonRelease-1>", lambda _event: self._confirm_execution_mini_position(preview))
+            widget.bind("<Button-3>", lambda _event: self._close_execution_mini_position_editor(preview))
         preview.protocol("WM_DELETE_WINDOW", lambda: self._close_execution_mini_position_editor(preview))
+        preview.bind("<Escape>", lambda _event: self._close_execution_mini_position_editor(preview))
         preview.focus_force()
     def _confirm_execution_mini_position(self, preview):
         self.execution_mini_position = [preview.winfo_x(), preview.winfo_y()]
@@ -1162,13 +1213,53 @@ class GuardsMixin:
         if self.mini_window and self.mini_window.winfo_exists():
             self.mini_window.destroy()
         self.mini_window = None
-        self.mini_steps_text = None
+        self.mini_binding_label = None
         self.mini_mode = ""
+    def _bind_operation_mini_drag(self, widget):
+        drag = {"offset": None, "moved": False}
+        def begin(event):
+            rect = get_window_rect(self.mini_window.winfo_id())
+            if rect:
+                drag["offset"] = (event.x_root - rect[0], event.y_root - rect[1])
+                drag["moved"] = False
+        def move(event):
+            if drag["offset"] is None:
+                return
+            x = event.x_root - drag["offset"][0]
+            y = event.y_root - drag["offset"][1]
+            self.execution_mini_position = [x, y]
+            move_window_no_activate(self.mini_window.winfo_id(), x, y)
+            drag["moved"] = True
+        def release(_event):
+            if drag["moved"]:
+                self.execution_mini_position = list(self._execution_mini_position())
+                self._persist_sidebar_settings()
+            drag["offset"] = None
+        widget.bind("<ButtonPress-1>", begin)
+        widget.bind("<B1-Motion>", move)
+        widget.bind("<ButtonRelease-1>", release)
+    def _reposition_operation_mini(self):
+        hwnd = self.mini_window.winfo_id()
+        rect = get_window_rect(hwnd)
+        x, y = self._execution_mini_position()
+        width, height = self._operation_mini_size()
+        if rect and rect[2:] != (width, height):
+            self.mini_window.geometry(f"{width}x{height}+{x}+{y}")
+            self.mini_window.update_idletasks()
+            set_rounded_window(hwnd, 10)
+        elif rect and rect[:2] != (x, y):
+            move_window_no_activate(hwnd, x, y)
+        # Display mode changes can hide/restack the wrapper even when Tk still
+        # owns it. Restore topmost without activating the game overlay.
+        make_window_no_activate(hwnd)
+        # Tk's mapped flag may remain true while Windows hides the wrapper.
+        show_window_no_activate(hwnd)
     def _update_operation_mini(self):
         self.mini_update_after_id = None
         active = self.recorder.running or (self.worker and self.worker.is_alive())
         if not active or not self.mini_window or not self.mini_window.winfo_exists():
             return
+        self._reposition_operation_mini()
         # 兜底防失焦：Tk 窗口/控件若意外抢到前台（小窗映射/刷新/滚动时
         # 焦点管理，WS_EX_NOACTIVATE 挡不住 SetFocus 给子控件），把焦点
         # 还给绑定窗口。仅执行中且激活目标开启时生效；用户切到外屏工作
@@ -1184,30 +1275,22 @@ class GuardsMixin:
         elapsed = max(0, int(time.perf_counter() - started_at))
         self.mini_elapsed_var.set(f"{elapsed // 60:02d}:{elapsed % 60:02d}")
         if self.mini_mode == "recording":
-            self.mini_context_var.set("正在录制")
+            self.mini_context_var.set("录制中 | F8 停止")
             capture_mode = "原始相对坐标" if self.recorder.current_mode() == "relative" else "普通桌面坐标"
-            self.mini_count_var.set(f"已记录 {len(self.recorder.actions):,} 个动作 · {capture_mode} · F8 停止")
+            self.mini_count_var.set(f"已记录 {len(self.recorder.actions):,} 个动作 | {capture_mode}")
         else:
-            self.mini_context_var.set("强制专注执行中" if self.execution_focus_requested else "普通执行中")
-            self.mini_count_var.set(self.execution_progress_text or "正在准备 · F12 停止")
+            self.mini_context_var.set("强制专注 | F8 暂停 | F12 停止" if self.execution_focus_requested else "执行中 | F8 暂停 | F12 停止")
+            self.mini_count_var.set(self._compact_mini_text(self.execution_progress_text or "正在准备"))
         info = get_foreground_window_info()
         self._refresh_binding_for_display()
         target = self.bound_window
         target_title = target.title if target else (
             self.saved_window_signature.get("title", "未设置") if self.saved_window_signature else "未设置"
         )
-        current_title = (info.title or info.class_name or "无标题窗口") if info else "未知"
         bound = bool(info and self._foreground_matches_target(info))
         state = "已绑定" if bound else "未绑定"
-        if self.mini_mode == "execution":
-            activation_title = (
-                self.activation_window.title if self.activation_window else target_title
-            )
-            self.mini_window_var.set(
-                f"前台：{current_title} · 目标：{target_title} · 前置：{activation_title}"
-            )
-        else:
-            self.mini_window_var.set(f"前台：{current_title} · 目标：{target_title} · {state}")
+        short_title = target_title[:24] + ("…" if len(target_title) > 24 else "")
+        self.mini_window_var.set(f"目标 | {short_title} | {state}")
         color = COLOR_GREEN if bound else COLOR_RED
         if self.mini_binding_label and self.mini_binding_label.winfo_exists():
             self.mini_binding_label.configure(foreground=color)
@@ -1239,21 +1322,22 @@ class GuardsMixin:
         # Position and client size are diagnostic metadata only. Fullscreen,
         # DPI, and border changes must not disable raw-relative recording.
         return True
+    @staticmethod
+    def _compact_mini_text(text: str) -> str:
+        text = re.sub(r"\s*·\s*(?:按 )?F12 (?:停止|中止)", "", str(text))
+        text = re.sub(r"共执行 \d+ 次 · 当前第 (\d+/\d+) 次", r"\1 次", text)
+        text = text.replace("·", "|").replace("\n", "|")
+        return " | ".join(part.strip() for part in text.split("|") if part.strip()).rstrip("。")
+
     def _append_mini_step(self, text: str):
-        mini_steps_text = getattr(self, "mini_steps_text", None)
-        if not mini_steps_text or not mini_steps_text.winfo_exists():
+        event_var = getattr(self, "mini_event_var", None)
+        if event_var is None:
             return
-        try:
-            x, y = get_cursor_pos()
-            cursor = f"[鼠标 {x},{y}]"
-        except Exception:
-            cursor = "[鼠标 ?,?]"
-        self.mini_steps_text.configure(state="normal")
-        self.mini_steps_text.insert(
-            "end", f"{datetime.now():%H:%M:%S}  {cursor} {text}\n",
-        )
-        lines = int(self.mini_steps_text.index("end-1c").split(".")[0])
-        if lines > 120:
-            self.mini_steps_text.delete("1.0", f"{lines - 120}.0")
-        self.mini_steps_text.see("end")
-        self.mini_steps_text.configure(state="disabled")
+        text = " ".join(self._compact_mini_text(text).split())
+        if not text or text == getattr(self, "_mini_last_step", ""):
+            return
+        self._mini_last_step = text
+        # Keep the subject and final verdict; full status stays in the main UI.
+        if len(text) > 48:
+            text = f"{text[:31]}…{text[-16:]}"
+        event_var.set(text)

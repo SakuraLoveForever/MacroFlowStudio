@@ -76,6 +76,11 @@ class TrayMixin:
 
                 menu = pystray.Menu(
                     pystray.MenuItem("显示窗口", self._tray_restore, default=True),
+                    pystray.MenuItem(
+                        lambda _item: "继续" if self.player.paused else "暂停",
+                        self._tray_toggle_pause,
+                        enabled=lambda _item: bool(self.worker and self.worker.is_alive()),
+                    ),
                     pystray.MenuItem("退出", self._tray_exit),
                 )
                 self.tray_icon = pystray.Icon(
@@ -406,6 +411,8 @@ class TrayMixin:
         self.tray_warmup_thread = None
     def _tray_restore(self, _icon=None, _item=None):
         self._ui(self._restore_main_window)
+    def _tray_toggle_pause(self, _icon=None, _item=None):
+        self._ui(self.toggle_execution_pause)
     def _tray_exit(self, _icon=None, _item=None):
         self._ui(self._quit_app)
     def _hide_main_to_tray(self, for_recording: bool = False) -> bool:
@@ -471,6 +478,11 @@ class TrayMixin:
             self.root.withdraw()
         self.main_hidden_for_execution = True
     def _finish_execution_visibility(self):
+        player = getattr(self, "player", None)
+        if player is not None:
+            player.resume()
+            self._refresh_execution_pause_controls()
+            self.root.after(100, self._refresh_execution_pause_controls)
         self.execution_progress_text = ""
         if not self.main_hidden_for_execution:
             return

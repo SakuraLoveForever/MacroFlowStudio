@@ -43,17 +43,12 @@ class MacroRecorder:
         self.target_hwnd: int | None = None
         self.target_relative_enabled = True
         self.relative_requires_center_lock = False
-        self.interval_ms = 100
         self._keyboard_listener = None
         self._mouse_listener = None
         self._raw_listener: RawMouseListener | None = None
         self._lock = threading.RLock()
         self._recording_started_at = 0.0
         self._last_action_time = 0.0
-        self._last_move_time = 0.0
-        self._raw_dx = 0
-        self._raw_dy = 0
-        self._raw_last_flush = 0.0
         # 快捷键脚本回放（注入）的相对位移：按 50 ms 脉冲窗口合并成一条
         # 「转向」动作，与快捷键脚本内容一致（而不是录成普通鼠标移动）。
         # _injected_started 记录当前注入脉冲的起始时刻，落成动作时用它计算
@@ -71,7 +66,7 @@ class MacroRecorder:
         self.unsupported_buttons: set[str] = set()
         self._event_times: list[float] = []
 
-    def start(self, mode: str = "absolute", interval_ms: int = 100,
+    def start(self, mode: str = "absolute",
               target_hwnd: int | None = None, target_relative_enabled: bool = True,
               relative_requires_center_lock: bool = False,
               filter_vks: set[int] | None = None) -> None:
@@ -81,7 +76,6 @@ class MacroRecorder:
         self.target_hwnd = target_hwnd
         self.target_relative_enabled = bool(target_relative_enabled)
         self.relative_requires_center_lock = bool(relative_requires_center_lock)
-        self.interval_ms = max(10, min(500, int(interval_ms)))
         # 已绑定快捷键的按键（虚键码）不录进脚本：快捷键只是触发动作的
         # 开关，脚本回放的注入输入才是要记录的内容。
         self._filter_vks = set(int(vk) for vk in (filter_vks or ()) if int(vk) > 0)
@@ -93,8 +87,6 @@ class MacroRecorder:
         now = time.perf_counter()
         self._recording_started_at = now
         self._last_action_time = now
-        self._last_move_time = 0.0
-        self._raw_last_flush = now
         self._center_lock_samples = 0
         self._center_lock_active = False
         self._injected_dx = self._injected_dy = 0
@@ -120,9 +112,6 @@ class MacroRecorder:
             raise
 
     def stop(self) -> list[dict]:
-        was_running = self.running
-        if was_running and self.mode in {"relative", "auto"}:
-            self._flush_raw(force=True)
         self._flush_injected(force=True)
         self.running = False
         for listener in (self._keyboard_listener, self._mouse_listener):
@@ -190,6 +179,7 @@ class MacroRecorder:
         return removed
 
     def _on_press(self, key, injected=False) -> None:
+        callback_at = time.perf_counter()
         # 先把尚未刷出的注入转向落成动作，再记录本次按键：保证「转向」排在
         # 它之后发生的实体输入之前，且延时从快捷键按下时刻起算。
         self._flush_injected()
@@ -198,30 +188,28 @@ class MacroRecorder:
             return
         if name.lower() in {"f8", "f9", "f12"}:
             return
-        self._append({"type": "key", "vk": vk, "name": name, "down": True})
+        self._append({"type": "key", "vk": vk, "name": name, "down": True}, when=callback_at)
 
     def _on_release(self, key, injected=False) -> None:
+        callback_at = time.perf_counter()
         self._flush_injected()
         vk, name = _key_data(key)
         if vk in self._filter_vks:
             return
         if name.lower() in {"f8", "f9", "f12"}:
             return
-        self._append({"type": "key", "vk": vk, "name": name, "down": False})
+        self._append({"type": "key", "vk": vk, "name": name, "down": False}, when=callback_at)
 
     def _on_move(self, x: int, y: int, injected: bool = False) -> None:
         if injected:
             # 快捷键脚本回放产生的绝对移动不录制：录进去只是一条在游戏中
             # 无效的坐标移动（点击等动作自带坐标，不需要依赖移动动作）。
             return
+        callback_at = time.perf_counter()
         self._flush_injected()
         if self.current_mode() != "absolute":
             return
-        now = time.perf_counter()
-        if (now - self._last_move_time) * 1000 < self.interval_ms:
-            return
-        self._last_move_time = now
-        self._append({"type": "mouse_move", "mode": "absolute", "x": int(x), "y": int(y)})
+        self._append({"type": "mouse_move", "mode": "absolute", "x": int(x), "y": int(y)}, when=callback_at)
 
     def _on_raw_move(self, dx: int, dy: int, injected: bool = False) -> None:
         if not self.running:
@@ -231,6 +219,7 @@ class MacroRecorder:
             # 动作（ΔX/ΔY），回放时走转向的前置/居中逻辑，游戏中即可生效。
             self._accumulate_injected(dx, dy)
             return
+        callback_at = time.perf_counter()
         # 实体鼠标位移到来说明注入脉冲已结束：先刷出未落的转向，避免转向
         # 被排到后续实体移动/点击之后，丢失真实按下时机。
         self._flush_injected()
@@ -239,20 +228,8 @@ class MacroRecorder:
             centered = target_active and is_cursor_near_window_center(self.target_hwnd)
             self._center_lock_samples = self._center_lock_samples + 1 if centered else 0
             self._center_lock_active = self._center_lock_samples >= 3
-        if self.current_mode() != "relative":
-            with self._lock:
-                pending = bool(self._raw_dx or self._raw_dy)
-            if pending:
-                # 模式翻转时先把已累积的相对位移落成动作，再清零：否则最多丢掉
-                # 一个刷出窗口的转向量，转向幅度被悄悄录短。
-                self._flush_raw(force=True)
-            with self._lock:
-                self._raw_dx = self._raw_dy = 0
-            return
-        with self._lock:
-            self._raw_dx += dx
-            self._raw_dy += dy
-        self._flush_raw()
+        if self.current_mode() == "relative" and (dx or dy):
+            self._append({"type": "mouse_move", "mode": "relative", "dx": dx, "dy": dy}, when=callback_at)
 
     def _accumulate_injected(self, dx: int, dy: int) -> None:
         """合并同一注入脉冲窗口内的相对位移，落成一条「转向」动作。
@@ -300,21 +277,6 @@ class MacroRecorder:
                 PULSE_DURATION_KEY: round(max(0, last - started) * 1000, 3),
             }, when=started)
 
-    def _flush_raw(self, force: bool = False) -> None:
-        now = time.perf_counter()
-        # Camera movement is consumed frame-by-frame by many games. Keeping raw
-        # samples near 60 Hz avoids one large 100 ms packet being clamped or
-        # discarded while preserving the user-selected desktop sampling rate.
-        raw_interval_ms = min(self.interval_ms, 16)
-        if not force and (now - self._raw_last_flush) * 1000 < raw_interval_ms:
-            return
-        with self._lock:
-            dx, dy = self._raw_dx, self._raw_dy
-            self._raw_dx = self._raw_dy = 0
-            self._raw_last_flush = now
-        if dx or dy:
-            self._append({"type": "mouse_move", "mode": "relative", "dx": dx, "dy": dy})
-
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
         callback_at = time.perf_counter()
         mode = self.current_mode()
@@ -325,8 +287,6 @@ class MacroRecorder:
             # 侧键无法回放：跳过并记录，交给 app 在停止录制后提示。
             self.unsupported_buttons.add(str(button))
             return
-        if mode == "relative":
-            self._flush_raw(force=True)
         self._append({
             "type": "mouse_button", "button": name,
             "down": bool(pressed), "x": int(x), "y": int(y),
@@ -335,10 +295,7 @@ class MacroRecorder:
 
     def _on_scroll(self, x: int, y: int, dx: int, dy: int) -> None:
         callback_at = time.perf_counter()
-        mode = self.current_mode()
         self._flush_injected()
-        if mode == "relative":
-            self._flush_raw(force=True)
         self._append({
             "type": "scroll", "dx": int(dx), "dy": int(dy), "x": int(x), "y": int(y),
         }, when=callback_at)

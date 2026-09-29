@@ -12,11 +12,13 @@ from macroflow.core.storage import (
 from macroflow.input.input_guard import KeyCapturer, RESERVED_HOTKEY_VKS
 from pathlib import Path
 from macroflow.core.resolution import (
-    build_resolution_action, normalize_resolution_style,
+    build_resolution_action, group_display_modes, normalize_resolution_style,
     resolution_styles_from_settings, SUPPORTED_SCALE_PERCENTS,
 )
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
+    get_display_modes_for_window, get_display_resolution_for_window,
+    get_display_scaling_for_window, get_display_scaling_options_for_window,
     get_monitor_work_area_for_point,
     get_monitor_work_area_for_window, get_primary_screen_rect,
     get_virtual_screen_rect, is_current_process_window, make_window_no_activate,
@@ -819,11 +821,13 @@ class WindowPicker(ModalDialog):
         ttk.Button(top, text="刷新", command=self.refresh).pack(side="right")
         frame = ttk.Frame(self, padding=pad(14, 0, 14, 8))
         frame.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(frame, columns=("title", "class"), show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(frame, columns=("title", "class", "process"), show="headings", selectmode="browse")
         self.tree.heading("title", text="窗口标题")
         self.tree.heading("class", text="窗口类")
-        self.tree.column("title", width=px(540))
+        self.tree.heading("process", text="进程")
+        self.tree.column("title", width=px(360))
         self.tree.column("class", width=px(220))
+        self.tree.column("process", width=px(180))
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -844,9 +848,12 @@ class WindowPicker(ModalDialog):
         query = self.search_var.get().strip().lower()
         self.tree.delete(*self.tree.get_children())
         for index, item in enumerate(self.windows):
-            if query and query not in item.title.lower() and query not in item.class_name.lower():
+            process_path = str(item.process_path or "")
+            if query and query not in item.title.lower() and query not in item.class_name.lower() \
+                    and query not in process_path.lower():
                 continue
-            self.tree.insert("", "end", iid=str(index), values=(item.title, item.class_name))
+            self.tree.insert("", "end", iid=str(index),
+                             values=(item.title, item.class_name, Path(process_path).name))
 
     def choose(self):
         selected = self.tree.selection()
@@ -891,48 +898,136 @@ class ResolutionStyleEditorDialog(ModalDialog):
     """Edit one named display-resolution preset."""
 
     def __init__(self, parent, style: dict | None = None):
-        super().__init__(parent, "编辑分辨率样式", 500, 390)
+        super().__init__(parent, "编辑分辨率样式", 560, 410)
         style = style or {}
+        self._is_new = not style
+        self._display_modes: list[tuple[int, int, tuple[int, ...]]] = []
         self.name = tk.StringVar(value=str(style.get("name", "")))
         self.width = tk.StringVar(value=str(style.get("width", "1920")))
         self.height = tk.StringVar(value=str(style.get("height", "1080")))
         self.refresh_rate = tk.StringVar(value=str(style.get("refresh_rate", 0)))
         self.scale_percent = tk.StringVar(value=str(style.get("scale_percent", 100)))
+        self.resolution = tk.StringVar(value=self._resolution_text())
+        self.options_status = tk.StringVar(value="正在读取 Windows 显示选项…")
 
         body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
-        for row, label, variable in (
-            (0, "样式名称", self.name),
-            (1, "宽度", self.width),
-            (2, "高度", self.height),
-            (3, "刷新率", self.refresh_rate),
-        ):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
-            ttk.Entry(body, textvariable=variable, width=18).grid(
-                row=row, column=1, sticky="ew", pady=px(8),
-            )
-        ttk.Label(body, text="缩放").grid(row=4, column=0, sticky="w", pady=px(8))
+        ttk.Label(body, text="样式名称").grid(row=0, column=0, sticky="w", pady=px(8))
+        ttk.Entry(body, textvariable=self.name, width=18).grid(
+            row=0, column=1, sticky="ew", pady=px(8),
+        )
+        ttk.Label(body, text="分辨率").grid(row=1, column=0, sticky="w", pady=px(8))
+        resolution_row = ttk.Frame(body)
+        resolution_row.grid(row=1, column=1, sticky="ew", pady=px(8))
+        resolution_row.columnconfigure(0, weight=1)
+        self.resolution_box = ttk.Combobox(
+            resolution_row, textvariable=self.resolution, state="readonly", width=22,
+        )
+        self.resolution_box.grid(row=0, column=0, sticky="ew")
+        self.resolution_box.bind("<<ComboboxSelected>>", self._select_resolution)
+        ttk.Button(
+            resolution_row, text="重新读取", command=self._refresh_system_options,
+        ).grid(row=0, column=1, padx=pad(8, 0))
+        ttk.Label(body, text="刷新率").grid(row=2, column=0, sticky="w", pady=px(8))
+        self.refresh_box = ttk.Combobox(
+            body, textvariable=self.refresh_rate, state="readonly", width=18,
+        )
+        self.refresh_box.grid(row=2, column=1, sticky="w", pady=px(8))
+        ttk.Label(body, text="缩放").grid(row=3, column=0, sticky="w", pady=px(8))
         scale_row = ttk.Frame(body)
-        scale_row.grid(row=4, column=1, sticky="w", pady=px(8))
-        ttk.Combobox(
+        scale_row.grid(row=3, column=1, sticky="w", pady=px(8))
+        self.scale_box = ttk.Combobox(
             scale_row,
             textvariable=self.scale_percent,
-            values=[str(value) for value in SUPPORTED_SCALE_PERCENTS],
             state="readonly", width=16,
-        ).pack(side="left")
+        )
+        self.scale_box.pack(side="left")
         ttk.Label(scale_row, text="%", foreground=COLOR_MUTED).pack(
             side="left", padx=pad(6, 0),
         )
         ttk.Label(
-            body, text="刷新率填 0 表示沿用当前显示器的刷新率；缩放默认 100%。",
+            body, textvariable=self.options_status,
             foreground=COLOR_MUTED,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
+            wraplength=px(500), justify="left",
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
+        buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        self._refresh_system_options()
         fit_window_to_content(self, parent)
+
+    def _resolution_text(self) -> str:
+        return f"{self.width.get()} × {self.height.get()}"
+
+    def _display_hwnd(self) -> int | None:
+        try:
+            hwnd = int(self.winfo_id())
+        except (tk.TclError, TypeError, ValueError):
+            return None
+        return hwnd or None
+
+    def _refresh_system_options(self) -> None:
+        hwnd = self._display_hwnd()
+        modes = get_display_modes_for_window(hwnd)
+        self._display_modes = group_display_modes(modes)
+        current = get_display_resolution_for_window(hwnd)
+        if self._is_new and current is not None:
+            self.width.set(str(current[0]))
+            self.height.set(str(current[1]))
+            self.refresh_rate.set(str(current[2]))
+            self.resolution.set(self._resolution_text())
+        selected_size = (int(self.width.get()), int(self.height.get()))
+        if not any((width, height) == selected_size for width, height, _rates in self._display_modes):
+            saved_rate = int(self.refresh_rate.get() or 0)
+            self._display_modes.append(
+                (selected_size[0], selected_size[1], (saved_rate,) if saved_rate else ()),
+            )
+        self.resolution_box.configure(values=[
+            f"{width} × {height}" for width, height, _rates in self._display_modes
+        ])
+        self._update_refresh_options()
+
+        scale_options = get_display_scaling_options_for_window(hwnd)
+        current_scale = get_display_scaling_for_window(hwnd)
+        if self._is_new and current_scale is not None:
+            self.scale_percent.set(str(current_scale))
+        selected_scale = int(self.scale_percent.get() or 100)
+        scale_values = sorted(set(scale_options or SUPPORTED_SCALE_PERCENTS) | {selected_scale})
+        self.scale_box.configure(values=[str(value) for value in scale_values])
+        if modes:
+            self.options_status.set(
+                f"已从当前显示器读取 {len(self._display_modes)} 种分辨率；"
+                "刷新率会随分辨率联动，0 表示沿用当前值。"
+            )
+        else:
+            self.options_status.set("无法读取当前显示器选项，已保留原样式值。")
+        self._is_new = False
+
+    def _select_resolution(self, _event=None) -> None:
+        text = self.resolution.get().replace("×", "x").replace(" ", "")
+        try:
+            width, height = (int(value) for value in text.split("x", 1))
+        except (TypeError, ValueError):
+            return
+        self.width.set(str(width))
+        self.height.set(str(height))
+        self._update_refresh_options()
+
+    def _update_refresh_options(self) -> None:
+        selected = (int(self.width.get()), int(self.height.get()))
+        rates = next(
+            (rates for width, height, rates in self._display_modes
+             if (width, height) == selected),
+            (),
+        )
+        values = ["0", *(str(value) for value in rates)]
+        current = self.refresh_rate.get()
+        if current not in values:
+            current = "0"
+            self.refresh_rate.set(current)
+        self.refresh_box.configure(values=values)
 
     def save(self):
         try:

@@ -18,7 +18,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 from macroflow.core.models import DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow
 from macroflow.core.storage import save_script, save_workflow
-from macroflow.execution.player.control import AdvanceToNextWorkflowStep
+from macroflow.execution.player.control import AdvanceToNextWorkflowStep, PlaybackStopped
 from macroflow.ui.app.base import workflow_execution_progress, workflow_script_name
 from macroflow.ui.app.constants import SEGMENT_BAR
 from macroflow.ui.app.main import MacroFlowApp
@@ -408,6 +408,15 @@ class WorkflowDisplayTests(unittest.TestCase):
             Workflow.from_dict({"restart_default_row": "oops"}).restart_default_row, 0,
         )
 
+    def test_workflow_resolution_settings_round_trip(self):
+        start = {"type": "set_resolution", "name": "游戏", "width": 1280,
+                 "height": 720, "refresh_rate": 60, "scale_percent": 100}
+        finish = {"type": "set_resolution", "name": "桌面", "width": 1920,
+                  "height": 1080, "refresh_rate": 60, "scale_percent": 150}
+        workflow = Workflow.from_dict({"start_resolution": start, "end_resolution": finish})
+        self.assertEqual(workflow.to_dict()["start_resolution"], start)
+        self.assertEqual(Workflow.from_dict(workflow.to_dict()).end_resolution, finish)
+
     def test_workflow_module_name_reads_existing_nested_action_reference(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         step = {
@@ -716,6 +725,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             save_script(MacroScript(name="经典团战", actions=[{"type": "delay", "ms": 0}]), script_path)
 
             app = MacroFlowApp.__new__(MacroFlowApp)
+            app._focus_state_lock = threading.RLock()
             app.workflow_stop = threading.Event()
             app.player = Mock()
             app.player.stop_event = threading.Event()
@@ -1013,6 +1023,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             missing_path = Path(folder) / "missing.json"
 
             app = MacroFlowApp.__new__(MacroFlowApp)
+            app._focus_state_lock = threading.RLock()
             app.workflow_stop = threading.Event()
             app.player = Mock()
             app.player.stop_event = threading.Event()
@@ -1501,7 +1512,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
         app.run_workflow_from_selected()
 
-        app.run_workflow.assert_called_once_with(start_index=3)
+        app.run_workflow.assert_called_once_with(start_index=3, partial_run=True)
 
     def test_new_workflow_run_reads_checked_test_mode_option(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1599,6 +1610,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app.workflow_stop = threading.Event()
         app.player = Mock()
         app.player.stop_event = threading.Event()
+        app.player.wait_while_paused.return_value = 0.0
         app.player.handle_guard_hit = Mock(side_effect=AdvanceToNextWorkflowStep())
         app._evaluate_global_guards = Mock(return_value={"kind": "success"})
         app._ui = lambda callback, *args: callback(*args)
@@ -1772,6 +1784,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.workflow_stop = Mock()
         app.workflow_stop.wait.return_value = True
+        app._guard_wait = Mock(return_value=False)
         app._set_status = Mock()
         app._set_execution_progress = Mock()
         app._append_mini_step = Mock()
@@ -1782,8 +1795,170 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
 
         app._run_workflow_worker([], None, None, False, start_delay_seconds=7)
 
-        app.workflow_stop.wait.assert_called_once_with(7)
+        app._guard_wait.assert_called_once_with(7)
         self.assertTrue(any("启动延时 7 秒" in call.args[0] for call in app._log.call_args_list))
+
+
+class WorkflowMoveTests(unittest.TestCase):
+    def _app(self, selected=("1", "2")):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.workflow = Workflow(steps=[
+            {"kind": "global_module", "step_id": "global"},
+            *({"script": f"{name}.json", "step_id": name} for name in "abcde"),
+        ])
+        app.workflow_tree = Mock()
+        app.workflow_tree.selection.return_value = selected
+        app.rebuild_workflow_tree = Mock()
+        app._persist_workflow_draft = Mock()
+        app._update_workflow_selection_color = Mock()
+        app._notify = Mock()
+        app.root = Mock()
+        return app
+
+    def test_multi_row_move_up_and_down_keeps_order_and_selection(self):
+        for offset, expected, selected in (
+            (-1, ["b", "c", "a", "d", "e"], ("0", "1")),
+            (1, ["a", "d", "b", "c", "e"], ("2", "3")),
+        ):
+            with self.subTest(offset=offset):
+                app = self._app()
+                app.move_workflow_step(offset)
+                self.assertEqual([step["step_id"] for step in app._workflow_only_steps()], expected)
+                self.assertEqual(app.workflow.steps[0]["step_id"], "global")
+                app.workflow_tree.selection_set.assert_called_once_with(*selected)
+                app._persist_workflow_draft.assert_called_once()
+
+    def test_move_to_input_places_first_selected_row_at_requested_line(self):
+        app = self._app()
+        with patch("tkinter.simpledialog.askinteger", return_value=4) as prompt:
+            app.move_workflow_step_to_row()
+        self.assertEqual(
+            [step["step_id"] for step in app._workflow_only_steps()],
+            ["a", "d", "e", "b", "c"],
+        )
+        app.workflow_tree.selection_set.assert_called_once_with("3", "4")
+        self.assertEqual(prompt.call_args.kwargs["minvalue"], 1)
+        self.assertEqual(prompt.call_args.kwargs["maxvalue"], 4)
+
+    def test_cancel_or_noncontiguous_selection_does_not_change_order(self):
+        app = self._app()
+        with patch("tkinter.simpledialog.askinteger", return_value=None):
+            app.move_workflow_step_to_row()
+        self.assertEqual([step["step_id"] for step in app._workflow_only_steps()], list("abcde"))
+        app._persist_workflow_draft.assert_not_called()
+
+        app.workflow_tree.selection.return_value = ("1", "3")
+        app.move_workflow_step(-1)
+        self.assertEqual([step["step_id"] for step in app._workflow_only_steps()], list("abcde"))
+        app._notify.assert_called_once()
+
+    def test_ctrl_click_preserves_multiselection_for_toolbar_move(self):
+        app = self._app()
+        app.workflow_tree.identify_row.return_value = "3"
+        app._workflow_drag_start(Mock(y=10, state=0x0004))
+        app.workflow_tree.selection_set.assert_not_called()
+        self.assertIsNone(app.workflow_drag_index)
+
+    def test_click_on_selected_block_keeps_it_selected(self):
+        app = self._app()
+        app.workflow_tree.identify_row.return_value = "1"
+        result = app._workflow_drag_start(Mock(y=10, state=0))
+        self.assertEqual(result, "break")
+        self.assertIsNone(app.workflow_drag_index)
+        app.workflow_tree.selection_set.assert_not_called()
+
+
+class WorkflowResolutionTests(unittest.TestCase):
+    def test_workflow_display_setting_ignores_stale_or_manual_player_stop(self):
+        from macroflow.execution.player import MacroPlayer
+
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app._ui = lambda callback, *args: callback(*args)
+        app._log = Mock()
+        app.player = MacroPlayer(on_resolution_monitor_request=lambda: 999)
+        app.player.stop_event.set()
+        app.player._wait = Mock(side_effect=PlaybackStopped())
+        action = {"type": "set_resolution", "width": 1920, "height": 1080,
+                  "scale_percent": 100}
+        with package_patch('player', 'is_window', return_value=True), \
+             package_patch('player', 'get_display_resolution_for_window',
+                           return_value=(1280, 720, 60)), \
+             package_patch('player', 'get_display_scaling_for_window', return_value=175), \
+             package_patch('player', 'set_display_resolution_for_window',
+                           return_value=True) as set_mode, \
+             package_patch('player', 'set_display_scaling_for_window', return_value=False), \
+             package_patch('player', 'get_playback_screen_rect', return_value={"width": 1920}), \
+             patch('macroflow.execution.player.core.time.sleep') as settle:
+            app._apply_workflow_resolution(action, "启动")
+            app._apply_workflow_resolution(action, "结束恢复")
+
+        self.assertEqual(set_mode.call_count, 2)
+        self.assertEqual(settle.call_count, 2)
+        app.player._wait.assert_not_called()
+
+    def test_resolution_selector_saves_a_snapshot_of_the_style(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.workflow = Workflow()
+        app.resolution_styles = [{"name": "游戏", "width": 1280, "height": 720,
+                                  "refresh_rate": 60, "scale_percent": 100}]
+        app.workflow_start_resolution_var = FakeVar("游戏")
+        app.workflow_end_resolution_var = FakeVar("不修改")
+        app._persist_workflow_draft = Mock()
+        app._set_workflow_resolution("start")
+        self.assertEqual(app.workflow.start_resolution["width"], 1280)
+        app.resolution_styles[0]["width"] = 1600
+        self.assertEqual(app.workflow.start_resolution["width"], 1280)
+        app.workflow_start_resolution_var.set("不修改")
+        app._set_workflow_resolution("start")
+        self.assertIsNone(app.workflow.start_resolution)
+
+    def test_selected_row_applies_start_and_end_settings_even_after_manual_stop(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Path(folder) / "first.json"
+            second = Path(folder) / "second.json"
+            save_script(MacroScript(name="一", actions=[{"type": "delay", "ms": 1}]), first)
+            save_script(MacroScript(name="二", actions=[{"type": "delay", "ms": 1}]), second)
+            steps = [{"script": str(first), "repeats": 1},
+                     {"script": str(second), "repeats": 1}]
+            start = {"type": "set_resolution", "width": 1280, "height": 720,
+                     "scale_percent": 100}
+            finish = {"type": "set_resolution", "width": 1920, "height": 1080,
+                      "scale_percent": 150}
+            for finish_kind in ("normal", "manual_stop", "restart"):
+                with self.subTest(finish_kind=finish_kind):
+                    app = MacroFlowApp.__new__(MacroFlowApp)
+                    app.workflow = Workflow(steps=steps, start_resolution=start,
+                                            end_resolution=finish)
+                    app.workflow_stop = threading.Event()
+                    app.player = Mock()
+                    app.player.stop_event = threading.Event()
+                    events = []
+                    app.player._execute_action.side_effect = lambda action, *_, **__: events.append(action)
+                    def play(*_args, **_kwargs):
+                        events.append("play")
+                        if finish_kind != "normal":
+                            app.workflow_stop.set()
+                            app.player.stop_event.set()
+                        if finish_kind == "restart":
+                            app.workflow_restart_requested = True
+                    app.player.play.side_effect = play
+                    for name in (
+                        "_enter_focus_mode", "_leave_focus_mode", "_set_status",
+                        "_set_execution_progress", "_append_mini_step", "_log", "_sound",
+                        "_handle_worker_error", "_finish_execution_visibility",
+                        "_activate_execution_window_before_ocr", "_clear_global_guards",
+                        "_shutdown_detection_worker", "_clear_trace_context",
+                        "_set_trace_context",
+                    ):
+                        setattr(app, name, Mock())
+                    app._ui = lambda callback, *args: callback(*args)
+                    with patch("macroflow.ui.app.workflow.keep_display_awake", return_value=True), \
+                         patch("macroflow.ui.app.workflow.allow_display_sleep"):
+                        app._run_workflow_worker(steps, None, None, False, start_index=1)
+                    self.assertEqual(events, [start, "play", finish])
+                    app._handle_worker_error.assert_not_called()
+                    if finish_kind == "restart":
+                        app._leave_focus_mode.assert_not_called()
 
 
 class ActivationWindowToggleTests(unittest.TestCase):
@@ -1811,13 +1986,14 @@ class ActivationWindowToggleTests(unittest.TestCase):
                 settings={
                     "activation_window_enabled": True,
                     "activation_window": dict(self.SIGNATURE),
+                    "activation_window_interval_ms": 350,
                 },
             ), script_path)
             app = self._app()
 
             self.assertEqual(
                 app._activation_settings_from_workflow_step({"script": str(script_path)}),
-                (True, self.SIGNATURE),
+                (True, self.SIGNATURE, 350),
             )
 
     def test_disabled_prewindow_has_no_explicit_activation(self):
@@ -1863,6 +2039,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
             script_path = Path(folder) / "plain.json"
             save_script(MacroScript(name="普通脚本", actions=[{"type": "delay", "ms": 1}]), script_path)
             app = MacroFlowApp.__new__(MacroFlowApp)
+            app.script = MacroScript()
             app.worker = None
             app.workflow_test_mode_active = False
             app.workflow_test_mode_var = FakeBooleanVar(False)
@@ -1911,10 +2088,12 @@ class ActivationWindowToggleTests(unittest.TestCase):
         app.app_settings = {
             "activation_window_draft_enabled": True,
             "activation_window_draft": dict(self.SIGNATURE),
+            "activation_window_draft_interval_ms": 350,
         }
         script = app._blank_script_with_activation_draft()
         self.assertTrue(script.settings["activation_window_enabled"])
         self.assertEqual(script.settings["activation_window"], self.SIGNATURE)
+        self.assertEqual(script.settings["activation_window_interval_ms"], 350)
 
     def test_unbind_activation_window_clears_script_settings(self):
         app = self._app()
@@ -2005,6 +2184,18 @@ class ActivationWindowToggleTests(unittest.TestCase):
         settings = app._current_script_settings()
         self.assertTrue(settings["activation_window_enabled"])
         self.assertEqual(settings["activation_window"]["title"], "前置窗口")
+
+    def test_sidebar_activation_interval_is_saved_with_script(self):
+        app = self._app()
+        app.activation_interval_var = FakeVar("350")
+
+        app._save_activation_interval()
+
+        self.assertEqual(app.script.settings["activation_window_interval_ms"], 350)
+        self.assertEqual(app.activation_draft_interval_ms, 350)
+        app.script.settings["activation_window_interval_ms"] = 700
+        app._sync_activation_ui_from_script()
+        self.assertEqual(app.activation_interval_var.get(), "700")
 
     def test_workflow_step_uses_its_own_script_prewindow(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2137,6 +2328,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
             app._activate_execution_window_before_ocr = Mock(
                 side_effect=lambda hwnd: order.append(("activate", hwnd)) or True,
             )
+            app._activation_prepared_at = 50.0
             app._workflow_needs_ocr = Mock(return_value=True)
             app._ensure_ocr_ready = Mock(
                 side_effect=lambda: order.append("ocr") or True,
@@ -2148,9 +2340,12 @@ class ActivationWindowToggleTests(unittest.TestCase):
             app._run_workflow_worker(
                 [{"script": str(script_path), "repeats": 1}],
                 None, None, False, workflow_activation_hwnd=789,
+                workflow_activation_interval_ms=350,
             )
 
             self.assertEqual(order, [("activate", 789), "ocr", ("play", True)])
+            self.assertEqual(app.player.play.call_args.kwargs["activation_interval_ms"], 350)
+            self.assertEqual(app.player.play.call_args.kwargs["activation_prepared_at"], 50.0)
 
     def test_workflow_step_own_prewindow_suppressed_when_sidebar_disabled(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2201,6 +2396,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
 
             def make_app() -> MacroFlowApp:
                 app = MacroFlowApp.__new__(MacroFlowApp)
+                app.script = MacroScript()
                 app.worker = None
                 app.workflow_test_mode_var = FakeBooleanVar(False)
                 app._workflow_only_steps = Mock(
@@ -2244,6 +2440,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
             # 侧栏勾选且编辑器脚本自带前置窗口：作为工作流默认前置窗口传下去。
             app = make_app()
             app.activation_enabled_var.set(True)
+            app.script.settings["activation_window_interval_ms"] = 350
             app._activation_settings_from_script.return_value = (True, dict(self.SIGNATURE))
             app._restore_saved_activation_window = Mock(return_value=True)
             app.activation_window = Mock()
@@ -2252,6 +2449,10 @@ class ActivationWindowToggleTests(unittest.TestCase):
                 app.run_workflow()
             worker_args = thread_class.call_args.kwargs["args"]
             self.assertTrue(worker_args[-3])
+            self.assertEqual(
+                thread_class.call_args.kwargs["kwargs"]["workflow_activation_interval_ms"],
+                350,
+            )
             self.assertEqual(worker_args[9], 456)
 
 class WorkflowSegmentTests(unittest.TestCase):
@@ -2286,6 +2487,25 @@ class WorkflowSegmentTests(unittest.TestCase):
         app._show_execution_mini = Mock()
         app._append_mini_step = Mock()
         return app
+
+    def test_partial_workflow_options_are_independent(self):
+        app = self._app([{"script": "a.json", "repeats": 1}])
+        module = {"kind": "global_module", "enabled": True}
+        app._global_module_steps.return_value = [module]
+        app.partial_script_globals_var = FakeBooleanVar(False)
+        app.partial_workflow_globals_var = FakeBooleanVar(True)
+        with patch("threading.Thread") as thread_class:
+            app.run_workflow(partial_run=True)
+        self.assertEqual(thread_class.call_args.kwargs["args"][6], [module])
+        self.assertFalse(thread_class.call_args.kwargs["kwargs"]["script_globals_enabled"])
+
+        app.worker = None
+        app.partial_script_globals_var.set(True)
+        app.partial_workflow_globals_var.set(False)
+        with patch("threading.Thread") as thread_class:
+            app.run_workflow(partial_run=True)
+        self.assertEqual(thread_class.call_args.kwargs["args"][6], [])
+        self.assertTrue(thread_class.call_args.kwargs["kwargs"]["script_globals_enabled"])
 
     def test_run_workflow_forwards_the_selected_segment(self):
         app = self._app([

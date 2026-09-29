@@ -19,6 +19,7 @@ from macroflow.core.storage import (
     save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from PIL import Image, ImageEnhance, ImageTk
+from macroflow.ui.animation import animator_for
 from pathlib import Path
 from macroflow.core.image_match import capture_bgr
 import copy
@@ -63,7 +64,6 @@ from .base import (
 from .helpers import (
     _app_via_parent,
     bind_wheel_to_scroll_tree,
-    configure_module_list_scrollbar,
     configure_module_tree_styles,
     image_jump_target_options,
     module_manager_label,
@@ -86,6 +86,7 @@ from .segments import (
     module_action_for_key,
     module_reference_binding,
 )
+from .virtual_tree import VirtualRow, VirtualTreeRows
 
 
 def _valid_scripts_in(root: Path) -> list[Path]:
@@ -1409,6 +1410,7 @@ class ModuleImageInventoryDialog(ModalDialog):
         self.images_dir = load_module_images_dir()
         self.images_dir_var = tk.StringVar(value=str(self.images_dir))
         self.inventory_items: dict[str, dict[str, str]] = {}
+        self._inventory = None
         self.inventory_filter = "all"
         self.sort_direction = "asc"
         self.current = "images"
@@ -1475,15 +1477,18 @@ class ModuleImageInventoryDialog(ModalDialog):
         tree.column("kind", width=px(150), anchor="center")
         tree.tag_configure("adopted", foreground="#7BC96F")
         tree.tag_configure("unused", foreground="#F2B84B")
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
         tree.pack(side="left", fill="both", expand=True)
-        configure_module_list_scrollbar(tree, scrollbar)
+        scrollbar.pack(side="right", fill="y")
+        row_height = int(self.module_tree_style.lookup("ModuleManagerNeutral.Treeview", "rowheight"))
+        self.virtual_rows = VirtualTreeRows(
+            tree, scrollbar, row_height=row_height, animator=animator_for(tree),
+        )
         tree.bind("<Double-1>", lambda _event: self._open_inventory_item())
         tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
         self.trees["images"] = tree
         self._apply_sort_heading(tree)
-        bind_wheel_to_scroll_tree(self, lambda: self.trees.get("images"))
+        bind_wheel_to_scroll_tree(self, lambda: self.virtual_rows)
 
         self.add_button = ttk.Button(
             buttons, text="采用为模块", command=lambda: self._open_inventory_item(require_unused=True),
@@ -1504,15 +1509,13 @@ class ModuleImageInventoryDialog(ModalDialog):
             "#0", text=f"图片文件 {arrow}", command=self._toggle_sort_direction,
         )
 
-    def _reload_tree(self):
-        tree = self.trees["images"]
-        tree.delete(*tree.get_children())
-        inventory = module_image_inventory(self.images_dir, self.objects)
+    def _reload_tree(self, *, animate: bool = False, commit_ui=None):
+        if self._inventory is None:
+            self._inventory = module_image_inventory(self.images_dir, self.objects)
+        inventory = self._inventory
         self.inventory_items = {item["path"]: item for item in inventory}
         adopted_count = sum(bool(item["module_key"]) for item in inventory)
-        self.inventory_summary_var.set(
-            f"共 {len(inventory)} 张图片：已采用 {adopted_count}，未采用 {len(inventory) - adopted_count}"
-        )
+        summary = f"共 {len(inventory)} 张图片：已采用 {adopted_count}，未采用 {len(inventory) - adopted_count}"
         current_filter = self.inventory_filter
         visible = [
             item for item in inventory
@@ -1521,13 +1524,12 @@ class ModuleImageInventoryDialog(ModalDialog):
             or (current_filter == "unused" and not item["module_key"])
         ]
         if current_filter != "all":
-            self.inventory_summary_var.set(
-                self.inventory_summary_var.get() + f"；当前显示 {len(visible)} 张"
-            )
+            summary += f"；当前显示 {len(visible)} 张"
         visible.sort(
             key=lambda item: pinyin_sort_key(Path(item["path"].replace("\\", "/")).stem),
             reverse=self.sort_direction == "desc",
         )
+        rows = []
         for item in visible:
             keys = item.get("module_keys") or ([item["module_key"]] if item["module_key"] else [])
             categories = {
@@ -1535,24 +1537,32 @@ class ModuleImageInventoryDialog(ModalDialog):
                 for key in keys
             }
             category = "/".join(sorted(categories)) if categories else "—"
-            tree.insert(
-                "", "end", iid=item["path"],
+            kind = "adopted" if item["module_key"] else "unused"
+            rows.append(VirtualRow(
+                key=item["path"],
                 text=str(Path(item["path"].replace("\\", "/")).name),
-                values=(item["status"], category),
-                tags=("adopted" if item["module_key"] else "unused",),
-            )
+                values=(item["status"], category), tags=(kind,), kind=kind,
+                color="#7BC96F" if kind == "adopted" else "#F2B84B",
+            ))
+        def update_header():
+            self.inventory_summary_var.set(summary)
+            if commit_ui is not None:
+                commit_ui()
+
+        self.virtual_rows.set_rows(rows, animate=animate, commit_ui=update_header)
 
     def _set_inventory_filter(self, value: str):
         if value not in ("all", "adopted", "unused"):
             return
         self.inventory_filter = value
-        for key, button in self.inventory_filter_buttons.items():
-            selected = key == value
-            button.configure(
-                background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
-                foreground="#FFFFFF" if selected else COLOR_TEXT,
-            )
-        self._reload_tree()
+        def update_buttons():
+            for key, button in self.inventory_filter_buttons.items():
+                selected = key == value
+                button.configure(
+                    background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
+                    foreground="#FFFFFF" if selected else COLOR_TEXT,
+                )
+        self._reload_tree(animate=True, commit_ui=update_buttons)
 
     def _toggle_sort_direction(self):
         self.sort_direction = "desc" if self.sort_direction == "asc" else "asc"
@@ -1567,15 +1577,17 @@ class ModuleImageInventoryDialog(ModalDialog):
             return
         self.images_dir = save_module_images_dir(selected)
         self.images_dir_var.set(str(self.images_dir))
+        self._inventory = None
         self._reload_tree()
 
     def _refresh_inventory(self):
         self.objects = load_module_objects()
-        self._reload_tree()
+        self._inventory = None
+        self._reload_tree(animate=True)
 
     def _selected_inventory_item(self) -> dict | None:
         tree = self.trees["images"]
-        selection = tree.selection()
+        selection = self.virtual_rows.selected_keys()
         return self.inventory_items.get(selection[0]) if selection else None
 
     def _open_inventory_item(self, require_unused: bool = False):
@@ -1611,12 +1623,9 @@ class ModuleImageInventoryDialog(ModalDialog):
             return
         old_key, new_key, obj = result
         self.objects = update_module_object(new_key, obj, old_key=old_key)
+        self._inventory = None
         self._reload_tree()
-        try:
-            self.trees["images"].selection_set(new_key)
-            self.trees["images"].see(new_key)
-        except tk.TclError:
-            pass
+        self.virtual_rows.select_key(str(obj.get("template") or initial_image))
 
     def _update_action_buttons(self, _event=None):
         item = self._selected_inventory_item() if self.trees.get("images") else None
@@ -1647,6 +1656,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.objects: dict[str, dict] = load_module_objects()
         self.current = "all"
         self.trees: dict[str, ttk.Treeview] = {}
+        self.virtual_trees: dict[str, VirtualTreeRows] = {}
         self.sort_direction = "asc"
         self.module_tree_style = ttk.Style(self)
         configure_module_tree_styles(self.module_tree_style)
@@ -1712,7 +1722,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
         self.bind("<Control-z>", self._undo_remove)
         # 滚轮在窗口任意位置都能翻当前页签的模块列表（不必把光标停在表格上）。
-        bind_wheel_to_scroll_tree(self, self._current_tree)
+        bind_wheel_to_scroll_tree(self, self._current_view)
         self._update_action_buttons()
 
         # 固定 470 高度在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
@@ -1760,10 +1770,13 @@ class TemplateRegionManagerDialog(ModalDialog):
             tree.tag_configure("blocking", foreground="#F2B84B")
             tree.tag_configure("special_action", foreground="#FF8DE1")
             tree.tag_configure("disabled", foreground="#707B85")
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
         tree.pack(side="left", fill="both", expand=True)
-        configure_module_list_scrollbar(tree, scrollbar)
+        scrollbar.pack(side="right", fill="y")
+        row_height = int(self.module_tree_style.lookup("ModuleManagerNeutral.Treeview", "rowheight"))
+        self.virtual_trees[tab_key] = VirtualTreeRows(
+            tree, scrollbar, row_height=row_height, animator=animator_for(tree),
+        )
         tree.bind(
             "<Double-1>",
             lambda _event: self._open_edit(),
@@ -1791,17 +1804,24 @@ class TemplateRegionManagerDialog(ModalDialog):
     def _on_tab_changed(self, _event=None):
         self.current = self.TAB_KEYS[self.notebook.index(self.notebook.select())]
         self._update_action_buttons()
+        self._current_view().animate_entry()
 
-    def _current_tree(self):
-        """当前页签的模块列表（滚轮绑定的目标）。"""
-        return self.trees.get(getattr(self, "current", ""))
+    def _current_view(self):
+        return self.virtual_trees.get(self.current)
 
     def _reload_trees(self):
         for tab_key, tree in self.trees.items():
             self._reload_tree(tab_key, tree)
 
+    @staticmethod
+    def _row_color(tag: str) -> str:
+        return {
+            "blocking": "#F2B84B", "special_action": "#FF8DE1",
+            "disabled": "#707B85",
+        }.get(tag, COLOR_TEXT)
+
     def _reload_tree(self, tab_key: str, tree: ttk.Treeview):
-        tree.delete(*tree.get_children())
+        rows = []
         items = sorted(
             self.objects.items(),
             key=lambda item: pinyin_sort_key(
@@ -1814,36 +1834,40 @@ class TemplateRegionManagerDialog(ModalDialog):
             if tab_key == "all":
                 if pure:
                     tag = module_manager_tag(obj)
-                    tree.insert(
-                        "", "end", iid=key, text=module_manager_label(key, obj),
-                        values=("—", "固定特殊模块"), tags=((tag,) if tag else ()),
-                    )
+                    rows.append(VirtualRow(
+                        key, module_manager_label(key, obj),
+                        ("—", "固定特殊模块"), ((tag,) if tag else ()), "special",
+                        self._row_color(tag),
+                    ))
                 else:
                     region = obj.get("region", [0, 0, 0, 0])
                     text = ",".join(map(str, region)) if region[2] > 0 else "未设置区域（全屏）"
-                    tree.insert(
-                        "", "end", iid=key, text=module_manager_label(key, obj),
-                        values=(text, module_manager_special_action_summary(obj) or "—"),
-                        tags=((module_manager_tag(obj),) if module_manager_tag(obj) else ()),
-                    )
+                    tag = module_manager_tag(obj)
+                    rows.append(VirtualRow(
+                        key, module_manager_label(key, obj),
+                        (text, module_manager_special_action_summary(obj) or "—"),
+                        ((tag,) if tag else ()), "normal", self._row_color(tag),
+                    ))
             elif tab_key in ("switch", "workflow_global", "script_global"):
                 if obj.get("category") != tab_key or pure:
                     continue
                 region = obj.get("region", [0, 0, 0, 0])
                 text = ",".join(map(str, region)) if region[2] > 0 else "未设置区域（全屏）"
-                tree.insert(
-                    "", "end", iid=key, text=module_manager_label(key, obj),
-                    values=(text, module_manager_special_action_summary(obj) or "—"),
-                    tags=((module_manager_tag(obj),) if module_manager_tag(obj) else ()),
-                )
+                tag = module_manager_tag(obj)
+                rows.append(VirtualRow(
+                    key, module_manager_label(key, obj),
+                    (text, module_manager_special_action_summary(obj) or "—"),
+                    ((tag,) if tag else ()), "normal", self._row_color(tag),
+                ))
             else:  # special
                 if obj.get("category") != "special":
                     continue
                 tag = module_manager_tag(obj)
-                tree.insert(
-                    "", "end", iid=key, text=module_manager_label(key, obj),
-                    values=("特殊",), tags=((tag,) if tag else ()),
-                )
+                rows.append(VirtualRow(
+                    key, module_manager_label(key, obj), ("特殊",),
+                    ((tag,) if tag else ()), "special", self._row_color(tag),
+                ))
+        self.virtual_trees[tab_key].set_rows(rows)
 
     def _set_sort_direction(self, value: str):
         if value not in ("asc", "desc"):
@@ -1864,8 +1888,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._open_form("", category=category)
 
     def _open_edit(self):
-        tree = self.trees[self.current]
-        selection = tree.selection()
+        selection = self._current_view().selected_keys()
         if not selection:
             show_floating_notice(self, "请先选择模块", "先在列表里选中一个模块，再编辑。")
             return
@@ -1879,15 +1902,16 @@ class TemplateRegionManagerDialog(ModalDialog):
     def _show_module_context_menu(self, event):
         """Show standalone testing for every module and global move/copy actions."""
         tree = event.widget
-        key = tree.identify_row(event.y)
+        iid = tree.identify_row(event.y)
+        key = self._current_view().key_for_iid(iid)
         if not key:
             return
         obj = self.objects.get(key)
         if not obj:
             return
         category = str(obj.get("category", "")) if obj else ""
-        tree.selection_set(key)
-        tree.focus(key)
+        tree.selection_set(iid)
+        tree.focus(iid)
         menu = tk.Menu(
             self, tearoff=0, background=COLOR_SURFACE, foreground=COLOR_TEXT,
             activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
@@ -1975,20 +1999,13 @@ class TemplateRegionManagerDialog(ModalDialog):
         old_key, new_key, obj = result
         self.objects = update_module_object(new_key, obj, old_key=old_key)
         self._reload_trees()
-        tree = self.trees[self.current]
-        try:
-            tree.selection_set(new_key)
-            tree.see(new_key)
-        except tk.TclError:
-            # 编辑时改了类别，新条目不在当前页签树里（如 特殊→切换）。
-            pass
+        self._current_view().select_key(new_key)
 
     def _open_image_inventory(self):
         ModuleImageInventoryDialog(self).show()
 
     def _remove_selected(self):
-        tree = self.trees[self.current]
-        selection = tree.selection()
+        selection = self._current_view().selected_keys()
         if not selection:
             return
         key = selection[0]
@@ -2002,16 +2019,12 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._update_undo_button()
 
     def _selected_module(self) -> tuple[str, dict] | None:
-        tree = self.trees.get(self.current)
-        selection = tree.selection() if tree is not None else ()
+        selection = self._current_view().selected_keys()
         key = selection[0] if selection else ""
         obj = self.objects.get(key)
         return (key, obj) if key and obj else None
 
     def _toggle_selected_enabled(self):
-        tree = self.trees.get(self.current)
-        selection = tree.selection() if tree is not None else ()
-        row_id = selection[0] if selection else ""
         selected = self._selected_module()
         if not selected:
             show_floating_notice(self, "请先选择模块", "先选择一个模块，再启用或禁用。")
@@ -2021,13 +2034,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         obj["enabled"] = enabled
         save_module_objects(self.objects)
         self._reload_trees()
-        if tree is not None:
-            try:
-                target = row_id or key
-                tree.selection_set(target)
-                tree.see(target)
-            except tk.TclError:
-                pass
+        self._current_view().select_key(key)
         self._update_action_buttons()
 
     def _reference_paths(self):
@@ -2184,13 +2191,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.objects[key] = obj
         save_module_objects(self.objects)
         self._reload_trees()
-        tree = self.trees[self.current]
-        try:
-            tree.selection_set(key)
-            tree.see(key)
-        except tk.TclError:
-            # 恢复的条目不在当前页签（理论上不会发生：类别未变）。
-            pass
+        self._current_view().select_key(key)
         self._update_undo_button()
 
     def _update_undo_button(self):
@@ -2200,8 +2201,7 @@ class TemplateRegionManagerDialog(ModalDialog):
 
     def _update_action_buttons(self, _event=None):
         """Keep edit/add affordances aligned with the active module category."""
-        tree = self.trees.get(self.current)
-        selection = tree.selection() if tree is not None else ()
+        selection = self._current_view().selected_keys()
         obj = self.objects.get(selection[0]) if selection else None
         editable = bool(obj) and obj.get("category") != "special" and not obj.get("pure_action")
         self._update_selection_highlight(obj)
@@ -2420,11 +2420,14 @@ class BatchModuleScriptDialog(ModalDialog):
         self.tree.column("checked", width=60, anchor="center", stretch=False)
         self.tree.column("category", width=85, anchor="center", stretch=False)
         self.tree.column("path", width=px(470))
-        self._reload_visible_scripts()
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        row_height = int(ttk.Style(self).lookup("Treeview", "rowheight") or px(24))
+        self.virtual_rows = VirtualTreeRows(
+            self.tree, scroll, row_height=row_height, animator=animator_for(self.tree),
+        )
+        self._reload_visible_scripts()
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<Double-1>", self._toggle_selected)
         self.tree.bind("<space>", self._toggle_selected)
@@ -2463,12 +2466,10 @@ class BatchModuleScriptDialog(ModalDialog):
             self.checked.add(index)
         else:
             self.checked.discard(index)
-        if self.tree.exists(str(index)):
-            category = SCRIPT_CATEGORY_LABELS.get(self.script_categories[index], "关卡")
-            self.tree.item(
-                str(index),
-                values=("☑" if checked else "☐", category, self._path_display(index)),
-            )
+        category = SCRIPT_CATEGORY_LABELS.get(self.script_categories[index], "关卡")
+        self.virtual_rows.update_values(
+            str(index), ("☑" if checked else "☐", category, self._path_display(index)),
+        )
 
     def _visible_indices(self) -> list[int]:
         return [
@@ -2476,26 +2477,28 @@ class BatchModuleScriptDialog(ModalDialog):
             if self.current_filter == "all" or category == self.current_filter
         ]
 
-    def _reload_visible_scripts(self):
-        self.tree.delete(*self.tree.get_children())
+    def _reload_visible_scripts(self, *, animate: bool = False, commit_ui=None):
+        rows = []
         for index in self._visible_indices():
             category = SCRIPT_CATEGORY_LABELS.get(self.script_categories[index], "关卡")
-            self.tree.insert(
-                "", "end", iid=str(index),
-                values=("☑" if index in self.checked else "☐", category, self._path_display(index)),
-            )
+            rows.append(VirtualRow(
+                str(index), "", ("☑" if index in self.checked else "☐", category,
+                                 self._path_display(index)),
+            ))
+        self.virtual_rows.set_rows(rows, animate=animate, commit_ui=commit_ui)
 
     def _set_filter(self, category: str):
         if category not in SCRIPT_CATEGORY_LABELS:
             return
         self.current_filter = category
-        for key, button in self.filter_buttons.items():
-            selected = key == category
-            button.configure(
-                background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
-                foreground="#FFFFFF" if selected else COLOR_TEXT,
-            )
-        self._reload_visible_scripts()
+        def update_buttons():
+            for key, button in self.filter_buttons.items():
+                selected = key == category
+                button.configure(
+                    background=COLOR_BLUE_SELECTION if selected else COLOR_SURFACE,
+                    foreground="#FFFFFF" if selected else COLOR_TEXT,
+                )
+        self._reload_visible_scripts(animate=True, commit_ui=update_buttons)
 
     def _toggle_indices(self, indices: list[int]):
         for index in indices:
@@ -2506,11 +2509,13 @@ class BatchModuleScriptDialog(ModalDialog):
             return
         item = self.tree.identify_row(event.y)
         if item:
-            self._toggle_indices([int(item)])
+            key = self.virtual_rows.key_for_iid(item)
+            if key is not None:
+                self._toggle_indices([int(key)])
             return "break"
 
     def _toggle_selected(self, _event=None):
-        indices = [int(item) for item in self.tree.selection()]
+        indices = [int(key) for key in self.virtual_rows.selected_keys()]
         if indices:
             self._toggle_indices(indices)
         return "break"

@@ -22,8 +22,9 @@ from macroflow.ui.app.constants import RECORD_TOOLBAR_BUTTON_LABEL, SEGMENT_BAR
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.app.summaries import action_summary, key_action_matches, set_matching_key_action_delays
 from macroflow.ui.dialogs.actions import edit_action
-from macroflow.ui.dialogs.app_dialogs import ScriptRefDialog
+from macroflow.ui.dialogs.app_dialogs import ScriptRefDialog, WindowPicker
 from macroflow.ui.dialogs.segments import RecordedInputDialog, SegmentEditorMixin
+from macroflow.input.wininput import WindowInfo
 from tests.helpers.core import FakeSettingVar, FakeTree, FakeVar
 from tests.helpers.core import FakeTree, FakeVar  # noqa: E402
 from tests.helpers.ui import make_edit_app  # noqa: E402
@@ -84,6 +85,7 @@ class ScriptEditingTests(unittest.TestCase):
         # 菜单里还能插入脚本引用（工具栏不再放这两个按钮）。
         self.assertIn("⇥ 引用脚本（实时读取）", labels)
         self.assertIn("⇥ 逐行插入脚本", labels)
+        self.assertIn("⇥ 插入脚本指定行…", labels)
         menu.tk_popup.assert_called_once()
 
     def test_script_more_menu_does_not_duplicate_insert_direction_buttons(self):
@@ -134,6 +136,40 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(
             action_summary(app.script.actions[0])[:2],
             ("◎  重新绑定", "根据已保存的目标窗口信息重新获取窗口"),
+        )
+
+    def test_script_editor_can_insert_foreground_window_action(self):
+        specs = MacroFlowApp._script_action_button_specs()
+        self.assertIn(("▣ 前置窗口", "add_activate_window", "ScriptTool.TButton"), specs)
+        app = make_edit_app()
+        chosen = WindowInfo(456, "浏览器", "Chrome_WidgetWin_1", r"C:\Program Files\Browser\browser.exe")
+
+        with package_patch('app', 'WindowPicker') as picker:
+            picker.return_value.show.return_value = chosen
+            app.add_activate_window()
+
+        self.assertEqual(app.script.actions[0]["type"], "activate_window")
+        self.assertEqual(app.script.actions[0]["window"], {
+            "title": "浏览器",
+            "class_name": "Chrome_WidgetWin_1",
+            "process_path": r"C:\Program Files\Browser\browser.exe",
+        })
+        self.assertEqual(action_summary(app.script.actions[0])[:2],
+                         ("▣  前置窗口", "浏览器"))
+
+    def test_window_picker_finds_process_by_executable_name(self):
+        picker = WindowPicker.__new__(WindowPicker)
+        picker.search_var = FakeVar("browser.exe")
+        picker.tree = Mock()
+        picker.tree.get_children.return_value = ()
+        picker.windows = [
+            WindowInfo(456, "浏览器", "Chrome_WidgetWin_1", r"C:\Program Files\Browser\browser.exe"),
+        ]
+
+        picker._render()
+
+        picker.tree.insert.assert_called_once_with(
+            "", "end", iid="0", values=("浏览器", "Chrome_WidgetWin_1", "browser.exe"),
         )
 
     def test_script_editor_exposes_scroll_action(self):
@@ -281,6 +317,54 @@ class ScriptEditingTests(unittest.TestCase):
         ]
         self.assertIn("开始执行脚本：经典团战，重复 1 次。", texts)
         self.assertEqual(app.player.play.call_args.kwargs["script_name"], "经典团战")
+
+    def test_standalone_worker_applies_display_settings_and_always_restores(self):
+        start = {"type": "set_resolution", "width": 1280, "height": 720, "scale_percent": 100}
+        end = {"type": "set_resolution", "width": 2560, "height": 1440, "scale_percent": 150}
+        for outcome in ("complete", "error", "stop", "start_error", "restore_error", "cancelled"):
+            with self.subTest(outcome=outcome):
+                app = MacroFlowApp.__new__(MacroFlowApp)
+                app.workflow_stop = threading.Event()
+                app.player = Mock()
+                app.player.stop_event = threading.Event()
+                events = []
+                for name in ("_enter_focus_mode", "_leave_focus_mode", "_sound",
+                             "_finish_execution_visibility", "_clear_global_guards",
+                             "_shutdown_detection_worker", "_set_trace_context",
+                             "_clear_trace_context", "_set_status", "_log",
+                             "_append_mini_step", "_handle_worker_error",
+                             "_activate_execution_window_before_ocr"):
+                    setattr(app, name, Mock())
+                app._ui = lambda callback, *args: callback(*args)
+                def display(action, _hwnd, **kwargs):
+                    events.append(action)
+                    self.assertFalse(kwargs['interruptible_display_wait'])
+                    if action == start and outcome == 'stop':
+                        app.workflow_stop.set()
+                    if (action == start and outcome == 'start_error') or (
+                        action == end and outcome == 'restore_error'
+                    ):
+                        raise RuntimeError('display failed')
+                def play(*args, **kwargs):
+                    events.append('play')
+                    if outcome == 'error':
+                        raise RuntimeError('script failed')
+                app.player._execute_action.side_effect = display
+                app.player.play.side_effect = play
+                if outcome == 'cancelled':
+                    app.workflow_stop.set()
+                with patch('macroflow.ui.app.execution.keep_display_awake', return_value=True), \
+                     patch('macroflow.ui.app.execution.allow_display_sleep'):
+                    app._run_script_worker(
+                        [{"type": "delay", "delay_ms": 1}], 2, None, None, None, False, False,
+                        start_resolution=start, end_resolution=end,
+                    )
+                expected = [] if outcome == 'cancelled' else (
+                    [start, end] if outcome in ('stop', 'start_error') else [start, 'play', end]
+                )
+                self.assertEqual(events, expected)
+                app._finish_execution_visibility.assert_called_once()
+                app._leave_focus_mode.assert_called_once()
 
     def test_key_action_search_matches_key_and_state(self):
         self.assertTrue(key_action_matches(
@@ -584,7 +668,7 @@ class ScriptEditingTests(unittest.TestCase):
 
         app.run_script_from_selected_action()
 
-        app.run_current_script.assert_called_once_with(start_index=2)
+        app.run_current_script.assert_called_once_with(start_index=2, partial_run=True)
         app._notify.assert_not_called()
 
     def test_ctrl_a_selects_all_script_actions(self):
@@ -810,6 +894,49 @@ class ScriptEditingTests(unittest.TestCase):
         )
         self.assertEqual(app.action_tree.get_children(), ("0", "1"))
         self.assertEqual(app.action_tree.selection(), ("0", "1"))
+
+    def test_insert_script_range_previews_and_copies_only_selected_rows(self):
+        app = make_edit_app(actions=[
+            {"type": "comment", "text": "主1"},
+            {"type": "comment", "text": "主2"},
+        ])
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
+        source = MacroScript(actions=[
+            {"type": "comment", "text": "源1", "action_id": "source1"},
+            {"type": "comment", "text": "源2", "action_id": "source2"},
+            {"type": "jump", "jump_row": 2, "action_id": "source3"},
+            {"type": "comment", "text": "源4", "action_id": "source4"},
+        ])
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/scripts/source.json"), \
+             package_patch('app', 'load_script', return_value=source), \
+             patch("macroflow.ui.app.scripts.ScriptRangeInsertDialog") as dialog:
+            dialog.return_value.show.return_value = (2, 3)
+            app._insert_script_range()
+
+        self.assertEqual([action.get("text", action["type"]) for action in app.script.actions],
+                         ["主1", "源2", "jump", "主2"])
+        self.assertEqual(app.script.actions[2]["jump_action_id"],
+                         app.script.actions[1][ACTION_ID_KEY])
+        self.assertNotEqual(app.script.actions[1][ACTION_ID_KEY], "source2")
+        self.assertEqual(source.actions[2], {"type": "jump", "jump_row": 2, "action_id": "source3"})
+        preview_rows = dialog.call_args.args[2]
+        self.assertEqual(len(preview_rows), 4)
+        self.assertIn("源4", str(preview_rows[-1]))
+        self.assertEqual(app.action_tree.selection(), ("1", "2"))
+        app._mark_dirty.assert_called_once()
+
+    def test_cancel_script_range_keeps_current_script(self):
+        app = make_edit_app(actions=[{"type": "comment", "text": "主"}])
+        app.rebuild_action_tree()
+        app.action_tree.selection_set("0")
+        with patch("tkinter.filedialog.askopenfilename", return_value="C:/scripts/source.json"), \
+             package_patch('app', 'load_script', return_value=MacroScript(actions=[{"type": "comment", "text": "源"}])), \
+             patch("macroflow.ui.app.scripts.ScriptRangeInsertDialog") as dialog:
+            dialog.return_value.show.return_value = None
+            app._insert_script_range()
+        self.assertEqual(len(app.script.actions), 1)
+        app._mark_dirty.assert_not_called()
 
     def test_insert_script_into_empty_script_allowed(self):
         app = make_edit_app()
@@ -1961,7 +2088,7 @@ class ScriptRefWindowTests(unittest.TestCase):
         app.action_tree.selection_set.assert_called_with("1")
         command = menu_class.return_value.add_command.call_args_list[0].kwargs["command"]
         command()
-        app.run_current_script.assert_called_once_with(start_index=1)
+        app.run_current_script.assert_called_once_with(start_index=1, partial_run=True)
 
     def test_context_menu_single_action_asks_for_count(self):
         app = self._app()
@@ -2317,6 +2444,7 @@ class ScriptRefWindowTests(unittest.TestCase):
 
     def _app_for_referenced_script_alone(self) -> MacroFlowApp:
         app = self._app()
+        app.workflow = Workflow()
         app.recorder = Mock()
         app.recorder.running = False
         app.worker = Mock()
@@ -2357,9 +2485,27 @@ class ScriptRefWindowTests(unittest.TestCase):
         self.assertEqual(worker_args[1], 1)
         self.assertEqual(worker_args[0], list(load_script(ref).actions))
         self.assertEqual(thread_class.call_args.kwargs["kwargs"],
-                         {"trigger": {}, "script_name": "Ref"})
+                         {"trigger": {}, "script_name": "Ref",
+                          "start_resolution": {}, "end_resolution": {},
+                          "activation_interval_ms": 0,
+                          "script_globals_enabled": True,
+                          "workflow_global_modules": []})
         thread_class.return_value.start.assert_called_once()
         app._notify.assert_not_called()
+
+    def test_run_referenced_script_alone_carries_workflow_display_settings(self):
+        app = self._app_for_referenced_script_alone()
+        app.workflow = Workflow(
+            start_resolution={"type": "set_resolution", "width": 1280, "height": 720, "scale_percent": 100},
+            end_resolution={"type": "set_resolution", "width": 2560, "height": 1440, "scale_percent": 150},
+        )
+        ref = self._write_test_script([{"type": "delay", "delay_ms": 1}])
+        with patch('threading.Thread') as worker:
+            app.run_referenced_script_alone({"script": str(ref)}, 3)
+        options = worker.call_args.kwargs['kwargs']
+        self.assertEqual(options.get('start_resolution'), app.workflow.start_resolution)
+        self.assertEqual(options.get('end_resolution'), app.workflow.end_resolution)
+        self.assertIsNot(options['start_resolution'], app.workflow.start_resolution)
 
     def test_run_referenced_script_alone_runs_requested_repeats(self):
         app = self._app_for_referenced_script_alone()
@@ -2479,6 +2625,12 @@ class SingleActionRunTests(unittest.TestCase):
 
     def test_single_action_run_passes_row_repeats_and_flag_to_worker(self):
         app = self._app()
+        app.partial_script_globals_var = Mock()
+        app.partial_script_globals_var.get.return_value = False
+        app.partial_workflow_globals_var = Mock()
+        app.partial_workflow_globals_var.get.return_value = True
+        app.workflow = Mock()
+        app._global_module_steps = Mock(return_value=[{"kind": "global_module", "enabled": True}])
         with patch("threading.Thread") as thread_class:
             app._run_current_script_impl(start_index=2, single_action_repeats=5)
         worker_args = thread_class.call_args.kwargs["args"]
@@ -2486,6 +2638,11 @@ class SingleActionRunTests(unittest.TestCase):
         self.assertEqual(worker_args[1], 5)
         self.assertEqual(worker_args[7], 2)
         self.assertIs(thread_class.call_args.kwargs["kwargs"]["single_action"], True)
+        self.assertIs(thread_class.call_args.kwargs["kwargs"]["script_globals_enabled"], False)
+        self.assertEqual(
+            thread_class.call_args.kwargs["kwargs"]["workflow_global_modules"],
+            [{"kind": "global_module", "enabled": True}],
+        )
         self.assertIn("单独执行第 3/4 行", app._set_execution_progress.call_args.args[0])
         self.assertIn("共 5 次", app._set_execution_progress.call_args.args[0])
         self.assertIn("单独执行第 3/4 行动作，共 5 次", app._append_mini_step.call_args.args[0])
@@ -2551,7 +2708,7 @@ class SingleActionRunTests(unittest.TestCase):
         app._run_current_script_impl = Mock()
         app.run_current_script(start_index=1, single_action_repeats=4)
         app._run_current_script_impl.assert_called_once_with(
-            1, 4, segment=None, segment_repeats=1)
+            1, 4, segment=None, segment_repeats=1, partial_run=False)
 
 
 class ModuleObjectRunTests(unittest.TestCase):
@@ -2663,6 +2820,8 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.close_action_var = FakeSettingVar("exit")
         app.focus_mode_enabled_var = FakeSettingVar(False)
         app.activate_target_enabled_var = FakeSettingVar(True)
+        app.partial_script_globals_var = FakeSettingVar(True)
+        app.partial_workflow_globals_var = FakeSettingVar(True)
         app.floating_notice_position_var = FakeSettingVar("顶部居中")
         app.saved_window_signature = None
         app.activation_draft_enabled = False
@@ -2703,6 +2862,8 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.close_action_var = FakeSettingVar("exit")
         app.focus_mode_enabled_var = FakeSettingVar(False)
         app.activate_target_enabled_var = FakeSettingVar(True)
+        app.partial_script_globals_var = FakeSettingVar(True)
+        app.partial_workflow_globals_var = FakeSettingVar(True)
         app.floating_notice_position_var = FakeSettingVar("顶部居中")
         app.saved_window_signature = None
         app.activation_draft_enabled = True
@@ -2786,7 +2947,7 @@ class LastScriptRestoreTests(unittest.TestCase):
         self.assertEqual(app.script.actions[0]["button"], "right")
         self.assertEqual(app.script_path, path)
         self.assertTrue(app.dirty)
-        self.assertEqual(app.interval_var.get(), 125)
+        self.assertNotIn("move_interval_ms", app.script.settings)
         self.assertEqual(app.script_category_var.get(), "关卡")
         app._sync_activation_ui_from_script.assert_called_once_with()
 

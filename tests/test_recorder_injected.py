@@ -26,10 +26,9 @@ class FakeRawListener:
         pass
 
 
-def make_recorder(mode="auto", interval_ms=100):
+def make_recorder(mode="auto"):
     rec = MacroRecorder()
     rec.mode = mode
-    rec.interval_ms = interval_ms
     rec.target_relative_enabled = False
     rec.running = True
     rec._last_action_time = time.perf_counter()
@@ -64,7 +63,6 @@ class RecorderInjectedInputTests(unittest.TestCase):
     def test_physical_relative_delta_stays_mouse_move(self):
         rec = make_recorder(mode="relative")
         rec._on_raw_move(-300, 0, injected=False)
-        rec._flush_raw(force=True)
         self.assertEqual(len(rec.actions), 1)
         self.assertEqual(rec.actions[0]["type"], "mouse_move")
         self.assertEqual(rec.actions[0]["mode"], "relative")

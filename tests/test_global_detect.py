@@ -279,13 +279,15 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         self.assertIsNone(evaluation.hit)
         self.assertEqual([event["kind"] for event in evaluation.deferred_events],
                          ["restore_foreground", "overlay", "fallback_click"])
+        self.assertEqual(evaluation.deferred_events[1]["key"], "script:g1:fallback")
         overlay.assert_not_called()
         fallback_click.assert_not_called()
         with package_patch('app', 'show_overlay') as consumed_overlay, \
              patch.object(app, "_restore_workflow_scan_foreground") as restore_foreground, \
              patch.object(app.player, "_click_module_point") as consumed_click:
             app._consume_detection_events(evaluation.deferred_events)
-        consumed_overlay.assert_called_once()
+        consumed_overlay.assert_called_once_with(10, 20, 30, 40,
+                                                 label=None, key="script:g1:fallback")
         restore_foreground.assert_called_once()
         consumed_click.assert_called_once()
 
@@ -562,6 +564,71 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         app.player = None
         self.assertEqual(app._guard_template_scale(), 1.0)
 
+    def test_guard_image_region_scales_from_recorded_screen(self):
+        app = self._make_guard_app()
+        app.player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        app.player._target_screen = {"left": 0, "top": 0, "width": 1280, "height": 720}
+        with tempfile.TemporaryDirectory() as folder:
+            template = Path(folder) / "guard.png"
+            template.write_bytes(b"image")
+            guard = self._make_guard(
+                template, region_mode="custom", region=(960, 540, 480, 270),
+            )
+            with package_patch('app', 'find_template', return_value=None) as find:
+                app._guard_image_detect(guard, None, None)
+        self.assertEqual(find.call_args.args[2], (640, 360, 320, 180))
+
+    def test_guard_ocr_region_scales_from_recorded_screen(self):
+        app = self._make_guard_app()
+        app._wait_ocr_ready = Mock(return_value=True)
+        app.player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        app.player._target_screen = {"left": 0, "top": 0, "width": 1280, "height": 720}
+        guard = self._make_guard(
+            "images/guard.png", recognize="text", expected_text="开始",
+            region_mode="custom", region=(960, 540, 480, 270),
+        )
+        with package_patch(
+            'app', 'recognize_region_with_boxes', return_value=("", []),
+        ) as recognize:
+            app._guard_text_detect(guard, None, None)
+        recognize.assert_called_once_with((640, 360, 320, 180))
+
+    def test_guard_custom_click_and_ocr_offsets_scale_from_recorded_screen(self):
+        app = self._make_guard_app()
+        app.player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        app.player._target_screen = {"left": 0, "top": 0, "width": 1280, "height": 720}
+        custom = self._make_guard(
+            "images/guard.png", after_action="click_custom", click=(960, 540),
+        )
+        self.assertEqual(
+            app._build_guard_hit(custom, resolve_hwnd=False)["click"],
+            (640, 360),
+        )
+        matched_text = self._make_guard(
+            "images/guard.png", module_ref=True, recognize="text",
+            after_action="click_match", ocr_offset_right=30, ocr_offset_down=15,
+            match_data={"x": 590, "y": 350, "width": 100, "height": 20,
+                        "center_x": 640, "center_y": 360},
+        )
+        self.assertEqual(
+            app._build_guard_hit(matched_text, resolve_hwnd=False)["click"],
+            (660, 370),
+        )
+
+    def test_guard_fallback_region_scales_from_recorded_screen(self):
+        app = self._make_guard_app()
+        app.player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        app.player._target_screen = {"left": 0, "top": 0, "width": 1280, "height": 720}
+        fallback = {
+            "template": "images/fallback.png", "region": [960, 540, 480, 270],
+            "threshold": 0.85,
+        }
+        with package_patch('app', 'resolve_path', return_value=Path("fallback.png")), \
+             patch.object(Path, 'is_file', return_value=True), \
+             package_patch('app', 'find_template', return_value=None) as find:
+            app._guard_fallback_match({}, fallback, None, None)
+        self.assertEqual(find.call_args.args[2], (640, 360, 320, 180))
+
     def test_ensure_ocr_ready_loads_engine_once(self):
         # OCR 引擎首次导入不可中断且可能耗时数十秒：播放开始前确保就绪，
         # 避免第一次文字识别把“正在播放”卡在导入里。
@@ -593,7 +660,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app.execution_progress_text, "OCR：正在导入 PaddleOCR · 25% · F12 停止")
         app.mini_ocr_progress_var.set.assert_called_once_with(25)
         app.mini_count_var.set.assert_called_once_with(
-            "OCR：正在导入 PaddleOCR · 25% · F12 停止",
+            "OCR：正在导入 PaddleOCR | 25%",
         )
 
     def test_ensure_ocr_ready_aborts_when_stop_requested(self):
@@ -1358,8 +1425,13 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {"a": {"key": "a"}, "b": {"key": "b"}}
         app.guards_lock = threading.Lock()
-        app._clear_global_guards()
+        with patch('macroflow.ui.app.guards.hide_overlay') as hide:
+            app._clear_global_guards()
         self.assertEqual(app.global_guards, {})
+        self.assertCountEqual(
+            [call.args[0] for call in hide.call_args_list],
+            ["a", "a:fallback", "b", "b:fallback"],
+        )
 
     def test_activate_global_detect_defaults_click_delay_to_1000ms(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1575,7 +1647,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._guard_config_version = 8
         app._pending_global_guard_hits = [{"guard_key": "script:one"}]
 
-        app._exit_script_global_scope(("script:one",))
+        with patch('macroflow.ui.app.global_detect.hide_overlay') as hide:
+            app._exit_script_global_scope(("script:one",))
 
         self.assertNotIn("script:one", app.global_guards)
         self.assertIn("workflow:one", app.global_guards)
@@ -1583,6 +1656,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app.global_detect_cooldown_deadlines, {"workflow:one": 2345.6})
         self.assertEqual(app._guard_config_version, 9)
         self.assertEqual(app._pending_global_guard_hits, [])
+        self.assertEqual([call.args[0] for call in hide.call_args_list],
+                         ["script:one", "script:one:fallback"])
 
     def test_activate_global_detect_region_mode_parsing(self):
         # 旧配置没有 region_mode：无区域 → 全屏；有区域 → 自定义区域。
@@ -1775,10 +1850,94 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             self.assertIsNone(app._evaluate_one_guard(guard, None, None, 103.0))
 
         self.assertEqual(overlay.call_args_list, [
-            call(10, 20, 30, 40, label="5s"),
-            call(50, 20, 30, 40, label="4s"),
-            call(10, 20, 30, 40, label="5s"),
+            call(10, 20, 30, 40, label="5s", key=guard["key"]),
+            call(50, 20, 30, 40, label="4s", key=guard["key"]),
+            call(10, 20, 30, 40, label="5s", key=guard["key"]),
         ])
+
+    def test_workflow_global_image_module_registration_shows_hold_countdown(self):
+        app = self._make_guard_app()
+        match = {
+            "x": 10, "y": 20, "width": 30, "height": 40,
+            "center_x": 25, "center_y": 40, "score": 0.9,
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            template = Path(folder) / "global.png"
+            template.write_bytes(b"image")
+            app._activate_global_detect_from_config({
+                "type": "global_detect", "template": str(template),
+                "hold_enabled": True, "hold_ms": 5000,
+            }, {"kind": "global_module", "step_id": "global-image"})
+            guard = app.global_guards["workflow:global-image"]
+
+            with patch.object(app, "_guard_image_detect", return_value=(True, match)), \
+                 patch.object(app, "_detection_overlay") as overlay:
+                self.assertIsNone(app._evaluate_one_guard(guard, None, None, 100.0))
+
+        overlay.assert_called_once_with(10, 20, 30, 40, label="5s", key=guard["key"])
+
+    def test_script_global_text_module_registration_shows_hold_countdown(self):
+        app = self._make_guard_app()
+        module = {
+            "name": "全局体力提示", "enabled": True,
+            "recognize": "text", "expected_text": "体力不足",
+            "match_mode": "contains", "template": "",
+            "region": [10, 20, 300, 400], "threshold": 0.85,
+            "interval_ms": 500, "hold_enabled": True, "hold_ms": 5000,
+            "after_action": "continue", "delay_ms": 0,
+        }
+        found = {
+            "text": "当前体力不足", "x": 80, "y": 60, "width": 80, "height": 40,
+            "center_x": 120, "center_y": 80, "score": 0.99,
+        }
+        config = {
+            "type": "global_detect", "module_ref": True,
+            "module_key": "module:global-text", "action_id": "global-text",
+            "region_mode": "template",
+        }
+
+        app._wait_ocr_ready = Mock(return_value=True)
+        with package_patch('app', 'registered_module_object', return_value=module), \
+             package_patch('app', 'recognize_region_with_boxes',
+                           return_value=("当前体力不足", [found])):
+            app._activate_global_detect_from_config(config)
+            guard = app.global_guards["script:global-text"]
+            with patch.object(app, "_detection_overlay") as overlay:
+                self.assertIsNone(app._evaluate_one_guard(guard, None, None, 100.0))
+
+        overlay.assert_called_once_with(80, 60, 80, 40, label="5s", key=guard["key"])
+
+    def test_workflow_global_numeric_text_accepts_ocr_square_and_shows_countdown(self):
+        app = self._make_guard_app()
+        module = {
+            "name": "第一名分数为0", "enabled": True,
+            "recognize": "text", "expected_text": "0", "match_mode": "equals",
+            "template": "", "region": [1797, 446, 92, 24],
+            "interval_ms": 1000, "hold_enabled": True, "hold_ms": 60000,
+            "after_action": "continue", "delay_ms": 0,
+        }
+        found = {
+            "text": "□", "x": 1800, "y": 448, "width": 20, "height": 20,
+            "center_x": 1810, "center_y": 458, "score": 0.99,
+        }
+        config = {
+            "type": "global_detect", "module_ref": True,
+            "module_key": "module:569b8be383e0453299db517a072b35b5",
+            "region_mode": "template",
+        }
+        workflow_module = {
+            "kind": "global_module", "step_id": "4676a54de9304fd8bd03a175692f3ed9",
+        }
+
+        app._wait_ocr_ready = Mock(return_value=True)
+        with package_patch('app', 'registered_module_object', return_value=module), \
+             package_patch('app', 'recognize_region_with_boxes', return_value=("□", [found])):
+            app._activate_global_detect_from_config(config, workflow_module)
+            guard = app.global_guards["workflow:4676a54de9304fd8bd03a175692f3ed9"]
+            with patch.object(app, "_detection_overlay") as overlay:
+                self.assertIsNone(app._evaluate_one_guard(guard, None, None, 100.0))
+
+        overlay.assert_called_once_with(1800, 448, 20, 20, label="60s", key=guard["key"])
 
     def test_global_guard_retriggers_after_cooldown_while_target_stays_visible(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2333,20 +2492,6 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 module,
             )
             app.player.play.assert_not_called()
-
-    def test_tab_changed_refreshes_workflow_tree(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow_tree = Mock()
-        app.notebook = Mock()
-        app.notebook.index.return_value = 1
-        app.rebuild_workflow_tree = Mock()
-        app._on_tab_changed()
-        app.rebuild_workflow_tree.assert_called_once()
-
-        app.rebuild_workflow_tree.reset_mock()
-        app.notebook.index.return_value = 0
-        app._on_tab_changed()
-        app.rebuild_workflow_tree.assert_not_called()
 
     def test_global_module_label_reads_script_config(self):
         with tempfile.TemporaryDirectory() as folder:

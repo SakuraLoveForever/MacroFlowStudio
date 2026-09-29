@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1869,6 +1870,13 @@ class OcrTests(unittest.TestCase):
         self.assertFalse(matches_expected("背包已满", "背包已满！", "equals"))
         self.assertFalse(matches_expected("背包已满！", "背包已满", "equals"))
 
+    def test_matches_expected_numeric_equals_accepts_common_ocr_zero_confusions(self):
+        for recognized in ("□", "O", "o", "○", "〇"):
+            with self.subTest(recognized=recognized):
+                self.assertTrue(matches_expected(recognized, "0", "equals"))
+        self.assertFalse(matches_expected("□", "状态0", "equals"))
+        self.assertFalse(matches_expected("0", "O", "equals"))
+
     def test_matches_expected_empty_expected_requires_any_text(self):
         self.assertTrue(matches_expected("任何文字", "", "contains"))
         self.assertTrue(matches_expected("任何文字", "  ", "equals"))
@@ -2039,6 +2047,40 @@ class DetectOverlayTests(unittest.TestCase):
             123, overlay_module.WM_OVERLAY_SHOW, 0, 0,
         )
 
+    def test_two_named_countdowns_use_independent_overlay_windows(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        with patch.object(overlay_module, "_ensure_window", side_effect=[101, 202]), \
+             patch.dict(overlay_module._pending_by_hwnd, {}, clear=True), \
+             patch.object(overlay_module._user32, "PostMessageW") as post_message:
+            overlay_module.show_overlay(10, 20, 30, 40, label="5s", key="workflow:first")
+            overlay_module.show_overlay(50, 60, 30, 40, label="4s", key="workflow:second")
+            self.assertEqual([call.args[0] for call in post_message.call_args_list], [101, 202])
+            self.assertEqual(overlay_module._pending_by_hwnd[101][-1], "5s")
+            self.assertEqual(overlay_module._pending_by_hwnd[202][-1], "4s")
+
+    def test_named_overlays_create_distinct_background_windows(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        release = threading.Event()
+        fake_user32 = Mock()
+        fake_user32.CreateWindowExW.side_effect = [101, 202]
+        fake_user32.GetMessageW.side_effect = lambda *_: (release.wait(2), 0)[1]
+        with patch.object(overlay_module, "_user32", fake_user32), \
+             patch.object(overlay_module, "_key_windows", {}), \
+             patch.object(overlay_module, "_key_threads", {}), \
+             patch.object(overlay_module, "_key_ready", {}), \
+             patch.object(overlay_module, "_pending_by_hwnd", {}):
+            try:
+                first = overlay_module._ensure_window("first")
+                second = overlay_module._ensure_window("second")
+                self.assertEqual((first, second), (101, 202))
+            finally:
+                threads = tuple(overlay_module._key_threads.values())
+                release.set()
+                for thread in threads:
+                    thread.join(2)
+
     def test_countdown_label_does_not_widen_the_match_frame(self):
         import macroflow.ui.detect_overlay as overlay_module
 
@@ -2061,6 +2103,32 @@ class DetectOverlayTests(unittest.TestCase):
         # 10 px target + 2 px border on both sides: the label may be wider,
         # but the red frame must still end at x=13 instead of using the label width.
         self.assertEqual(fake_gdi.Rectangle.call_args.args[3], 13)
+
+    def test_countdown_frame_blinks_until_its_auto_hide_timer(self):
+        import macroflow.ui.detect_overlay as overlay_module
+
+        fake_user32 = Mock()
+        fake_user32.GetDpiForSystem.return_value = 96
+        fake_user32.IsWindowVisible.side_effect = [True, False]
+        with patch.object(overlay_module, "_user32", fake_user32), \
+             patch.object(overlay_module, "_to_virtualized", side_effect=lambda rect: rect), \
+             patch.object(overlay_module, "_pending_by_hwnd", {
+                 123: (10, 20, 30, 40, 0xFF, 900, "5s"),
+            }), patch.object(overlay_module, "_blink_active_hwnds", set()):
+            overlay_module._wnd_proc(123, overlay_module.WM_OVERLAY_SHOW, 0, 0)
+            overlay_module._wnd_proc(123, overlay_module.WM_OVERLAY_SHOW, 0, 0)
+            overlay_module._wnd_proc(123, overlay_module.WM_TIMER, 2, 0)
+            overlay_module._wnd_proc(123, overlay_module.WM_TIMER, 2, 0)
+            overlay_module._wnd_proc(123, overlay_module.WM_TIMER, 1, 0)
+        self.assertEqual(fake_user32.SetTimer.call_args_list.count(
+            call(123, 2, 250, None)), 1)
+        self.assertEqual(
+            [call.args for call in fake_user32.ShowWindow.call_args_list],
+            [(123, overlay_module.SW_SHOWNOACTIVATE),
+             (123, overlay_module.SW_HIDE),
+             (123, overlay_module.SW_SHOWNOACTIVATE),
+             (123, overlay_module.SW_HIDE)],
+        )
 
     def test_show_and_hide_overlay_creates_window(self):
         from macroflow.ui.detect_overlay import hide_overlay, show_overlay

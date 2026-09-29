@@ -223,17 +223,27 @@ def parse_ocr_number_pair(recognized: str, separator: str = "/") -> tuple[int, i
     return int(left.group(0)), int(right.group(0))
 
 
+_OCR_ZERO_CONFUSIONS = str.maketrans({
+    "O": "0", "o": "0", "□": "0", "○": "0", "〇": "0",
+})
+
+
 def matches_expected(recognized: str, expected: str, mode: str = "contains") -> bool:
     """判断识别文字是否命中期望文字。
 
     期望文字为空时只要识别到任意文字即命中；"equals" 忽略大小写、去掉
-    两端空白后整体相等；"contains" 为子串包含（同样忽略大小写）。
+    两端空白后整体相等；纯数字的整体匹配会修正常见数字 0 OCR 混淆；
+    "contains" 为子串包含（同样忽略大小写）。
     """
     expected = (expected or "").strip()
     if not expected:
         return bool((recognized or "").strip())
     if mode == "equals":
-        return (recognized or "").strip().casefold() == expected.casefold()
+        actual = unicodedata.normalize("NFKC", recognized or "").strip()
+        target = unicodedata.normalize("NFKC", expected)
+        if target.isascii() and target.isdigit():
+            actual = actual.translate(_OCR_ZERO_CONFUSIONS)
+        return actual.casefold() == target.casefold()
     return expected.casefold() in (recognized or "").casefold()
 
 
