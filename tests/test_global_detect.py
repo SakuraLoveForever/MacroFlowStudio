@@ -2515,6 +2515,35 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             self.assertIn("1500", label)
             self.assertIn("触发后执行模块步骤，再继续工作流", label)
 
+    def test_global_module_label_shows_text_target_instead_of_module_id(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        key = "module:d0516a9efcfd4d05b181116865349a95"
+        step = {"kind": "global_module", "script": "", "config": {
+            "module_ref": True, "module_key": key, "template": key,
+            "region_mode": "template", "region": [826, 720, 105, 42],
+        }}
+        objects = {key: {"name": "识别文字", "template": "", "recognize": "text",
+                         "expected_text": "加载资源失败"}}
+        label = app._global_module_label(step, objects)
+        self.assertIn("识别文字 · 文字识别：加载资源失败", label)
+        self.assertIn("区域 模板区域", label)
+        self.assertNotIn(key, label)
+        step["config"]["template"] = ""
+        self.assertIn("识别文字 · 文字识别：加载资源失败",
+                      app._global_module_label(step, objects))
+
+    def test_global_module_label_resolves_image_template_from_module_object(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        key = "module:picture"
+        step = {"kind": "global_module", "script": "", "config": {
+            "module_ref": True, "module_key": key, "template": key,
+        }}
+        label = app._global_module_label(step, {key: {
+            "name": "主界面", "template": "images/主界面.png", "recognize": "image",
+        }})
+        self.assertIn("主界面 · 主界面.png", label)
+        self.assertNotIn(key, label)
+
     def test_screen_point_picker_restores_main_without_owner(self):
         picker = ScreenPointPicker.__new__(ScreenPointPicker)
         picker.owner = None

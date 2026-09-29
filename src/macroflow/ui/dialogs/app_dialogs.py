@@ -10,6 +10,7 @@ from macroflow.core.storage import (
     save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from macroflow.input.input_guard import KeyCapturer, RESERVED_HOTKEY_VKS
+from macroflow.ui.detect_overlay import show_overlay
 from pathlib import Path
 from macroflow.core.resolution import (
     build_resolution_action, group_display_modes, normalize_resolution_style,
@@ -376,6 +377,66 @@ class RestartWorkflowTargetDialog(ModalDialog):
                 return
         self.result = {"type": "restart_workflow", "restart_workflow_target_row": row}
         self.destroy()
+
+
+class CoordinateFlashDialog(ModalDialog):
+    """Flash a marker around an entered physical desktop coordinate."""
+
+    def __init__(self, parent):
+        super().__init__(parent, "坐标闪烁定位", 360, 210)
+        self.x_var = tk.StringVar(value="0")
+        self.y_var = tk.StringVar(value="0")
+        body = ttk.Frame(self, padding=px(16))
+        body.pack(fill="both", expand=True)
+        for row, (label, variable) in enumerate((("X 坐标", self.x_var), ("Y 坐标", self.y_var))):
+            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(7))
+            ttk.Entry(body, textvariable=variable, width=18).grid(
+                row=row, column=1, sticky="ew", padx=pad(12, 0), pady=px(7),
+            )
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="使用屏幕坐标，支持多显示器的负坐标。",
+                  foreground=COLOR_MUTED).grid(row=2, column=0, columnspan=2,
+                                                sticky="w", pady=pad(8, 0))
+        buttons = ttk.Frame(body)
+        buttons.grid(row=3, column=0, columnspan=2, sticky="e", pady=pad(16, 0))
+        ttk.Button(buttons, text="关闭", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="闪烁定位", command=self.flash).pack(
+            side="right", padx=pad(0, 8),
+        )
+        self.bind("<Return>", lambda _event: self.flash())
+
+    def flash(self):
+        try:
+            x, y = int(self.x_var.get().strip()), int(self.y_var.get().strip())
+        except ValueError:
+            show_floating_notice(self, "坐标无效", "X 和 Y 都必须是整数。")
+            return
+        screen = get_virtual_screen_rect()
+        if not (screen["left"] <= x < screen["left"] + screen["width"]
+                and screen["top"] <= y < screen["top"] + screen["height"]):
+            show_floating_notice(self, "坐标超出屏幕", "请输入当前显示器范围内的屏幕坐标。")
+            return
+        main_state = self.master.state()
+        self.grab_release()
+        self.withdraw()
+        self.master.withdraw()
+        try:
+            show_overlay(x - 14, y - 14, 28, 28, duration_ms=3000,
+                         label=f"({x}, {y})", key="coordinate-flash")
+        except Exception:
+            self._restore_after_flash(main_state)
+            raise
+        self.master.after(3200, lambda: self._restore_after_flash(main_state))
+
+    def _restore_after_flash(self, main_state):
+        self.master.deiconify()
+        if main_state == "zoomed":
+            self.master.state("zoomed")
+        if self.winfo_exists():
+            self.deiconify()
+            self.lift()
+            self.grab_set()
+            self.focus_force()
 
 
 class ScriptRangeInsertDialog(ModalDialog):

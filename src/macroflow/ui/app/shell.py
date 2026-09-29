@@ -26,7 +26,7 @@ from macroflow.core.models import (
     script_ref_repeat_count, scroll_clicks, scroll_direction_label,
 )
 from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
+from macroflow.ui.dialogs.app_dialogs import CoordinateFlashDialog, HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
 from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
 from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
 from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
@@ -858,6 +858,10 @@ class ShellMixin:
             coordinate_row, textvariable=self.cursor_position_var,
             style="SidebarMuted.TLabel",
         ).pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            sidebar, text="坐标闪烁定位", command=lambda: CoordinateFlashDialog(self.root).show(),
+            style="SidebarGhost.TButton",
+        ).pack(anchor="w", pady=pad(8, 0))
 
         ttk.Label(sidebar, text="执行设置", style="SidebarSection.TLabel").pack(anchor="w", pady=pad(18, 7))
         playback_speed_title = ttk.Frame(sidebar, style="Sidebar.TFrame")

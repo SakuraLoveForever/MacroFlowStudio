@@ -26,6 +26,7 @@ from macroflow.ui.app.startup import windows_startup_command
 from macroflow.ui.app.summaries import action_summary
 import macroflow.ui.dialogs as dialog_module
 from macroflow.ui.dialogs.actions import SetResolutionActionDialog
+from macroflow.ui.dialogs.app_dialogs import CoordinateFlashDialog
 from macroflow.ui.dialogs.base import activate_main_after_modal, drag_selection_region, restore_modal_after_overlay, selectable_target_windows
 from tests.helpers.patches import package_patch
 
@@ -559,6 +560,78 @@ class BindingTests(unittest.TestCase):
             [call.args[0] for call in app.cursor_tracking_mini_var.set.call_args_list],
             ["X: 30    Y: 40", "X: 960    Y: 540"],
         )
+
+    def test_coordinate_flash_accepts_negative_screen_coordinates(self):
+        dialog = CoordinateFlashDialog.__new__(CoordinateFlashDialog)
+        dialog.master = Mock()
+        dialog.master.state.return_value = "zoomed"
+        dialog.grab_release = Mock()
+        dialog.withdraw = Mock()
+        dialog.deiconify = Mock()
+        dialog.lift = Mock()
+        dialog.grab_set = Mock()
+        dialog.focus_force = Mock()
+        dialog.winfo_exists = Mock(return_value=True)
+        dialog.x_var = Mock()
+        dialog.y_var = Mock()
+        dialog.x_var.get.return_value = "-50"
+        dialog.y_var.get.return_value = "120"
+        screen = {"left": -1920, "top": 0, "width": 3840, "height": 1080}
+        with patch("macroflow.ui.dialogs.app_dialogs.get_virtual_screen_rect", return_value=screen), \
+             patch("macroflow.ui.dialogs.app_dialogs.show_overlay") as overlay:
+            dialog.flash()
+        overlay.assert_called_once_with(-64, 106, 28, 28, duration_ms=3000,
+                                        label="(-50, 120)", key="coordinate-flash")
+        dialog.grab_release.assert_called_once()
+        dialog.withdraw.assert_called_once()
+        dialog.master.withdraw.assert_called_once()
+        dialog.master.after.assert_called_once()
+        self.assertEqual(dialog.master.after.call_args.args[0], 3200)
+        dialog.master.after.call_args.args[1]()
+        dialog.master.deiconify.assert_called_once()
+        dialog.master.state.assert_any_call("zoomed")
+        dialog.deiconify.assert_called_once()
+        dialog.grab_set.assert_called_once()
+
+    def test_coordinate_flash_rejects_invalid_or_offscreen_input(self):
+        dialog = CoordinateFlashDialog.__new__(CoordinateFlashDialog)
+        dialog.x_var = Mock()
+        dialog.y_var = Mock()
+        dialog.y_var.get.return_value = "20"
+        screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
+        with patch("macroflow.ui.dialogs.app_dialogs.get_virtual_screen_rect", return_value=screen), \
+             patch("macroflow.ui.dialogs.app_dialogs.show_overlay") as overlay, \
+             patch("macroflow.ui.dialogs.app_dialogs.show_floating_notice") as notice:
+            for x in ("abc", "1920"):
+                dialog.x_var.get.return_value = x
+                dialog.flash()
+        overlay.assert_not_called()
+        self.assertEqual(notice.call_count, 2)
+
+    def test_coordinate_flash_restores_windows_if_overlay_fails(self):
+        dialog = CoordinateFlashDialog.__new__(CoordinateFlashDialog)
+        dialog.master = Mock()
+        dialog.master.state.return_value = "normal"
+        dialog.x_var = Mock()
+        dialog.y_var = Mock()
+        dialog.x_var.get.return_value = "50"
+        dialog.y_var.get.return_value = "60"
+        dialog.grab_release = Mock()
+        dialog.withdraw = Mock()
+        dialog.winfo_exists = Mock(return_value=True)
+        dialog.deiconify = Mock()
+        dialog.lift = Mock()
+        dialog.grab_set = Mock()
+        dialog.focus_force = Mock()
+        with patch("macroflow.ui.dialogs.app_dialogs.get_virtual_screen_rect",
+                   return_value={"left": 0, "top": 0, "width": 1920, "height": 1080}), \
+             patch("macroflow.ui.dialogs.app_dialogs.show_overlay",
+                   side_effect=RuntimeError("overlay unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "overlay unavailable"):
+                dialog.flash()
+        dialog.master.deiconify.assert_called_once()
+        dialog.deiconify.assert_called_once()
+        dialog.grab_set.assert_called_once()
 
     def test_every_main_log_line_contains_current_cursor_position(self):
         app = MacroFlowApp.__new__(MacroFlowApp)

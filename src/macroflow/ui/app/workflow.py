@@ -304,19 +304,36 @@ class WorkflowMixin:
                     config = self._script_trigger_config(script)
                 except Exception:
                     pass
-        if config.get("module_ref") and str(config.get("template", "")).strip():
+        module_obj = {}
+        if config.get("module_ref") and str(
+            config.get("module_key") or config.get("template") or ""
+        ).strip():
             module_key = str(config.get("module_key") or config.get("template", "")).strip()
             module_obj = self._module_object(module_key, module_objects) or {}
-            module_name = str(module_obj.get("name", "")).strip() or Path(
-                module_key.replace("\\", "/"),
-            ).stem
+            module_name = str(module_obj.get("name", "")).strip() or (
+                "未找到模块" if module_key.startswith("module:") else Path(
+                    module_key.replace("\\", "/"),
+                ).stem
+            )
             script_text = f"◆ 模块对象 · {module_name}"
         elif str(script_value).strip():
             script_name = workflow_script_name(script_value)
             script_text = f"⇄ 引用脚本 · {script_name}" if script_name else "⇄ 引用脚本 · 未配置"
         else:
             script_text = "◈ 全局检测 · 未配置"
-        template_name = Path(str(config.get("template", ""))).name
+        if module_obj:
+            recognize = str(module_obj.get("recognize", ""))
+            if recognize == "text":
+                expected = str(module_obj.get("expected_text", "")).strip()
+                template_name = f"文字识别：{expected}" if expected else "文字识别"
+            elif recognize == "number":
+                template_name = "数字识别"
+            else:
+                template_name = Path(str(module_obj.get("template", ""))).name
+        elif config.get("module_ref"):
+            template_name = ""
+        else:
+            template_name = Path(str(config.get("template", ""))).name
         if not template_name:
             return script_text
         region = config.get("region") or []
