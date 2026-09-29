@@ -100,6 +100,7 @@ class ScriptEditingTests(unittest.TestCase):
             app._show_script_more_menu()
 
         labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
+        self.assertIn("⇥ 插入脚本指定行…", labels)
         self.assertNotIn("▲ 向上插入", labels)
         self.assertNotIn("▼ 向下插入", labels)
 
@@ -937,6 +938,32 @@ class ScriptEditingTests(unittest.TestCase):
             app._insert_script_range()
         self.assertEqual(len(app.script.actions), 1)
         app._mark_dirty.assert_not_called()
+
+    def test_script_range_rejects_jump_to_row_outside_selection(self):
+        source = [
+            {"type": "comment", "text": "源1", "action_id": "source1"},
+            {"type": "comment", "text": "源2", "action_id": "source2"},
+            {"type": "jump", "jump_row": 1, "action_id": "source3"},
+        ]
+        with self.assertRaisesRegex(ValueError, "范围外"):
+            MacroFlowApp._expanded_action_range(source, 2, 3)
+        self.assertNotIn("jump_action_id", source[2])
+
+    def test_script_range_rejects_out_of_bounds_rows(self):
+        source = [{"type": "comment", "text": "源"}]
+        for start, end in ((0, 1), (1, 2), (2, 1)):
+            with self.subTest(start=start, end=end), self.assertRaises(ValueError):
+                MacroFlowApp._expanded_action_range(source, start, end)
+
+    def test_script_range_maps_numeric_global_jump_within_selection(self):
+        source = [
+            {"type": "comment", "text": "源1", "action_id": "source1"},
+            {"type": "comment", "text": "源2", "action_id": "source2"},
+            {"type": "global_detect", "jump_row": 2, "action_id": "source3"},
+        ]
+        copied = MacroFlowApp._expanded_action_range(source, 2, 3)
+        self.assertEqual(copied[1]["jump_action_id"], copied[0][ACTION_ID_KEY])
+        self.assertNotIn("jump_action_id", source[2])
 
     def test_insert_script_into_empty_script_allowed(self):
         app = make_edit_app()

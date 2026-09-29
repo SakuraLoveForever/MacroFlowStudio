@@ -378,6 +378,109 @@ class RestartWorkflowTargetDialog(ModalDialog):
         self.destroy()
 
 
+class ScriptRangeInsertDialog(ModalDialog):
+    """Preview one script and select a contiguous range of actions to copy."""
+
+    def __init__(self, parent, script_name: str, rows: list[tuple]):
+        super().__init__(parent, "插入脚本指定行", 820, 560)
+        self.resizable(True, True)
+        self.row_count = len(rows)
+        self.start_var = tk.StringVar(value="1")
+        self.end_var = tk.StringVar(value=str(self.row_count))
+        self._syncing = False
+
+        body = ttk.Frame(self, padding=px(14))
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=f"{script_name} · 共 {self.row_count} 行").pack(anchor="w")
+        ttk.Label(body, text="点击起始行，再按 Shift 点击终止行；也可在下方输入行号。",
+                  foreground=COLOR_MUTED).pack(anchor="w", pady=pad(4, 10))
+
+        preview = ttk.Frame(body)
+        preview.pack(fill="both", expand=True)
+        preview.columnconfigure(0, weight=1)
+        preview.rowconfigure(0, weight=1)
+        self.tree = ttk.Treeview(
+            preview, columns=("line", "kind", "detail", "delay"),
+            show="headings", selectmode="extended", height=17,
+        )
+        for key, label, width, stretch in (
+            ("line", "行", 55, False),
+            ("kind", "动作", 150, False),
+            ("detail", "内容", 620, True),
+            ("delay", "执行前延时", 100, False),
+        ):
+            self.tree.heading(key, text=label)
+            self.tree.column(key, width=px(width), stretch=stretch, anchor="w")
+        scroll = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
+        horizontal = ttk.Scrollbar(preview, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        for line, values in enumerate(rows, start=1):
+            self.tree.insert("", "end", iid=str(line), values=(line, values[2], values[3], values[4]))
+
+        range_row = ttk.Frame(body)
+        range_row.pack(fill="x", pady=pad(12, 0))
+        ttk.Label(range_row, text="起始行").pack(side="left")
+        ttk.Spinbox(range_row, from_=1, to=self.row_count, textvariable=self.start_var,
+                    width=7).pack(side="left", padx=pad(6, 18))
+        ttk.Label(range_row, text="终止行").pack(side="left")
+        ttk.Spinbox(range_row, from_=1, to=self.row_count, textvariable=self.end_var,
+                    width=7).pack(side="left", padx=pad(6, 0))
+        ttk.Label(body, text="所选行若跳转到范围外的行，请扩大范围后再插入。",
+                  foreground=COLOR_MUTED).pack(anchor="w", pady=pad(10, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=pad(12, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="插入选中范围", command=self.save).pack(side="right", padx=px(8))
+
+        self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
+        self.start_var.trace_add("write", self._range_changed)
+        self.end_var.trace_add("write", self._range_changed)
+        self._range_changed()
+
+    def _selection_changed(self, _event=None):
+        if self._syncing:
+            return
+        selected = sorted(int(item) for item in self.tree.selection())
+        if not selected:
+            return
+        self._syncing = True
+        try:
+            self.start_var.set(str(selected[0]))
+            self.end_var.set(str(selected[-1]))
+        finally:
+            self._syncing = False
+        self._range_changed()
+
+    def _range_changed(self, *_args):
+        if self._syncing:
+            return
+        try:
+            start, end = int(self.start_var.get()), int(self.end_var.get())
+        except ValueError:
+            return
+        if not 1 <= start <= end <= self.row_count:
+            return
+        self._syncing = True
+        try:
+            self.tree.selection_set(*(str(line) for line in range(start, end + 1)))
+        finally:
+            self._syncing = False
+
+    def save(self):
+        try:
+            start, end = int(self.start_var.get()), int(self.end_var.get())
+        except ValueError:
+            start, end = 0, 0
+        if not 1 <= start <= end <= self.row_count:
+            show_floating_notice(self, "行号无效", f"请选择 1 到 {self.row_count} 之间的连续行。")
+            return
+        self.result = (start, end)
+        self.destroy()
+
+
 class ScriptRefDialog(ModalDialog):
     """Choose another script to reference; its latest content is read at runtime."""
 

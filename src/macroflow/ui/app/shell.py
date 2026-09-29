@@ -1115,6 +1115,7 @@ class ShellMixin:
         menu.add_command(
             label="⇥ 逐行插入脚本", command=lambda: self._insert_script(True),
         )
+        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
         self._popup_menu(menu, self.add_action_menu_button)
 
     def _show_script_more_menu(self):
@@ -1126,6 +1127,7 @@ class ShellMixin:
         )
         menu.add_command(label="⇥ 引用脚本（实时读取）", command=lambda: self._insert_script(False))
         menu.add_command(label="⇥ 逐行插入脚本", command=lambda: self._insert_script(True))
+        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
         menu.add_separator()
         menu.add_command(label="📂 打开脚本目录",
                          command=lambda: self.open_folder(self._script_category_dir()))

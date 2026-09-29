@@ -26,7 +26,7 @@ from macroflow.core.storage import (
     update_module_object,
 )
 from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
+from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, ScriptRangeInsertDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
 from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
 from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
 from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
@@ -1687,6 +1687,79 @@ class ScriptsMixin:
                     f"插入到第 {insert_at + 1} 行起"
                 )
             self._notify("已插入脚本引用", detail)
+
+    @staticmethod
+    def _expanded_action_range(source_actions: list[dict], start_row: int,
+                               end_row: int) -> list[dict]:
+        if not 1 <= start_row <= end_row <= len(source_actions):
+            raise ValueError("插入行号超出脚本范围。")
+        prepared = copy.deepcopy(source_actions)
+        # 先按完整源脚本迁移旧版行号跳转，再截取区间并重建区间内的动作 ID。
+        ensure_action_ids(prepared)
+        selected = prepared[start_row - 1:end_row]
+        for action in selected:
+            for row_field, target_field in (
+                ("jump_row", "jump_action_id"),
+                ("timeout_jump_row", "timeout_jump_action_id"),
+                ("found_jump_row", "found_jump_action_id"),
+                ("equal_jump_row", "equal_jump_action_id"),
+                ("not_equal_jump_row", "not_equal_jump_action_id"),
+            ):
+                if action.get(target_field) or row_field not in action:
+                    continue
+                try:
+                    target_row = int(action[row_field])
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= target_row <= len(prepared):
+                    action[target_field] = prepared[target_row - 1][ACTION_ID_KEY]
+        source_ids = {action_id_of(action) for action in prepared}
+        selected_ids = {action_id_of(action) for action in selected}
+        if any(str(action.get(field, "")).strip() in source_ids - selected_ids
+               for action in selected for field in JUMP_TARGET_KEYS):
+            raise ValueError("所选行有跳转指向范围外的行，请把目标行也包含进来。")
+        return clone_actions_with_new_ids(selected)
+
+    def _insert_script_range(self):
+        """Preview a script and copy a chosen contiguous row range into this script."""
+        insert_at = self._insert_script_position()
+        if insert_at is None:
+            return
+        selected = filedialog.askopenfilename(
+            parent=self.root,
+            initialdir=self._script_category_dir(),
+            title="选择要插入指定行的脚本",
+            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        try:
+            script = load_script(path)
+            if not script.actions:
+                self._notify("无法插入脚本", f"{path.name} 没有动作行。")
+                return
+            preview_actions = copy.deepcopy(script.actions)
+            ensure_action_ids(preview_actions)
+            action_rows = ActionRowIndex(preview_actions, module_objects_snapshot())
+            rows = [action_row_values(action, index, action_rows)
+                    for index, action in enumerate(preview_actions)]
+        except Exception as exc:
+            self._notify("无法插入脚本", f"{path.name}：{exc}")
+            return
+        selected_range = ScriptRangeInsertDialog(self.root, path.name, rows).show()
+        if selected_range is None:
+            return
+        start_row, end_row = selected_range
+        try:
+            actions = self._expanded_action_range(preview_actions, start_row, end_row)
+        except ValueError as exc:
+            self._notify("无法插入脚本", str(exc))
+            return
+        self._insert_script_actions(insert_at, actions)
+        detail = (f"{path.name} 第 {start_row}–{end_row} 行，共 {len(actions)} 行"
+                  f"插入到当前脚本第 {insert_at + 1} 行")
+        self._notify("已插入脚本指定行", detail)
     def move_action(self, offset: int):
         """整体上移/下移选中的动作行。
 
