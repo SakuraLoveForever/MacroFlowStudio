@@ -138,7 +138,8 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "key": "键盘", "key_press": "键盘", "text": "文本",
         "mouse_move": "鼠标移动", "mouse_button": "鼠标按键", "click": "点击",
         "repeat_click": "连续点击",
-        "scroll": "滚轮", "image_match": "识图", "text_ocr": "识别文字",
+        "scroll": "滚轮", "scroll_sequence": "组合滚轮",
+        "image_match": "识图", "text_ocr": "识别文字",
         "ocr_compare": "数字比较", "multi_condition_click": "多条件识图",
         "row_list_condition_click": "列表逐行点击",
         "notice": "浮动提醒", "comment": "注释",
@@ -203,6 +204,11 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
                 f"{scroll_direction_label(action.get('dy', 0))} "
                 f"{scroll_clicks(action.get('dy', 0))} 格 {point(action)}"
             )
+        elif kind == "scroll_sequence":
+            detail = " → ".join(
+                f"{scroll_direction_label(delta)} {scroll_clicks(delta)} 格"
+                for delta in action.get("deltas", [])
+            ) + f" {point(action)}"
         elif kind == "image_match":
             if action.get("module_ref"):
                 key = str(action.get("module_key") or action.get("template", ""))
@@ -463,6 +469,11 @@ def segment_row_label(action: dict) -> str:
         return (
             f"滚轮 {scroll_direction_label(action.get('dy', 0))} "
             f"{scroll_clicks(action.get('dy', 0))} 格"
+        )
+    if kind == "scroll_sequence":
+        return "组合滚轮 " + " → ".join(
+            f"{scroll_direction_label(delta)} {scroll_clicks(delta)} 格"
+            for delta in action.get("deltas", [])
         )
     if kind in ("image_match", "global_detect"):
         template = str(action.get("template", "")).strip()

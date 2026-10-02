@@ -13,8 +13,14 @@ import tempfile
 import threading
 import tkinter as tk
 import unittest
+import ttkbootstrap
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar
+
+
+def close_test_root(root):
+    root.destroy()
+    ttkbootstrap.Style.instance = None
 
 
 class LogStreamsTests(unittest.TestCase):
@@ -31,6 +37,18 @@ class LogStreamsTests(unittest.TestCase):
         app._log_dedup_count = 0
         app._log_dedup_since = 0.0
         return app
+
+    def test_global_events_keep_workflow_and_script_streams_separate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            app = MacroFlowApp.__new__(MacroFlowApp)
+            app.global_log_path = Path(folder) / "global.log"
+            app.global_file_lock = threading.Lock()
+            app._guard_global_event({"key": "workflow:one"}, "工作流命中")
+            app._guard_global_event({"key": "script:two"}, "脚本命中")
+            self.assertIn("工作流命中", "".join(app._global_view_buffers["workflow"]))
+            self.assertNotIn("脚本命中", "".join(app._global_view_buffers["workflow"]))
+            self.assertIn("脚本命中", "".join(app._global_view_buffers["script"]))
+            self.assertIn("[workflow]", app.global_log_path.read_text(encoding="utf-8"))
 
     def test_event_log_merges_identical_repeats(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -132,10 +150,11 @@ class LogTabViewTests(unittest.TestCase):
         return app
 
     def test_two_log_views_show_their_own_stream(self):
+        ttkbootstrap.Style.instance = None
         root = tk.Tk()
         # 不 withdraw：tk.Text 需要真实布局才能断言内容；用全透明避免闪窗。
         root.attributes("-alpha", 0.0)
-        self.addCleanup(root.destroy)
+        self.addCleanup(close_test_root, root)
         app = self._app(root)
         app._build_log_tab()
 
@@ -173,12 +192,13 @@ class AutohideScrollbarTests(unittest.TestCase):
 
         from macroflow.ui.app.base import attach_autohide_scrollbar
 
+        ttkbootstrap.Style.instance = None
         root = tk.Tk()
         # 布局尺寸要按真实（已映射）窗口算，所以不能 withdraw；用全透明代替，
         # 测试期间屏幕上不会真的闪出一个窗口。
         root.attributes("-alpha", 0.0)
         root.geometry("700x400")
-        self.addCleanup(root.destroy)
+        self.addCleanup(close_test_root, root)
         shell = ttk.Frame(root)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=1)
@@ -229,12 +249,13 @@ class ModuleListScrollbarTests(unittest.TestCase):
     def _build(self):
         from tkinter import ttk
 
+        ttkbootstrap.Style.instance = None
         root = tk.Tk()
         # 与 AutohideScrollbarTests 同一套做法：布局尺寸要按已映射的窗口算，
         # 所以不能 withdraw；用全透明代替，屏幕上不会真的闪出窗口。
         root.attributes("-alpha", 0.0)
         root.geometry("700x400")
-        self.addCleanup(root.destroy)
+        self.addCleanup(close_test_root, root)
         list_frame = ttk.Frame(root)
         list_frame.pack(fill="both", expand=True)
         tree = ttk.Treeview(list_frame, columns=("region",), height=8)

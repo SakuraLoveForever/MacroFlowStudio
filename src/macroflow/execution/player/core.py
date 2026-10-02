@@ -1017,6 +1017,15 @@ class CoreMixin:
                 x, y = self._clamp_click_point(x, y, hwnd)
                 send_move_absolute(x, y)
             send_scroll(dx, dy)
+        elif kind == "scroll_sequence":
+            x, y = self._scale_point(int(action["x"]), int(action["y"]))
+            x, y = self._clamp_click_point(x, y, hwnd)
+            send_move_absolute(x, y)
+            for delta in action.get("deltas", []):
+                self.wait_while_paused()
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
+                send_scroll(0, int(delta))
         elif kind == "recorded_input":
             # 折叠的「录制动作」：整段录制内容作为一条动作播放，内部按录制顺序
             # 逐步执行（timeline 负责还原每一步之间的间隔）。

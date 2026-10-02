@@ -22,7 +22,7 @@ from macroflow.ui.app.constants import RECORD_TOOLBAR_BUTTON_LABEL, SEGMENT_BAR
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.app.summaries import action_summary, key_action_matches, set_matching_key_action_delays
 from macroflow.ui.dialogs.actions import edit_action
-from macroflow.ui.dialogs.app_dialogs import ScriptRefDialog, WindowPicker
+from macroflow.ui.dialogs.app_dialogs import ScriptRangeInsertDialog, ScriptRefDialog, WindowPicker
 from macroflow.ui.dialogs.segments import RecordedInputDialog, SegmentEditorMixin
 from macroflow.input.wininput import WindowInfo
 from tests.helpers.core import FakeSettingVar, FakeTree, FakeVar
@@ -36,6 +36,48 @@ from tests.helpers.patches import package_patch
 
 
 class ScriptEditingTests(unittest.TestCase):
+    def test_script_range_selection_event_does_not_repeat_forever(self):
+        class EventTree(FakeTree):
+            def __init__(self):
+                super().__init__()
+                self.pending_events = 0
+                self.selection_calls = 0
+
+            def selection_set(self, *items):
+                super().selection_set(*items)
+                self.selection_calls += 1
+                self.pending_events += 1
+
+        dialog = ScriptRangeInsertDialog.__new__(ScriptRangeInsertDialog)
+        dialog.row_count = 4
+        dialog.start_var = FakeVar("1")
+        dialog.end_var = FakeVar("4")
+        dialog._syncing = False
+        dialog.tree = EventTree()
+        for row in range(1, 5):
+            dialog.tree.insert("", "end", iid=str(row))
+
+        dialog._range_changed()
+        for _ in range(5):
+            if not dialog.tree.pending_events:
+                break
+            dialog.tree.pending_events -= 1
+            dialog._selection_changed()
+        self.assertEqual(dialog.tree.pending_events, 0)
+        self.assertEqual(dialog.tree.selection_calls, 1)
+
+        dialog.start_var.set("2")
+        dialog.end_var.set("3")
+        dialog._range_changed()
+        for _ in range(5):
+            if not dialog.tree.pending_events:
+                break
+            dialog.tree.pending_events -= 1
+            dialog._selection_changed()
+        self.assertEqual(dialog.tree.selection(), ("2", "3"))
+        self.assertEqual(dialog.tree.pending_events, 0)
+        self.assertEqual(dialog.tree.selection_calls, 2)
+
     def test_compact_toolbar_keeps_every_action_reachable(self):
         """工具栏压成一行后，每个动作都必须还有入口，且只有一个常驻按钮。
 
@@ -180,6 +222,25 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertIn(("↕ 滚轮", "add_scroll", "ScriptTool.TButton"), specs)
         app = MacroFlowApp.__new__(MacroFlowApp)
         self.assertTrue(callable(getattr(app, "add_scroll")))
+
+    def test_repeat_click_is_outside_add_menu_and_scroll_sequence_is_available(self):
+        specs = MacroFlowApp._script_action_button_specs()
+        self.assertIn("add_repeat_click", PRIMARY_ACTION_COMMANDS)
+        self.assertIn(("↕ 组合滚轮", "add_scroll_sequence", "ScriptTool.TButton"), specs)
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        self.assertTrue(callable(getattr(app, "add_scroll_sequence")))
+        self.assertEqual(
+            action_summary({"type": "scroll_sequence", "x": 10, "y": 20,
+                            "deltas": [2, -3], "delay_ms": 0})[1],
+            "向上 2 格 → 向下 3 格 @ (10, 20)",
+        )
+        app.root = Mock()
+        app._insert_action = Mock()
+        action = {"type": "scroll_sequence", "x": 10, "y": 20, "deltas": [2, -3]}
+        with patch("macroflow.ui.app.scripts.ScrollSequenceDialog") as dialog:
+            dialog.return_value.show.return_value = action
+            app.add_scroll_sequence()
+        app._insert_action.assert_called_once_with(action)
 
     def test_script_editor_exposes_record_action(self):
         # 工具栏要有录制入口：spec 里的命令名必须能在实例上取到（否则按钮点不动）。
@@ -519,6 +580,19 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(updated["action_id"], "stable-repeat")
         self.assertEqual(updated["count"], 3)
         dialog_class.assert_called_once()
+
+    def test_editing_scroll_sequence_preserves_action_id(self):
+        original = {"type": "scroll_sequence", "action_id": "stable-scroll",
+                    "x": 1, "y": 2, "deltas": [2, -1]}
+        with patch("macroflow.ui.dialogs.actions.ScrollSequenceDialog") as dialog_class:
+            dialog_class.return_value.show.return_value = {
+                "type": "scroll_sequence", "x": 5, "y": 6,
+                "deltas": [-3, 2], "delay_ms": 0,
+            }
+            updated = edit_action(None, original)
+        self.assertEqual(updated["action_id"], "stable-scroll")
+        self.assertEqual(updated["deltas"], [-3, 2])
+        dialog_class.assert_called_once_with(None, original)
 
     def test_editing_open_app_action_uses_open_app_dialog(self):
         original = {"type": "open_app", "action_id": "stable-app", "path": "C:/old/app.exe"}

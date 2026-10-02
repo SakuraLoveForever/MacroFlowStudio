@@ -901,6 +901,238 @@ class ScrollDialog(ModalDialog):
         self.destroy()
 
 
+class ScrollSequenceDialog(ModalDialog):
+    """One positioned scroll action with draggable up/down segments."""
+
+    def __init__(self, parent, action: dict | None = None):
+        super().__init__(parent, "编辑组合滚轮" if action else "添加组合滚轮", 540, 500)
+        self._source = dict(action or {})
+        action = action or {}
+        cursor = get_cursor_pos()
+        self.x = tk.StringVar(value=str(action.get("x", cursor[0])))
+        self.y = tk.StringVar(value=str(action.get("y", cursor[1])))
+        self.direction = tk.StringVar(value=SCROLL_UP_LABEL)
+        self.clicks = tk.StringVar(value="1")
+        self.delay = duration_var(action.get("delay_ms", 0))
+        self._drag_row = ""
+        self._cell_editor = None
+
+        body = ttk.Frame(self, padding=px(14))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(3, weight=1)
+        ttk.Label(body, text="屏幕 X").grid(row=0, column=0, sticky="w", pady=px(6))
+        x_row = ttk.Frame(body)
+        x_row.grid(row=0, column=1, sticky="ew")
+        ttk.Entry(x_row, textvariable=self.x).pack(side="left", fill="x", expand=True)
+        ttk.Button(x_row, text="点击屏幕选取…", command=self.start_pick_position).pack(
+            side="left", padx=pad(8, 0),
+        )
+        ttk.Label(body, text="屏幕 Y").grid(row=1, column=0, sticky="w", pady=px(6))
+        ttk.Entry(body, textvariable=self.y).grid(row=1, column=1, sticky="ew")
+        ttk.Label(body, text="滚动步骤").grid(row=2, column=0, columnspan=2,
+                                               sticky="w", pady=pad(12, 4))
+        self.tree = ttk.Treeview(
+            body, columns=("direction", "clicks"), show="headings",
+            selectmode="browse", height=8,
+        )
+        self.tree.heading("direction", text="方向")
+        self.tree.heading("clicks", text="格数")
+        self.tree.column("direction", width=px(180), anchor="w")
+        self.tree.column("clicks", width=px(100), anchor="center")
+        self.tree.grid(row=3, column=0, columnspan=2, sticky="nsew")
+        for delta in action.get("deltas", []):
+            delta = int(delta)
+            if delta:
+                self.tree.insert("", "end", values=(scroll_direction_label(delta), abs(delta)))
+        self.tree.bind("<<TreeviewSelect>>", self._load_selected_step)
+        self.tree.bind("<ButtonPress-1>", self._drag_start, add="+")
+        self.tree.bind("<B1-Motion>", self._drag_motion, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._drag_end, add="+")
+        self.tree.bind("<Double-1>", self._edit_step_cell, add="+")
+
+        edit_row = ttk.Frame(body)
+        edit_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(10, 0))
+        ttk.Combobox(
+            edit_row, textvariable=self.direction,
+            values=(SCROLL_UP_LABEL, SCROLL_DOWN_LABEL), state="readonly", width=8,
+        ).pack(side="left")
+        ttk.Spinbox(edit_row, from_=1, to=9999, textvariable=self.clicks, width=7).pack(
+            side="left", padx=pad(8, 0),
+        )
+        step_buttons = ttk.Frame(body)
+        step_buttons.grid(row=5, column=0, columnspan=2, sticky="w", pady=pad(8, 0))
+        ttk.Button(step_buttons, text="添加", command=self.add_step).pack(side="left")
+        ttk.Button(step_buttons, text="修改选中", command=self.update_step).pack(side="left", padx=pad(8, 0))
+        ttk.Button(step_buttons, text="删除选中", command=self.delete_step).pack(side="left", padx=pad(8, 0))
+        ttk.Label(body, text="双击方向切换，双击格数修改；按住步骤拖动排序。", foreground=COLOR_MUTED).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=pad(8, 0),
+        )
+        ttk.Label(body, text="执行前延时").grid(row=7, column=0, sticky="w", pady=px(8))
+        ttk.Entry(body, textvariable=self.delay).grid(row=7, column=1, sticky="ew")
+        buttons = ttk.Frame(body)
+        buttons.grid(row=8, column=0, columnspan=2, sticky="e", pady=pad(14, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=pad(0, 8))
+        self.update_idletasks()
+        fit_window_to_content(
+            self, parent, content_width=max(self._declared_size[0], self.winfo_reqwidth()),
+        )
+
+    def start_pick_position(self):
+        self.picker = ScreenPointPicker(
+            self, self.master, self._apply_picked_point,
+            tip_text="点击要滚动的位置；只记录坐标，不会点击下方窗口；Esc 取消",
+            hidden_windows=app_windows(self.master),
+        )
+        self.picker.start()
+
+    def _apply_picked_point(self, x, y):
+        self.x.set(str(int(x)))
+        self.y.set(str(int(y)))
+
+    def _step_input(self) -> tuple[str, int] | None:
+        try:
+            clicks = int(self.clicks.get())
+        except ValueError:
+            clicks = 0
+        if clicks < 1 or self.direction.get() not in (SCROLL_UP_LABEL, SCROLL_DOWN_LABEL):
+            show_floating_notice(self, "参数错误", "请选择滚动方向并输入正整数格数。")
+            return None
+        return self.direction.get(), clicks
+
+    def add_step(self):
+        values = self._step_input()
+        if values:
+            row = self.tree.insert("", "end", values=values)
+            self.tree.selection_set(row)
+            self.tree.see(row)
+
+    def update_step(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        values = self._step_input()
+        if values:
+            self.tree.item(selected[0], values=values)
+
+    def delete_step(self):
+        selected = self.tree.selection()
+        if selected:
+            self.tree.delete(*selected)
+
+    def _load_selected_step(self, _event=None):
+        selected = self.tree.selection()
+        if selected:
+            direction, clicks = self.tree.item(selected[0], "values")
+            self.direction.set(direction)
+            self.clicks.set(str(clicks))
+
+    def _set_step_cell(self, row, column, value):
+        values = list(self.tree.item(row, "values"))
+        if column == "#1":
+            if value not in (SCROLL_UP_LABEL, SCROLL_DOWN_LABEL):
+                return False
+            values[0] = value
+        elif column == "#2":
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                count = 0
+            if count < 1:
+                show_floating_notice(self, "参数错误", "格数必须是正整数。")
+                return False
+            values[1] = count
+        else:
+            return False
+        self.tree.item(row, values=values)
+        self.tree.selection_set(row)
+        self._load_selected_step()
+        return True
+
+    def _edit_step_cell(self, event):
+        row = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        if not row or column not in ("#1", "#2"):
+            return
+        self._drag_row = ""
+        if self._cell_editor is not None:
+            self._finish_cell_edit(True)
+        if column == "#1":
+            direction = self.tree.item(row, "values")[0]
+            self._set_step_cell(
+                row, column,
+                SCROLL_DOWN_LABEL if direction == SCROLL_UP_LABEL else SCROLL_UP_LABEL,
+            )
+            return "break"
+        bounds = self.tree.bbox(row, column)
+        if not bounds:
+            return
+        self._cell_edit_row = row
+        self._cell_edit_value = tk.StringVar(value=str(self.tree.item(row, "values")[1]))
+        editor = ttk.Entry(self.tree, textvariable=self._cell_edit_value)
+        self._cell_editor = editor
+        editor.place(x=bounds[0], y=bounds[1], width=bounds[2], height=bounds[3])
+        editor.select_range(0, "end")
+        editor.focus_set()
+        editor.bind("<Return>", lambda _event: self._finish_cell_edit(True))
+        editor.bind("<Escape>", lambda _event: self._finish_cell_edit(False))
+        editor.bind("<FocusOut>", lambda _event: self._finish_cell_edit(True))
+        return "break"
+
+    def _finish_cell_edit(self, commit):
+        editor = self._cell_editor
+        if editor is None:
+            return "break"
+        self._cell_editor = None
+        value = self._cell_edit_value.get()
+        row = self._cell_edit_row
+        editor.destroy()
+        if commit:
+            self._set_step_cell(row, "#2", value)
+        return "break"
+
+    def _drag_start(self, event):
+        self._drag_row = self.tree.identify_row(event.y)
+
+    def _drag_motion(self, event):
+        target = self.tree.identify_row(event.y)
+        if not self._drag_row or not target or target == self._drag_row:
+            return
+        target_index = self.tree.get_children().index(target)
+        self.tree.move(self._drag_row, "", target_index)
+        self.tree.selection_set(self._drag_row)
+        return "break"
+
+    def _drag_end(self, _event):
+        self._drag_row = ""
+
+    def save(self):
+        try:
+            x, y = int(self.x.get()), int(self.y.get())
+            delay = max(0, int(self.delay.get()))
+            deltas = []
+            for row in self.tree.get_children():
+                direction, clicks = self.tree.item(row, "values")
+                count = int(clicks)
+                if count < 1 or direction not in (SCROLL_UP_LABEL, SCROLL_DOWN_LABEL):
+                    raise ValueError
+                deltas.append(count if direction == SCROLL_UP_LABEL else -count)
+        except (TypeError, ValueError):
+            show_floating_notice(self, "参数错误", "坐标、格数和时间必须是有效整数。")
+            return
+        if not deltas:
+            show_floating_notice(self, "缺少步骤", "请至少添加一个滚动步骤。")
+            return
+        updated = dict(self._source)
+        updated.update({
+            "type": "scroll_sequence", "x": x, "y": y,
+            "deltas": deltas, "delay_ms": delay,
+        })
+        self.result = updated
+        self.destroy()
+
+
 class GameSetupNoteDialog(ModalDialog):
     """查看/编辑使用本软件前游戏需要设置的参数说明（文字可自行修改）。"""
 
@@ -1320,6 +1552,8 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         return preserve_identity(RepeatClickDialog(parent, action).show())
     if kind == "scroll":
         return preserve_identity(ScrollDialog(parent, action).show())
+    if kind == "scroll_sequence":
+        return preserve_identity(ScrollSequenceDialog(parent, action).show())
     if kind == "image_match":
         return preserve_identity(ImageActionDialog(parent, action, actions=all_actions).show())
     if kind == "text_ocr":

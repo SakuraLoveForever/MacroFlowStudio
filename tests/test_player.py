@@ -4176,6 +4176,17 @@ class PlayerTests(unittest.TestCase):
         move.assert_not_called()
         scroll.assert_called_once_with(0, 3)
 
+    def test_scroll_sequence_uses_one_position_and_saved_step_order(self):
+        player = MacroPlayer()
+        with package_patch('player', 'send_scroll') as scroll, \
+             package_patch('player', 'send_move_absolute') as move:
+            player.play([{
+                "type": "scroll_sequence", "x": 640, "y": 360,
+                "deltas": [3, -2, 1], "delay_ms": 0,
+            }])
+        move.assert_called_once_with(640, 360)
+        self.assertEqual(scroll.call_args_list, [call(0, 3), call(0, -2), call(0, 1)])
+
     def test_player_template_scale_from_screens(self):
         player = MacroPlayer()
         player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}

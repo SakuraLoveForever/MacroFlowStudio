@@ -525,7 +525,7 @@ class WorkflowDisplayTests(unittest.TestCase):
         }])
         app.rebuild_workflow_tree()
         app.workflow_tree.identify_row = Mock(return_value="0")
-        app.workflow_tree.identify_column = Mock(return_value="#6")
+        app.workflow_tree.identify_column = Mock(return_value="#8")
 
         with package_patch('app', 'DurationDialog') as prompt:
             prompt.return_value.show.return_value = 2400
@@ -2630,6 +2630,26 @@ class WorkflowSegmentTests(unittest.TestCase):
             self.assertTrue(any(
                 "第 3/3 轮" in call.args[0] for call in app._append_mini_step.call_args_list
             ))
+
+
+class WorkflowCountRestoreTests(unittest.TestCase):
+    def test_saved_original_count_survives_consumption_and_restores(self):
+        workflow = Workflow.from_dict({"steps": [{"script": "a", "repeats": 3}]})
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.workflow = workflow
+        app._refresh_one_workflow_row = Mock()
+        app.rebuild_workflow_tree = Mock()
+        app._persist_workflow_draft = Mock()
+        app._set_status = Mock()
+        workflow.steps[0]["repeats"] = 1
+        restored = Workflow.from_dict(workflow.to_dict())
+        self.assertEqual(restored.steps[0]["original_repeats"], 3)
+        app.workflow = restored
+        app.restore_workflow_step_count(0)
+        self.assertEqual(restored.steps[0]["repeats"], 3)
+        restored.steps[0]["repeats"] = 0
+        app.restore_all_workflow_counts()
+        self.assertEqual(restored.steps[0]["repeats"], 3)
 
 
 if __name__ == '__main__':

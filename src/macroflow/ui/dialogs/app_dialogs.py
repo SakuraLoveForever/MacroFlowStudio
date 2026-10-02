@@ -457,7 +457,6 @@ class ScriptRangeInsertDialog(ModalDialog):
                   foreground=COLOR_MUTED).pack(anchor="w", pady=pad(4, 10))
 
         preview = ttk.Frame(body)
-        preview.pack(fill="both", expand=True)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(
@@ -482,19 +481,23 @@ class ScriptRangeInsertDialog(ModalDialog):
             self.tree.insert("", "end", iid=str(line), values=(line, values[2], values[3], values[4]))
 
         range_row = ttk.Frame(body)
-        range_row.pack(fill="x", pady=pad(12, 0))
         ttk.Label(range_row, text="起始行").pack(side="left")
         ttk.Spinbox(range_row, from_=1, to=self.row_count, textvariable=self.start_var,
                     width=7).pack(side="left", padx=pad(6, 18))
         ttk.Label(range_row, text="终止行").pack(side="left")
         ttk.Spinbox(range_row, from_=1, to=self.row_count, textvariable=self.end_var,
                     width=7).pack(side="left", padx=pad(6, 0))
-        ttk.Label(body, text="所选行若跳转到范围外的行，请扩大范围后再插入。",
-                  foreground=COLOR_MUTED).pack(anchor="w", pady=pad(10, 0))
+        range_hint = ttk.Label(body, text="所选行若跳转到范围外的行，请扩大范围后再插入。",
+                               foreground=COLOR_MUTED)
         buttons = ttk.Frame(body)
-        buttons.pack(fill="x", pady=pad(12, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="插入选中范围", command=self.save).pack(side="right", padx=px(8))
+        # 先从底部放置操作控件；屏幕高度不足时只压缩可滚动的预览列表。
+        buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
+        range_hint.pack(side="bottom", anchor="w", pady=pad(10, 0))
+        range_row.pack(side="bottom", fill="x", pady=pad(12, 0))
+        preview.pack(fill="both", expand=True)
+        fit_window_to_content(self, parent)
 
         self.tree.bind("<<TreeviewSelect>>", self._selection_changed)
         self.start_var.trace_add("write", self._range_changed)
@@ -524,9 +527,12 @@ class ScriptRangeInsertDialog(ModalDialog):
             return
         if not 1 <= start <= end <= self.row_count:
             return
+        selected = tuple(str(line) for line in range(start, end + 1))
+        if set(self.tree.selection()) == set(selected):
+            return
         self._syncing = True
         try:
-            self.tree.selection_set(*(str(line) for line in range(start, end + 1)))
+            self.tree.selection_set(*selected)
         finally:
             self._syncing = False
 

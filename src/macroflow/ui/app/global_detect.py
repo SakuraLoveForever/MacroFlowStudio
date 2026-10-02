@@ -394,7 +394,8 @@ class GlobalDetectMixin:
         # 每个模块的完整配置属于「这一行脚本做了什么」：进执行明细，
         # 不刷事件日志（工作流全局模块会随每一次重复重新注册）。
         self._ui(
-            self._trace_event,
+            self._global_event,
+            "workflow" if module is not None else "script",
             f"全局检测已启用：模块[{module_display_name}] · {name} · 区域 {region_text} · {hold_text}"
             f"{start_delay_text} · 触发冷却 {cooldown} ms · {repeat_text}"
             f"触发后{tail}",

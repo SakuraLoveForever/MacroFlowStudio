@@ -238,7 +238,7 @@ class HotkeysMixin:
                 self._ui(self._log, f"快捷键 {key_name}：脚本 {script.name} 没有动作，已跳过。")
                 return
             self._ui(
-                self._log,
+                self._trace_event,
                 f"快捷键 {key_name} 触发脚本：{script.name}"
                 f"（{len(script.actions)} 个动作，F12 可停止）",
             )

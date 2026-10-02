@@ -25,7 +25,7 @@ from macroflow.core.storage import (
     save_script, save_workflow,
     update_module_object,
 )
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, ScrollSequenceDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
 from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, ScriptRangeInsertDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
 from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
 from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
@@ -1208,6 +1208,10 @@ class ScriptsMixin:
             self._insert_action(action)
     def add_scroll(self):
         action = ScrollDialog(self.root).show()
+        if action:
+            self._insert_action(action)
+    def add_scroll_sequence(self):
+        action = ScrollSequenceDialog(self.root).show()
         if action:
             self._insert_action(action)
     def add_ocr_compare(self):

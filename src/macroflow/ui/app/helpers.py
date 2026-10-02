@@ -272,6 +272,25 @@ class HelpersMixin:
             return
         # 不传这个关键字：调用方（_ui 夹具、快捷键回调）可能只接受一个参数。
         self._emit_trace_line(text)
+    def _global_event(self, scope: str, text: str) -> None:
+        """Send one global-module event to its own log and pane."""
+        line = f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} | {text}\n"
+        path = getattr(self, "global_log_path", None)
+        if path is not None:
+            lock = getattr(self, "global_file_lock", None)
+            if lock is None:
+                lock = self.global_file_lock = threading.Lock()
+            try:
+                with lock:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with path.open("a", encoding="utf-8") as output:
+                        output.write(f"[{scope}] {line}")
+            except OSError:
+                pass
+        self._queue_global_view_line(line, scope)
+    def _guard_global_event(self, guard: dict, text: str) -> None:
+        scope = "workflow" if str(guard.get("key", "")).startswith("workflow:") else "script"
+        self._global_event(scope, text)
     def _trace_context(self) -> dict:
         context = getattr(self, "_trace_context_state", None)
         if context is None:

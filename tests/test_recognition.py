@@ -26,7 +26,7 @@ from macroflow.execution.player import MacroPlayer
 from macroflow.execution.player.base import get_playback_screen_rect, screen_template_scale
 from macroflow.ui.app.summaries import action_summary
 import macroflow.ui.dialogs as dialog_module
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, JumpActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, TextActionDialog, edit_action
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, JumpActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, ScrollSequenceDialog, TextActionDialog, edit_action
 from macroflow.ui.dialogs.base import show_floating_notice
 from macroflow.ui.dialogs.helpers import image_action_option_defaults, image_click_target_defaults, image_found_jump_target_options, image_jump_target_options, image_timeout_option_defaults, image_timeout_option_label, image_timeout_option_value, segment_row_label
 from macroflow.ui.dialogs.module_objects import TemplateRegionFormDialog
@@ -1048,6 +1048,84 @@ class ImageTests(unittest.TestCase):
             "type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360, "delay_ms": 200,
         })
         dialog.destroy.assert_called_once()
+
+    def test_scroll_sequence_saves_steps_in_display_order(self):
+        from tests.helpers.core import FakeTree, FakeVar
+        dialog = ScrollSequenceDialog.__new__(ScrollSequenceDialog)
+        dialog._source = {}
+        dialog.x = FakeVar("640")
+        dialog.y = FakeVar("360")
+        dialog.delay = FakeVar("200")
+        dialog.tree = FakeTree()
+        first = dialog.tree.insert("", "end", iid="up", values=(SCROLL_UP_LABEL, "3"))
+        second = dialog.tree.insert("", "end", iid="down", values=(SCROLL_DOWN_LABEL, "2"))
+        dialog.tree.move(second, "", 0)
+        dialog.destroy = Mock()
+
+        dialog.save()
+
+        self.assertEqual(dialog.tree.get_children(), (second, first))
+        self.assertEqual(dialog.result, {
+            "type": "scroll_sequence", "x": 640, "y": 360,
+            "deltas": [-2, 3], "delay_ms": 200,
+        })
+        dialog.destroy.assert_called_once()
+
+    def test_scroll_sequence_drag_reorders_steps(self):
+        from tests.helpers.core import FakeTree
+
+        class DragTree(FakeTree):
+            def identify_row(self, y):
+                return str(y) if self.exists(y) else ""
+
+        dialog = ScrollSequenceDialog.__new__(ScrollSequenceDialog)
+        dialog.tree = DragTree()
+        for row in ("up", "down", "up-again"):
+            dialog.tree.insert("", "end", iid=row)
+        dialog._drag_start(SimpleNamespace(y="up"))
+
+        self.assertEqual(dialog._drag_motion(SimpleNamespace(y="up-again")), "break")
+        self.assertEqual(dialog.tree.get_children(), ("down", "up-again", "up"))
+        dialog._drag_end(None)
+        self.assertEqual(dialog._drag_row, "")
+
+    def test_scroll_sequence_requires_at_least_one_step(self):
+        from tests.helpers.core import FakeTree, FakeVar
+        dialog = ScrollSequenceDialog.__new__(ScrollSequenceDialog)
+        dialog._source = {}
+        dialog.x = FakeVar("10")
+        dialog.y = FakeVar("20")
+        dialog.delay = FakeVar("0")
+        dialog.tree = FakeTree()
+        dialog.destroy = Mock()
+        with patch("macroflow.ui.dialogs.actions.show_floating_notice") as notice:
+            dialog.save()
+        notice.assert_called_once()
+        dialog.destroy.assert_not_called()
+
+    def test_scroll_sequence_cell_edit_updates_direction_and_validates_count(self):
+        from tests.helpers.core import FakeVar
+        dialog = ScrollSequenceDialog.__new__(ScrollSequenceDialog)
+        values = [SCROLL_UP_LABEL, "7"]
+        dialog.tree = Mock()
+        dialog.tree.selection.return_value = ("row",)
+
+        def item(_row, option=None, **kwargs):
+            if "values" in kwargs:
+                values[:] = kwargs["values"]
+            return tuple(values)
+
+        dialog.tree.item.side_effect = item
+        dialog.direction = FakeVar(SCROLL_UP_LABEL)
+        dialog.clicks = FakeVar("7")
+        with patch("macroflow.ui.dialogs.actions.show_floating_notice") as notice:
+            self.assertTrue(dialog._set_step_cell("row", "#1", SCROLL_DOWN_LABEL))
+            self.assertFalse(dialog._set_step_cell("row", "#2", "0"))
+            self.assertTrue(dialog._set_step_cell("row", "#2", "12"))
+        self.assertEqual(values, [SCROLL_DOWN_LABEL, 12])
+        self.assertEqual(dialog.direction.get(), SCROLL_DOWN_LABEL)
+        self.assertEqual(dialog.clicks.get(), "12")
+        notice.assert_called_once()
 
     def test_scroll_dialog_saves_upward_as_positive_delta(self):
         dialog = ScrollDialog.__new__(ScrollDialog)

@@ -510,8 +510,8 @@ class RecordingDisplayTests(unittest.TestCase):
              patch('macroflow.ui.app.guards.make_window_no_activate'), \
              patch('macroflow.ui.app.guards.move_window_no_activate') as move:
             app._watch_display_dpi()
-        self.assertEqual(app.execution_mini_position, [750, 474])
-        move.assert_called_once_with(123, 750, 474)
+        self.assertEqual(app.execution_mini_position, [1070, 296])
+        move.assert_called_once_with(123, 1070, 296)
         app._persist_sidebar_settings.assert_called_once_with()
 
     def test_sync_ui_scale_uses_the_window_monitor_dpi(self):

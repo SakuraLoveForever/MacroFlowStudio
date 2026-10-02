@@ -168,6 +168,7 @@ class WorkflowMixin:
             script_label = workflow_script_name(step.get("script", ""))
         if missing:
             script_label = f"⚠ {script_label}  ·  {'模块不存在' if is_module else '文件不存在'}"
+        original_label = "∞" if unlimited else step.get("original_repeats", step.get("repeats", 1))
         repeat_label = "∞" if unlimited else step.get("repeats", 1)
         if str(step.get("repeat_start_action_id", "")).strip():
             repeat_label = f"{repeat_label} ↻"
@@ -194,7 +195,8 @@ class WorkflowMixin:
         else:
             tags = ()
         values = (
-            "", index + 1, script_label, repeat_label,
+            "", index + 1, script_label, original_label, repeat_label,
+            "" if unlimited else "↶ 恢复",
             f"{step.get('before_ms', 0)} ms",
             f"{step.get('repeat_interval_ms', DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)} ms",
             status_label,
@@ -610,6 +612,7 @@ class WorkflowMixin:
             "kind": "global_module",
             "script": script,
             "repeats": 1,
+            "original_repeats": 1,
             "before_ms": 0,
             "repeat_interval_ms": DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
             "unlimited": True,
@@ -625,6 +628,7 @@ class WorkflowMixin:
         return {
             "script": display_path(path),
             "repeats": 1,
+            "original_repeats": 1,
             "before_ms": 0,
             "repeat_interval_ms": DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
             "unlimited": False,
@@ -650,6 +654,7 @@ class WorkflowMixin:
             "kind": "module",
             "action": action,
             "repeats": 1,
+            "original_repeats": 1,
             "before_ms": 0,
             "repeat_interval_ms": DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
             "unlimited": False,
@@ -796,7 +801,7 @@ class WorkflowMixin:
                 if not path:
                     return
                 step["script"] = display_path(Path(path))
-        elif column == "#4":
+        elif column in {"#4", "#5"}:
             if step.get("kind") == "module":
                 repeat_script = MacroScript(
                     name=self._workflow_step_name(step),
@@ -809,7 +814,7 @@ class WorkflowMixin:
                     repeat_script = None
             values = WorkflowRepeatDialog(
                 self.root,
-                repeats=int(step.get("repeats", 1)),
+                repeats=int(step.get("original_repeats", step.get("repeats", 1))) if column == "#4" else int(step.get("repeats", 1)),
                 unlimited=bool(step.get("unlimited", False)),
                 actions=repeat_script.actions if repeat_script else [],
                 repeat_start_action_id=str(step.get("repeat_start_action_id", "")),
@@ -818,12 +823,17 @@ class WorkflowMixin:
             if values is None:
                 return
             step["repeats"] = values["repeats"]
+            if column == "#4":
+                step["original_repeats"] = values["repeats"]
             step["unlimited"] = values["unlimited"]
             if values.get("repeat_start_action_id"):
                 step["repeat_start_action_id"] = values["repeat_start_action_id"]
             else:
                 step.pop("repeat_start_action_id", None)
-        elif column == "#5":
+        elif column == "#6":
+            self.restore_workflow_step_count(index)
+            return
+        elif column == "#7":
             value = DurationDialog(
                 self.root, "开始前等待", "执行这一行前等待：",
                 int(step.get("before_ms", 0)),
@@ -831,7 +841,7 @@ class WorkflowMixin:
             if value is None:
                 return
             step["before_ms"] = value
-        elif column == "#6":
+        elif column == "#8":
             value = DurationDialog(
                 self.root, "重复间隔", "同一脚本相邻两次执行之间等待：",
                 int(step.get("repeat_interval_ms", DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)),
@@ -839,7 +849,7 @@ class WorkflowMixin:
             if value is None:
                 return
             step["repeat_interval_ms"] = value
-        elif column == "#7":
+        elif column == "#9":
             step["enabled"] = not bool(step.get("enabled", True))
         else:
             return
@@ -885,6 +895,7 @@ class WorkflowMixin:
             self._log(f"工作流第 {index + 1} 行完成一次（不计次数，不扣减）。")
             return 0
         remaining = max(0, int(step.get("repeats", 0)) - 1)
+        step.setdefault("original_repeats", int(step.get("repeats", 0)))
         step["repeats"] = remaining
         self._refresh_one_workflow_row(index)
         self._persist_workflow_draft()
@@ -925,6 +936,7 @@ class WorkflowMixin:
             return 0
 
         remaining = max(0, int(step.get("repeats", 0)) - 1)
+        step.setdefault("original_repeats", int(step.get("repeats", 0)))
         step["repeats"] = remaining
         workflow_path = getattr(self, "workflow_path", None)
         if workflow_path is not None:
@@ -964,12 +976,37 @@ class WorkflowMixin:
             return
         for step in workflow_steps:
             step.update(values)
+            if "repeats" in values:
+                step["original_repeats"] = values["repeats"]
         selected = self._selected_workflow_index()
         self.rebuild_workflow_tree()
         if selected is not None:
             self.workflow_tree.selection_set(str(selected))
         self._persist_workflow_draft()
         self._set_status(f"已统一设置 {len(workflow_steps)} 个工作流任务", "success")
+    def restore_workflow_step_count(self, index: int) -> None:
+        steps = self._workflow_only_steps()
+        if not 0 <= index < len(steps) or steps[index].get("unlimited", False):
+            return
+        step = steps[index]
+        step["repeats"] = int(step.get("original_repeats", step.get("repeats", 1)))
+        self._refresh_one_workflow_row(index)
+        self._persist_workflow_draft()
+    def _click_workflow_restore(self, event) -> None:
+        if self.workflow_tree.identify_column(event.x) != "#6":
+            return
+        row = self.workflow_tree.identify_row(event.y)
+        if row:
+            self.restore_workflow_step_count(int(row))
+
+    def restore_all_workflow_counts(self) -> None:
+        steps = self._workflow_only_steps()
+        for step in steps:
+            if not step.get("unlimited", False):
+                step["repeats"] = int(step.get("original_repeats", step.get("repeats", 1)))
+        self.rebuild_workflow_tree()
+        self._persist_workflow_draft()
+        self._set_status("已恢复全部工作流计次行", "success")
     def delete_workflow_step(self):
         indices = self._selected_workflow_indices()
         if not indices:

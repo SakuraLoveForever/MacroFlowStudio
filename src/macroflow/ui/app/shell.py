@@ -138,8 +138,10 @@ class ShellMixin:
         #   MacroFlow_trace_*.log  执行明细：每一次脚本动作执行一行
         self.session_log_path = session_logs_dir / f"MacroFlow_{stamp}.log"
         self.trace_log_path = session_logs_dir / f"MacroFlow_trace_{stamp}.log"
+        self.global_log_path = session_logs_dir / f"MacroFlow_global_{stamp}.log"
         self.log_file_lock = threading.Lock()
         self.trace_file_lock = threading.Lock()
+        self.global_file_lock = threading.Lock()
         # 当前执行位置（工作流第几步 / 哪个脚本 / 第几次重复）：两级日志都靠它
         # 标注上下文，见 _set_trace_context / _with_event_context。
         self._trace_context_state: dict = {}
@@ -695,6 +697,7 @@ class ShellMixin:
         except (AttributeError, tk.TclError, ValueError):
             tab_index = 0
         log_view = self._active_log_view()
+        global_buffers = getattr(self, "_global_view_buffers", {"workflow": [], "script": []})
         tree_views = {}
         for name in ("action_tree", "workflow_tree", "global_tree"):
             tree = getattr(self, name, None)
@@ -714,6 +717,7 @@ class ShellMixin:
         self._build_ui()
         self._event_view_buffer = event_buffer
         self._trace_view_buffer = trace_buffer
+        self._global_view_buffers = global_buffers
         self.rebuild_action_tree()
         self.rebuild_workflow_tree()
         for name, (selection, top) in tree_views.items():
@@ -1164,6 +1168,7 @@ class ShellMixin:
             ("↺ 转向", "add_turn", "ScriptTool.TButton"),
             ("↻ 连点", "add_repeat_click", "ScriptTool.TButton"),
             ("↕ 滚轮", "add_scroll", "ScriptTool.TButton"),
+            ("↕ 组合滚轮", "add_scroll_sequence", "ScriptTool.TButton"),
             ("⇄ 数字比较", "add_ocr_compare", "AccentScriptTool.TButton"),
             ("⊞ 多条件识图", "add_multi_condition_click", "AccentScriptTool.TButton"),
             ("▤ 列表逐行点击", "add_row_list_condition_click", "AccentScriptTool.TButton"),
@@ -1614,6 +1619,8 @@ class ShellMixin:
         ttk.Label(edit_toolbar, text="编辑 / 排序", style="Muted.TLabel").pack(side="left", padx=pad(0, 8))
         ttk.Button(edit_toolbar, text="统一设置参数", command=self.set_all_workflow_step_options,
                    style="CompactGhost.TButton").pack(side="left")
+        ttk.Button(edit_toolbar, text="恢复全部次数", command=self.restore_all_workflow_counts,
+                   style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(edit_toolbar, text="启用/禁用", command=self.toggle_selected_workflow_step,
                    style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1), style="CompactGhost.TButton").pack(side="left", padx=pad(5, 2))
@@ -1632,7 +1639,7 @@ class ShellMixin:
         frame.pack(fill="both", expand=True)
         self.workflow_tree = ttk.Treeview(
             frame,
-            columns=("mark", "index", "script", "repeat", "before", "interval", "enabled"),
+            columns=("mark", "index", "script", "original", "repeat", "restore", "before", "interval", "enabled"),
             show="headings", selectmode="extended", style="Workflow.Treeview", height=10,
         )
         self._apply_column_widths(self.workflow_tree, WORKFLOW_TREE_COLUMNS, "script")
@@ -1653,6 +1660,7 @@ class ShellMixin:
         self.workflow_tree.bind("<ButtonPress-1>", self._workflow_drag_start, add="+")
         self.workflow_tree.bind("<B1-Motion>", self._workflow_drag_motion, add="+")
         self.workflow_tree.bind("<ButtonRelease-1>", self._workflow_drag_end, add="+")
+        self.workflow_tree.bind("<ButtonRelease-1>", self._click_workflow_restore, add="+")
         self.workflow_tree.bind("<Double-1>", self._edit_workflow_cell, add="+")
         self.workflow_tree.bind("<<TreeviewSelect>>", self._update_workflow_selection_color, add="+")
         self.workflow_tree.bind("<<TreeviewSelect>>", self._refresh_workflow_segment_bar, add="+")
@@ -1671,7 +1679,7 @@ class ShellMixin:
         ttk.Label(top, text="运行日志", style="PageTitle.TLabel").pack(side="left")
         self.log_view_var = tk.StringVar(value="event")
         self.log_view_buttons: dict[str, tk.Button] = {}
-        for value, label in (("event", "事件日志"), ("trace", "执行明细")):
+        for value, label in (("event", "事件日志"), ("trace", "执行明细"), ("global", "全局模块")):
             button = tk.Button(
                 top, text=label, command=lambda target=value: self._show_log_view(target),
                 relief="flat", borderwidth=0, padx=px(10), pady=px(3), cursor="hand2",
@@ -1697,6 +1705,17 @@ class ShellMixin:
                                 selectbackground="#244D78", relief="flat", bd=0,
                                 font=(FONT_MONO, FONT_BODY), padx=px(16), pady=px(14))
         self.log_text.pack(fill="both", expand=True)
+        self.global_log_pane = tk.PanedWindow(frame, orient="vertical", sashwidth=5)
+        self.global_log_widgets = {}
+        for scope, title in (("workflow", "工作流全局"), ("script", "脚本全局")):
+            section = ttk.Frame(self.global_log_pane)
+            ttk.Label(section, text=title, style="PageTitle.TLabel").pack(anchor="w")
+            widget = tk.Text(section, wrap="word", state="disabled", background=COLOR_SURFACE,
+                             foreground=COLOR_TEXT, font=(FONT_MONO, FONT_BODY), relief="flat")
+            widget.pack(fill="both", expand=True)
+            self.global_log_pane.add(section, stretch="always")
+            self.global_log_widgets[scope] = widget
+        self._global_view_buffers = {"workflow": [], "script": []}
         self._trace_view_pending: list[str] = []
         self._trace_view_job = None
         self._event_view_pending: list[str] = []
@@ -1706,7 +1725,14 @@ class ShellMixin:
         self._event_view_buffer: list[str] = []
         self._sync_log_view_buttons()
     def _show_log_view(self, view: str) -> None:
-        self.log_view_var.set("trace" if view == "trace" else "event")
+        self.log_view_var.set(view if view in {"event", "trace", "global"} else "event")
+        if view == "global":
+            self.log_text.pack_forget()
+            self.global_log_pane.pack(fill="both", expand=True)
+            self._render_global_view()
+        else:
+            self.global_log_pane.pack_forget()
+            self.log_text.pack(fill="both", expand=True)
         self._sync_log_view_buttons()
         self._render_log_view()
     def _active_log_view(self) -> str:
@@ -1723,7 +1749,9 @@ class ShellMixin:
         hint = getattr(self, "log_view_hint_var", None)
         if hint is None:
             return
-        if active == "trace":
+        if active == "global":
+            hint.set("全局模块：上方工作流全局，下方脚本全局；文件 MacroFlow_global_*.log")
+        elif active == "trace":
             hint.set("执行明细：每执行一行脚本动作一条（行号 · 动作 · 等待/耗时）；文件 MacroFlow_trace_*.log")
         else:
             hint.set("事件日志：状态变化与异常，30 秒内重复的同一句已合并；文件 MacroFlow_*.log")
@@ -1774,8 +1802,31 @@ class ShellMixin:
             widget.configure(state="disabled")
     def _clear_active_log_view(self) -> None:
         """清空当前视图（磁盘日志文件保留）。"""
+        if self._active_log_view() == "global":
+            self._global_view_buffers = {"workflow": [], "script": []}
+            self._render_global_view()
+            return
         self._log_view_buffer(self._active_log_view()).clear()
         self._render_log_view()
+    def _queue_global_view_line(self, line: str, scope: str) -> None:
+        buffers = getattr(self, "_global_view_buffers", None)
+        if buffers is None:
+            buffers = self._global_view_buffers = {"workflow": [], "script": []}
+        buffer = buffers[scope]
+        buffer.append(line)
+        while sum(map(len, buffer)) > self.LOG_VIEW_LIMIT and len(buffer) > 1:
+            buffer.pop(0)
+        if getattr(self, "global_log_widgets", None):
+            self._render_global_view(scope)
+    def _render_global_view(self, only: str | None = None) -> None:
+        for scope, widget in getattr(self, "global_log_widgets", {}).items():
+            if only is not None and scope != only:
+                continue
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("end", "".join(self._global_view_buffers[scope]))
+            widget.see("end")
+            widget.configure(state="disabled")
     def _queue_log_view_line(self, text: str, view: str) -> None:
         """把一行日志排队到界面对应视图（后台线程安全）。"""
         if getattr(self, "log_text", None) is None or not text:

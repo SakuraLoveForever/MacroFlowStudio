@@ -58,6 +58,7 @@ ADD_ACTION_MENU_LABEL = "+ 添加动作 ▾"
 # 挤成三行，低频项折进菜单后工具栏回到一行。
 PRIMARY_ACTION_COMMANDS = (
     "add_click", "add_key", "add_delay", "add_text", "add_mouse_move",
+    "add_repeat_click",
     "_toggle_record_from_toolbar",
 )
 
@@ -74,6 +75,7 @@ ACTION_ICONS = {
     "repeat_click": "↻",
     "turn": "↺",
     "scroll": "↕",
+    "scroll_sequence": "↕",
     "image_match": "▣",
     "ocr_compare": "⇄",
     "multi_condition_click": "⊞",
@@ -92,7 +94,8 @@ ACTION_ICONS = {
 WORKFLOW_TREE_COLUMNS = (
     SEGMENT_COLUMN,
     ("index", "步骤", 50, "center"), ("script", "脚本 / 模块", 320, "w"),
-    ("repeat", "执行次数", 76, "center"), ("before", "开始前等待", 92, "center"),
+    ("original", "原始次数", 76, "center"), ("repeat", "剩余次数", 76, "center"),
+    ("restore", "恢复次数", 76, "center"), ("before", "开始前等待", 92, "center"),
     ("interval", "重复间隔", 92, "center"), ("enabled", "状态", 64, "center"),
 )
 GLOBAL_TREE_COLUMNS = (

@@ -258,6 +258,16 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
             f"{direction} {clicks} 格 @ ({action.get('x', 0)}, {action.get('y', 0)})",
             delay,
         )
+    if kind == "scroll_sequence":
+        parts = [
+            f"{scroll_direction_label(delta)} {scroll_clicks(delta)} 格"
+            for delta in action.get("deltas", [])
+        ]
+        return (
+            action_kind_label(kind, "组合滚轮"),
+            f"{' → '.join(parts)} @ ({action.get('x', 0)}, {action.get('y', 0)})",
+            delay,
+        )
     if kind == RECORDED_INPUT_TYPE:
         steps = recorded_input_steps(action)
         detail = (

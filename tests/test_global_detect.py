@@ -108,8 +108,8 @@ class GuardTestHelpers:
         app._ui = lambda callback, *args: callback(*args)
         app._log = Mock()
         # 执行期细节（逐次识别结果/启用摘要等）走执行明细通道。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         app._append_mini_step = Mock()
         app.player = MacroPlayer()
         return app
@@ -132,7 +132,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         app._build_guard_hit(guard, resolve_hwnd=False)
 
         self.assertNotIn("click", hit)
-        messages = [call.args[0] for call in app._log.call_args_list]
+        messages = [call.args[1] for call in app._global_event.call_args_list]
         self.assertEqual(len(messages), 1, messages)
         self.assertIn("输入密码", messages[0])
         self.assertIn("不点击", messages[0])
@@ -149,7 +149,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
 
         app._build_guard_hit(guard, resolve_hwnd=False)
 
-        messages = [call.args[0] for call in app._log.call_args_list]
+        messages = [call.args[1] for call in app._global_event.call_args_list]
         self.assertEqual(len(messages), 1, messages)
         self.assertIn("自定义点击位置没设置", messages[0])
 
@@ -1113,7 +1113,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertTrue(guard["timeout_triggered"])
         observation = "体力不足 OCR：识别到「其他文字」；期望「体力不足」· 未命中"
         # 逐次识别结果属于执行明细，不再写事件日志。
-        app._trace_event.assert_any_call(observation)
+        app._global_event.assert_any_call("script", observation)
         app._append_mini_step.assert_any_call(observation)
 
     def test_module_ref_activation_preserves_running_cooldown(self):
@@ -1125,8 +1125,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock(side_effect=logs.append)
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         module = {"kind": "global_module", "step_id": "m1"}
         resolved = Path("C:/Macro/images/点击游戏画面.png")
         obj = {
@@ -1147,7 +1147,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["hold_ms"], 100)
         self.assertEqual(guard["cooldown_ms"], 3456)
         self.assertEqual(guard["cooldown_until"], 1234.5)
-        self.assertTrue(any("持续超过 100 ms" in text for text in app._trace_logs))
+        self.assertTrue(any("持续超过 100 ms" in text for text in app._global_logs))
         self.assertEqual(lookup.call_count, 2)
         self.assertTrue(all(
             item.args == ("images/点击游戏画面.png",) for item in lookup.call_args_list
@@ -1161,8 +1161,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
 
         with package_patch('app', 'resolve_path', return_value=Path('images/disabled.png')), \
              package_patch('app', 'registered_module_object', return_value={'name': '已禁用模块', 'enabled': False}):
@@ -1184,8 +1184,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
@@ -1199,7 +1199,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["jump_row"], 4)
         self.assertEqual(guard["jump_action_id"], "target-a")
         self.assertTrue(any("跳转到目标行执行，播放到末尾后结束" in text
-                            for text in app._trace_logs))
+                            for text in app._global_logs))
 
     def test_activate_global_detect_jump_disabled_does_not_jump(self):
         # 未勾选“启用触发后跳转”：守卫保留目标配置（避免落入旧版“无跳转则
@@ -1212,8 +1212,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
                 "type": "global_detect",
@@ -1227,7 +1227,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(guard["jump_row"], 4)
         self.assertEqual(guard["jump_action_id"], "target-a")
         self.assertTrue(guard["jump_disabled"])
-        self.assertTrue(any("不跳转，继续执行脚本" in text for text in app._trace_logs))
+        self.assertTrue(any("不跳转，继续执行脚本" in text for text in app._global_logs))
         # 命中打包：不写跳转字段，也不触发旧版“点击识别处”兜底。
         app._bound_hwnd = Mock(return_value=None)
         hit = app._build_guard_hit(dict(guard, match_data={"center_x": 16, "center_y": 22}))
@@ -1245,8 +1245,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         module_obj = {
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "click_match",
@@ -1276,8 +1276,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         module_obj = {
             "enabled": True, "category": "script_global", "name": "测试模块",
             "template": "images/g.png", "after_action": "click_custom",
@@ -1705,8 +1705,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         with package_patch('app', 'resolve_path', return_value=Path('images/g.png')), \
              package_patch('app', 'registered_template_region', return_value=[100, 50, 300, 200]):
             app._activate_global_detect_from_config({
@@ -1716,7 +1716,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         guard = app.global_guards["script:global-a"]
         self.assertEqual(guard["region_mode"], "template")
         self.assertEqual(guard["region"], (100, 50, 300, 200))
-        self.assertTrue(any("区域 模板区域" in text for text in app._trace_logs))
+        self.assertTrue(any("区域 模板区域" in text for text in app._global_logs))
 
     def test_activate_global_detect_template_without_region_uses_fullscreen(self):
         # 模板未登记 / 未设置区域：按全屏检测并在日志中告警。
@@ -1728,8 +1728,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock(side_effect=lambda text: logs.append(text))
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         with package_patch('app', 'resolve_path', return_value=Path('images/g.png')), \
              package_patch('app', 'registered_template_region', return_value=None):
             app._activate_global_detect_from_config({
@@ -1738,7 +1738,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             })
         guard = app.global_guards["script:global-a"]
         self.assertIsNone(guard["region"])
-        self.assertTrue(any("模板未设置区域，按全屏检测" in text for text in app._trace_logs))
+        self.assertTrue(any("模板未设置区域，按全屏检测" in text for text in app._global_logs))
 
     def test_trigger_summary_template_mode_shows_template_region(self):
         # v1.78：引用模板的触发条件摘要显示"区域：模板"，不展开坐标。
@@ -1779,8 +1779,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         app._log = Mock()
         app._ui = lambda callback, *args: callback(*args)
         # 启用摘要（区域/跳转/持续时长）现在走执行明细通道，不再写事件日志。
-        app._trace_logs = []
-        app._trace_event = Mock(side_effect=app._trace_logs.append)
+        app._global_logs = []
+        app._global_event = Mock(side_effect=lambda scope, text: app._global_logs.append(text))
         module = {"kind": "global_module", "script": "m.json", "step_id": "m1"}
         with package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
             app._activate_global_detect_from_config({
@@ -1992,7 +1992,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 hit = app._evaluate_global_guards()
             self.assertIsNotNone(hit)
             self.assertGreater(guard["cooldown_until"], 0.0)
-            self.assertTrue(any("立即触发" in text for text in app._trace_logs))
+            self.assertTrue(any("立即触发" in text for text in app._global_logs))
 
     def test_guard_module_ref_reads_object_each_round(self):
         # 引用模块守卫：每轮评估实时重读对象（阈值/区域/持续时长），
@@ -2040,13 +2040,13 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             self.assertFalse(detected)
             self.assertIsNone(match)
             find.assert_not_called()
-            self.assertEqual(len(logs), 1)
-            self.assertIn("模板图片不存在", logs[0])
+            self.assertEqual(len(app._global_logs), 1)
+            self.assertIn("模板图片不存在", app._global_logs[0])
             # 第二轮不再刷屏。
             with package_patch('app', 'find_template_in_image') as find2, \
                  package_patch('app', 'show_overlay'):
                 detected, match = app._guard_image_detect(guard, None, None)
-            self.assertEqual(len(logs), 1)
+            self.assertEqual(len(app._global_logs), 1)
             find2.assert_not_called()
 
     def test_on_restart_workflow_request_standalone_returns_false(self):

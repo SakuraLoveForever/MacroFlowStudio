@@ -255,6 +255,8 @@ class Workflow:
             step.setdefault("repeat_interval_ms", DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS)
             step.setdefault("enabled", True)
             step.setdefault("unlimited", False)
+            if step.get("kind") != "global_module":
+                step.setdefault("original_repeats", step.get("repeats", 1))
             steps.append(step)
         ensure_workflow_step_ids(steps)
         try:

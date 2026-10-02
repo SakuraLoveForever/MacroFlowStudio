@@ -284,7 +284,7 @@ class GuardsMixin:
                 if not guard.get("target_absent_armed"):
                     guard["target_absent_armed"] = True
                     self._ui(
-                        self._trace_event,
+                        self._guard_global_event, guard,
                         f"全局检测：{self._global_monitor_subject(guard, '已识别到目标')}，开始持续执行直到消失。",
                     )
                 if match:
@@ -307,7 +307,7 @@ class GuardsMixin:
                     self._guard_fallback_click(guard, fallback_match, fallback_name)
                 else:
                     self._ui(
-                        self._trace_event,
+                        self._guard_global_event, guard,
                         f"全局检测：备用模块 {fallback_name} 已识别，继续识别主模块。",
                     )
             elif not fallback_match:
@@ -332,7 +332,7 @@ class GuardsMixin:
                 guard["match_since"] = now
                 if match:
                     self._ui(
-                        self._trace_event,
+                        self._guard_global_event, guard,
                         f"全局检测：识别到 {condition_subject} @ "
                         f"({match['center_x']}, {match['center_y']})，"
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
@@ -340,7 +340,7 @@ class GuardsMixin:
                     )
                 else:
                     self._ui(
-                        self._trace_event,
+                        self._guard_global_event, guard,
                         f"全局检测：识别到 {condition_subject}，"
                         + (f"等待持续超过 {guard['hold_ms']} ms 后触发。"
                            if guard.get("hold_enabled", False) else "立即触发。"),
@@ -372,12 +372,12 @@ class GuardsMixin:
                 cooldowns[str(guard.get("key", ""))] = cooldown_until
                 guard["trigger_kind"] = "success"
                 self.global_detect_trigger_count += 1
-                self._ui(self._log, f"全局检测触发：{condition_subject}。")
+                self._ui(self._guard_global_event, guard, f"全局检测触发：{condition_subject}。")
                 return self._build_guard_hit(guard, resolve_hwnd=False)
         else:
             if guard.get("was_detected"):
                 self._ui(
-                    self._trace_event,
+                    self._guard_global_event, guard,
                     f"全局检测：{self._global_monitor_subject(guard, absent_target_name + '已消失')}，持续触发完成。"
                     if repeat_while_detected else
                     f"全局检测：{self._global_monitor_subject(guard, '图片已消失')}，计时重置。",
@@ -401,7 +401,7 @@ class GuardsMixin:
                 )
                 segment = list(guard.get("timeout_segment") or [])
                 self._ui(
-                    self._log,
+                    self._guard_global_event, guard,
                     f"全局检测：连续 {timeout_ms} ms 未识别到 {condition_subject}，"
                     f"执行超时处理段（{len(segment)} 个动作）。",
                 )
@@ -423,7 +423,7 @@ class GuardsMixin:
                 missing_name = str(
                     guard.get("module_key") or guard.get("template") or "",
                 ).replace("\\", "/").rsplit("/", 1)[-1]
-                self._ui(self._log, f"全局检测：引用模块 {missing_name} 不存在，沿用当前配置。")
+                self._ui(self._guard_global_event, guard, f"全局检测：引用模块 {missing_name} 不存在，沿用当前配置。")
             return
         guard["warned_missing_module"] = False
         try:
@@ -515,7 +515,7 @@ class GuardsMixin:
         except Exception as exc:
             if not guard.get("warned_find_error"):
                 guard["warned_find_error"] = True
-                self._ui(self._log, f"全局检测：OCR 识别失败：{exc}")
+                self._ui(self._guard_global_event, guard, f"全局检测：OCR 识别失败：{exc}")
             return False, None
         guard["warned_find_error"] = False
         expected = str(guard.get("expected_text", ""))
@@ -532,7 +532,7 @@ class GuardsMixin:
         if observation != guard.get("last_ocr_observation"):
             guard["last_ocr_observation"] = observation
             # 逐次识别结果（每次 OCR 识别成什么）属于执行明细，不进事件日志。
-            self._ui(self._trace_event, observation)
+            self._ui(self._guard_global_event, guard, observation)
             self._ui(self._append_mini_step, observation)
         return present, match
     def _guard_template_scale(self) -> float:
@@ -577,7 +577,7 @@ class GuardsMixin:
         if not template.is_file():
             if not guard.get("warned_missing_template"):
                 guard["warned_missing_template"] = True
-                self._ui(self._log, f"全局检测：模板图片不存在，跳过检测：{template}")
+                self._ui(self._guard_global_event, guard, f"全局检测：模板图片不存在，跳过检测：{template}")
             return False, None
         guard["warned_missing_template"] = False
         region = self._guard_runtime_region(guard)
@@ -598,7 +598,7 @@ class GuardsMixin:
         except Exception as exc:
             if not guard.get("warned_find_error"):
                 guard["warned_find_error"] = True
-                self._ui(self._log, f"全局检测：识别失败：{exc}")
+                self._ui(self._guard_global_event, guard, f"全局检测：识别失败：{exc}")
             return False, None
         guard["warned_find_error"] = False
         return match is not None, match
@@ -686,10 +686,10 @@ class GuardsMixin:
                     if index + 1 < count:
                         time.sleep(interval_ms / 1000)
         except Exception as exc:
-            self._ui(self._log, f"全局检测：备用模块点击失败：{exc}")
+            self._ui(self._guard_global_event, guard, f"全局检测：备用模块点击失败：{exc}")
             return
         self._ui(
-            self._log,
+            self._guard_global_event, guard,
             f"全局检测：备用模块 {fallback_name} 已识别并点击，继续识别主模块。",
         )
     def _build_guard_hit(self, guard: dict, *, resolve_hwnd: bool = True) -> dict:
@@ -819,7 +819,7 @@ class GuardsMixin:
             if not guard.get("warned_missing_click_point"):
                 guard["warned_missing_click_point"] = True
                 self._ui(
-                    self._log,
+                    self._guard_global_event, guard,
                     f"全局检测：模块[{guard.get('module_display_name', '')}] 命中但"
                     "自定义点击位置没设置，本次不会点击；请在「模块管理」里补上"
                     "点击位置 (x, y)。",
@@ -835,7 +835,7 @@ class GuardsMixin:
         if not guard.get("warned_no_action"):
             guard["warned_no_action"] = True
             self._ui(
-                self._log,
+                self._guard_global_event, guard,
                 f"全局检测：模块[{guard.get('module_display_name', '')}] 命中但"
                 "「识别后的行为」是不点击（成功后继续），本次只触发不点击；"
                 "要点击请把识别后的行为改成「点击识别区域」或「点击自定义位置」。",
@@ -1135,16 +1135,27 @@ class GuardsMixin:
         saved = getattr(self, "execution_mini_position", None)
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
             width, height = self._operation_mini_size()
-            old_x_span = max(1, old_area["width"] - width)
-            old_y_span = max(1, old_area["height"] - height)
-            new_x_span = max(0, new_area["width"] - width)
-            new_y_span = max(0, new_area["height"] - height)
-            x_fraction = max(0.0, min(1.0, (int(saved[0]) - old_area["left"]) / old_x_span))
-            y_fraction = max(0.0, min(1.0, (int(saved[1]) - old_area["top"]) / old_y_span))
-            position = [
-                new_area["left"] + round(x_fraction * new_x_span),
-                new_area["top"] + round(y_fraction * new_y_span),
-            ]
+            # 保持到最近边缘的物理像素距离，避免分辨率变化后角落位置漂移。
+            placement = getattr(self, "_execution_mini_placement", None)
+            reuse_anchors = placement is not None and placement[0] == tuple(saved)
+            anchors = []
+            position = []
+            for index, (origin, extent, size) in enumerate(
+                (("left", "width", width), ("top", "height", height))
+            ):
+                old_span = max(0, old_area[extent] - size)
+                new_span = max(0, new_area[extent] - size)
+                offset = max(0, min(int(saved[index]) - old_area[origin], old_span))
+                if reuse_anchors:
+                    end, margin = placement[1][index]
+                else:
+                    end = offset > old_span / 2
+                    margin = old_span - offset if end else offset
+                anchors.append((end, margin))
+                offset = new_span - margin if end else margin
+                position.append(new_area[origin] + max(0, min(offset, new_span)))
+            # 多次切换分辨率时保持同一对齐边；用户拖动后重新计算。
+            self._execution_mini_placement = (tuple(position), anchors)
             if position != list(saved):
                 self.execution_mini_position = position
                 self._persist_sidebar_settings()
@@ -1171,23 +1182,36 @@ class GuardsMixin:
         body.pack(fill="both", expand=True, padx=3, pady=3)
         drag_label = ttk.Label(body, text="拖动定位 · 松开保存", style="MiniText.TLabel")
         drag_label.pack(fill="both", expand=True)
-        drag = {"x": 0, "y": 0}
+        drag = {"offset": None, "moved": False}
         def begin(event):
-            drag["x"], drag["y"] = event.x_root, event.y_root
+            rect = get_window_rect(preview.winfo_id())
+            drag["offset"] = (event.x_root - rect[0], event.y_root - rect[1]) if rect else None
+            drag["moved"] = False
         def move(event):
-            current_x, current_y = preview.winfo_x(), preview.winfo_y()
-            preview.geometry(f"+{current_x + event.x_root - drag['x']}+{current_y + event.y_root - drag['y']}")
-            drag["x"], drag["y"] = event.x_root, event.y_root
+            if drag["offset"] is None:
+                return
+            if move_window_no_activate(
+                preview.winfo_id(), event.x_root - drag["offset"][0],
+                event.y_root - drag["offset"][1],
+            ):
+                drag["moved"] = True
+        def release(_event):
+            if drag["moved"]:
+                self._confirm_execution_mini_position(preview)
+            drag["offset"] = None
         for widget in (preview, body, drag_label):
             widget.bind("<ButtonPress-1>", begin)
             widget.bind("<B1-Motion>", move)
-            widget.bind("<ButtonRelease-1>", lambda _event: self._confirm_execution_mini_position(preview))
+            widget.bind("<ButtonRelease-1>", release)
             widget.bind("<Button-3>", lambda _event: self._close_execution_mini_position_editor(preview))
         preview.protocol("WM_DELETE_WINDOW", lambda: self._close_execution_mini_position_editor(preview))
         preview.bind("<Escape>", lambda _event: self._close_execution_mini_position_editor(preview))
         preview.focus_force()
     def _confirm_execution_mini_position(self, preview):
-        self.execution_mini_position = [preview.winfo_x(), preview.winfo_y()]
+        rect = get_window_rect(preview.winfo_id())
+        if rect is None:
+            return
+        self.execution_mini_position = list(rect[:2])
         self._persist_sidebar_settings()
         self._close_execution_mini_position_editor(preview)
     def _close_execution_mini_position_editor(self, preview):
