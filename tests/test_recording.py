@@ -485,6 +485,7 @@ class RecordingDisplayTests(unittest.TestCase):
 
     def test_watch_display_dpi_refits_window_when_work_area_changes(self):
         app, root = self._dpi_watch_app(96 / 72.0)
+        app._persist_sidebar_settings = Mock()
         app._display_work_area = {
             "left": 0, "top": 0, "width": 2560, "height": 1400,
         }
@@ -510,8 +511,8 @@ class RecordingDisplayTests(unittest.TestCase):
              patch('macroflow.ui.app.guards.make_window_no_activate'), \
              patch('macroflow.ui.app.guards.move_window_no_activate') as move:
             app._watch_display_dpi()
-        self.assertEqual(app.execution_mini_position, [1070, 296])
-        move.assert_called_once_with(123, 1070, 296)
+        self.assertEqual(app.execution_mini_position, [1500, 940])
+        move.assert_called_once_with(123, 1500, 940)
         app._persist_sidebar_settings.assert_called_once_with()
 
     def test_sync_ui_scale_uses_the_window_monitor_dpi(self):
@@ -591,6 +592,14 @@ class RecordingDisplayTests(unittest.TestCase):
 
 
 class RecorderTests(unittest.TestCase):
+    def test_workflow_hotkey_is_not_recorded(self):
+        from pynput import keyboard
+        recorder = MacroRecorder()
+        recorder.running = True
+        recorder._on_press(keyboard.Key.f10)
+        recorder._on_release(keyboard.Key.f10)
+        self.assertEqual(recorder.actions, [])
+
     def test_key_and_mouse_edges_keep_elapsed_time(self):
         from types import SimpleNamespace
         from pynput.mouse import Button

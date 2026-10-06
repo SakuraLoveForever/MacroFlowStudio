@@ -450,6 +450,11 @@ DEFAULT_MODULE_OBJECT: dict = {
     "run_code_on_timeout": False,      # 连续未识别达到时限后执行独立代码段
     "not_found_timeout_ms": DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
     "on_timeout_actions": [],
+    "process_name": "",
+    "timed_detection": False,
+    "timed_condition": "absent",
+    "timed_duration_ms": 30000,
+    "timed_actions": [],
 }
 
 
@@ -602,6 +607,18 @@ def _normalize_object(value, key: str = ""):
         obj["not_found_timeout_ms"] = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
     if not isinstance(obj.get("on_timeout_actions"), list):
         obj["on_timeout_actions"] = []
+    obj["timed_detection"] = bool(obj.get("timed_detection", False)) and obj.get("recognize") not in ("number", "none") and not obj.get("pure_action")
+    obj["process_name"] = str(obj.get("process_name", "")).strip()
+    if obj.get("recognize") == "process":
+        obj.update({"template": "", "region": [], "timed_detection": True,
+                    "blocking": False, "wait_text_absent": False})
+    obj["timed_condition"] = "present" if obj.get("timed_condition") == "present" else "absent"
+    try:
+        obj["timed_duration_ms"] = max(1, min(86400000, int(obj.get("timed_duration_ms", 30000))))
+    except (TypeError, ValueError):
+        obj["timed_duration_ms"] = 30000
+    if not isinstance(obj.get("timed_actions"), list):
+        obj["timed_actions"] = []
     if obj.get("recognize") == "number":
         # 数字读取只负责在脚本行里产出比较结果，不执行点击或模块代码段。
         obj.update({
@@ -691,7 +708,7 @@ def load_template_regions() -> dict[str, list[int]]:
         str(obj.get("template") or key): obj["region"]
         for key, obj in load_module_objects().items()
         if not obj.get("pure_action")
-        and obj.get("recognize") not in ("none", "number")
+        and obj.get("recognize") not in ("none", "number", "process")
         and str(obj.get("template", "")).strip()
     }
 

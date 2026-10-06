@@ -11,6 +11,7 @@ from .guards import GuardsMixin
 from .helpers import HelpersMixin
 from .hotkeys import HotkeysMixin
 from .recording import RecordingMixin
+from .recovery import RecoveryMixin
 from .scripts import ScriptsMixin
 from .shell import ShellMixin
 from .tray import TrayMixin
@@ -26,6 +27,7 @@ class MacroFlowApp(
     TrayMixin,
     WindowBindingMixin,
     RecordingMixin,
+    RecoveryMixin,
     ScriptsMixin,
     ExecutionMixin,
     WorkflowMixin,

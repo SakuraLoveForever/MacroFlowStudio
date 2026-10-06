@@ -172,6 +172,7 @@ class TrayMixin:
         player = getattr(self, "player", None)
         player_stop = getattr(player, "stop_event", None) if player is not None else None
         while not getattr(self, "ocr_engine_ready", False):
+            self._workflow_heartbeat()
             if (workflow_stop is not None and workflow_stop.is_set()) \
                     or (player_stop is not None and player_stop.is_set()):
                 return False
@@ -301,7 +302,7 @@ class TrayMixin:
             return False
         if str(module.get("recognize", "")).strip() == "text":
             return True
-        for field in ("on_success_actions", "on_timeout_actions"):
+        for field in ("on_success_actions", "on_timeout_actions", "timed_actions"):
             segment = module.get(field)
             if isinstance(segment, list) and self._script_needs_ocr(
                 segment, seen, seen_modules, module_cache, depth,
@@ -414,6 +415,7 @@ class TrayMixin:
     def _tray_toggle_pause(self, _icon=None, _item=None):
         self._ui(self.toggle_execution_pause)
     def _tray_exit(self, _icon=None, _item=None):
+        self._cancel_workflow_recovery()
         self._ui(self._quit_app)
     def _hide_main_to_tray(self, for_recording: bool = False) -> bool:
         if not self._ensure_tray():

@@ -31,13 +31,17 @@ from .constants import (
     WINDOWS_RUN_VALUE,
 )
 
-def windows_startup_command() -> str:
-    """Build the quoted command stored in the current-user Windows Run key."""
+def instance_command() -> list[str]:
+    """Command for this installed executable or source entrypoint."""
     parts = [str(Path(sys.executable).resolve())]
     if not getattr(sys, "frozen", False):
         # 源码模式指向包入口（__main__.py 自己会把 src/ 加进导入路径）。
         parts.append(str(Path(__file__).resolve().parent / "__main__.py"))
-    return subprocess.list2cmdline(parts)
+    return parts
+
+def windows_startup_command() -> str:
+    """Build the quoted command stored in the current-user Windows Run key."""
+    return subprocess.list2cmdline(instance_command())
 def set_windows_startup(enabled: bool) -> None:
     """Enable or disable per-user startup without requiring administrator rights."""
     import winreg
@@ -51,7 +55,7 @@ def set_windows_startup(enabled: bool) -> None:
             winreg.DeleteValue(key, WINDOWS_RUN_VALUE)
     except FileNotFoundError:
         pass
-def spawn_new_instance(args: list[str]):
+def spawn_new_instance(args: list[str], *, background: bool = False):
     """Launch another MacroFlow instance.
 
     Reset every PyInstaller onefile extraction hint.  The Windows bootloader
@@ -65,12 +69,16 @@ def spawn_new_instance(args: list[str]):
     }
     if getattr(sys, "frozen", False):
         clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    subprocess.Popen(args, cwd=str(BASE_DIR), env=clean_env)
+    return subprocess.Popen(args, cwd=str(BASE_DIR), env=clean_env,
+                            creationflags=subprocess.CREATE_NO_WINDOW if background else 0)
 def main():
     from .main import MacroFlowApp
 
     try:
-        MacroFlowApp().run()
+        app = MacroFlowApp()
+        if len(sys.argv) == 3 and sys.argv[1] == "--recover-workflow":
+            app.root.after(0, app._restore_recovery_workflow, Path(sys.argv[2]))
+        app.run()
     except Exception:
         error = traceback.format_exc()
         try:

@@ -448,7 +448,11 @@ class CloseAppDialog(ModalDialog):
         fit_window_to_content(self, parent)
 
     def choose(self):
-        names = running_process_names()
+        try:
+            names = running_process_names()
+        except OSError as exc:
+            show_floating_notice(self, "无法枚举进程", f"读取进程列表失败：{exc}")
+            return
         if not names:
             show_floating_notice(self, "无法枚举进程", "读取进程列表失败。")
             return

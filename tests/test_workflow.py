@@ -314,7 +314,7 @@ class WorkflowDisplayTests(unittest.TestCase):
 
         self.assertIn("workflow_action_bar", source)
         self.assertIn('text="从选中行运行"', source)
-        self.assertIn('text="运行工作流"', source)
+        self.assertIn('text="运行工作流    F10"', source)
 
     def test_script_toolbar_stays_on_one_row_with_an_overflow_menu(self):
         """脚本页工具栏必须是一行 + 「添加动作」菜单。

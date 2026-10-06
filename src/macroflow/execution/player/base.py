@@ -81,23 +81,37 @@ class _PROCESSENTRY32W(ctypes.Structure):
 def running_process_names() -> list[str]:
     """Return every running image name (lowercase, unique, sorted)."""
     kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for function in (kernel32.Process32FirstW, kernel32.Process32NextW):
+        function.argtypes = [wintypes.HANDLE, ctypes.POINTER(_PROCESSENTRY32W)]
+        function.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    if snapshot == -1:
-        return []
+    if snapshot in (None, -1, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(kernel32.GetLastError())
     try:
         entry = _PROCESSENTRY32W()
         entry.dwSize = ctypes.sizeof(_PROCESSENTRY32W)
         if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
-            return []
+            error = kernel32.GetLastError()
+            if error == 18:  # ERROR_NO_MORE_FILES: valid empty snapshot.
+                return []
+            raise ctypes.WinError(error)
         names: set[str] = set()
         while True:
             if entry.szExeFile:
                 names.add(entry.szExeFile.lower())
             if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                error = kernel32.GetLastError()
+                if error != 18:
+                    raise ctypes.WinError(error)
                 break
         return sorted(names)
     finally:
         kernel32.CloseHandle(snapshot)
+
 def is_process_running(image_name: str) -> bool:
     image_name = image_name.strip().lower()
     return bool(image_name) and image_name in running_process_names()

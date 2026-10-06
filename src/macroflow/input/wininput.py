@@ -39,6 +39,8 @@ user32.SetFocus.argtypes = [wintypes.HWND]
 user32.SetFocus.restype = wintypes.HWND
 user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.ShowWindow.restype = wintypes.BOOL
+user32.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindowAsync.restype = wintypes.BOOL
 user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
@@ -443,27 +445,13 @@ def activate_window(hwnd: int) -> bool:
     # previous size. Only use it for an actually minimized window; foreground
     # activation must otherwise leave the user's window geometry untouched.
     if user32.IsIconic(wintypes.HWND(hwnd)):
-        user32.ShowWindow(wintypes.HWND(hwnd), SW_RESTORE)
-    current_thread = kernel32.GetCurrentThreadId()
-    target_thread = user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), None)
-    attached = False
-    if target_thread and target_thread != current_thread:
-        attached = bool(user32.AttachThreadInput(current_thread, target_thread, True))
-    try:
-        user32.BringWindowToTop(wintypes.HWND(hwnd))
-        user32.SetForegroundWindow(wintypes.HWND(hwnd))
-        # SetFocus 会把键盘焦点从窗口内部的子渲染表面（Flash/CEF 画布）
-        # 夺走，游戏客户端随即弹出“点击游戏画面继续操作”的失焦遮罩；
-        # 窗口每次播放启动都会被激活，因此这里绝不能无条件 SetFocus。
-        # 仅当 SetForegroundWindow 没有把窗口带到前台（激活失败）时才
-        # 补 SetFocus 强制转移焦点；窗口本就在前台时保持焦点不动。
-        if int(user32.GetForegroundWindow()) != int(hwnd):
-            user32.SetFocus(wintypes.HWND(hwnd))
-    finally:
-        if attached:
-            user32.AttachThreadInput(current_thread, target_thread, False)
+        user32.ShowWindowAsync(wintypes.HWND(hwnd), SW_RESTORE)
+    # Never share the game's input queue: activation would then wait for an
+    # unresponsive game while our focus guard still owns the global input lock.
+    # Let Windows activate across independent queues, preserving child focus.
+    user32.SetForegroundWindow(wintypes.HWND(hwnd))
     time.sleep(0.08)
-    return int(user32.GetForegroundWindow()) == int(hwnd)
+    return int(user32.GetForegroundWindow() or 0) == int(hwnd)
 
 
 def show_window(hwnd: int) -> bool:

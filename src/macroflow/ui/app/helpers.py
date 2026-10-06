@@ -470,12 +470,18 @@ class HelpersMixin:
         if area is not None:
             area = dict(area)
             previous_area = getattr(self, "_display_work_area", None)
+            previous_dpi = getattr(self, "_display_dpi", None)
             if previous_area is not None and area != previous_area:
                 self.root.geometry(
                     f"{area['width']}x{area['height']}+{area['left']}+{area['top']}"
                 )
-                self._adapt_execution_mini_position(previous_area, area)
+            if (previous_area is not None and area != previous_area) or (
+                dpi and previous_dpi is not None and dpi != previous_dpi
+            ):
+                self._adapt_execution_mini_position(area)
             self._display_work_area = area
+            if dpi:
+                self._display_dpi = dpi
         self.root.after(600, self._watch_display_dpi)
     def _fitted_display_dpi(self, dpi: int, area: dict | None) -> int:
         if not dpi or not area:

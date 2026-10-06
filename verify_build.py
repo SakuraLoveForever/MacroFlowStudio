@@ -15,6 +15,10 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
+    "macroflow.execution.recovery": ["WorkflowHealth", "WorkflowSupervisor", "CaptureUnavailable",
+                                    "watchdog_action", "run_watchdog"],
+    "macroflow.ui.app.recovery": ["_arm_workflow_recovery", "_emergency_stop_from_hook",
+                                 "_restart_recovered_workflow", "_restore_recovery_workflow"],
     # 主窗口是按功能拆开的包（macroflow.ui.app：constants / base / summaries /
     # startup + 11 个 mixin），打包入口是它的 __main__.py → 归档里的 __main__。
     "macroflow.ui.app": ["open_template_region_manager", "add_module", "add_jump", "add_ocr_compare", "add_multi_condition_click",

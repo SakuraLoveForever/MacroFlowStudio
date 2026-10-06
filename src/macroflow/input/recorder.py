@@ -186,7 +186,7 @@ class MacroRecorder:
         vk, name = _key_data(key)
         if vk in self._filter_vks:
             return
-        if name.lower() in {"f8", "f9", "f12"}:
+        if name.lower() in {"f8", "f9", "f10", "f12"}:
             return
         self._append({"type": "key", "vk": vk, "name": name, "down": True}, when=callback_at)
 
@@ -196,7 +196,7 @@ class MacroRecorder:
         vk, name = _key_data(key)
         if vk in self._filter_vks:
             return
-        if name.lower() in {"f8", "f9", "f12"}:
+        if name.lower() in {"f8", "f9", "f10", "f12"}:
             return
         self._append({"type": "key", "vk": vk, "name": name, "down": False}, when=callback_at)
 

@@ -105,7 +105,7 @@ class ExecutionMixin:
                     for item in self.hotkey_scripts
                 )
                 self._ui(self._log, f"专注模式快捷键（守卫钩子识别触发）：{names}")
-            # 专注模式下输入全部由守卫钩子线程发出，发之前抢回目标窗口前台。
+            # 发送方先检查前台，再交给守卫注入；窗口操作不能堵住输入锁线程。
             self.input_guard.set_before_input(self._restore_input_focus)
             if self.player.paused and not self.input_guard.set_paused(True):
                 self._leave_focus_mode()
@@ -168,6 +168,7 @@ class ExecutionMixin:
         try:
             return callback(*args, **kwargs)
         except BaseException:
+            self._cancel_workflow_recovery()
             self._shutdown_detection_worker()
             raise
     def run_script_from_selected_action(self):
@@ -204,6 +205,7 @@ class ExecutionMixin:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        self._cancel_workflow_recovery()
         self._save_activation_interval()
 
         category = str(module_obj.get("category") or "switch")
@@ -262,6 +264,7 @@ class ExecutionMixin:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        self._cancel_workflow_recovery()
         self._save_activation_interval()
         trigger = dict(self.script.settings.get("trigger") or {})
         if not self.script.actions and not trigger.get("template"):
@@ -606,6 +609,7 @@ class ExecutionMixin:
         self._sound("error")
         self._notify(title, str(exc), 6000)
     def stop_all(self, from_ui: bool = False):
+        self._cancel_workflow_recovery()
         if self.recorder.running:
             self.stop_recording(discard_recent=from_ui, sound=False)
         self.workflow_stop.set()

@@ -29,12 +29,13 @@ WM_MBUTTONDOWN = 0x0207
 VK_ESCAPE = 0x1B
 VK_F8 = 0x77
 VK_F9 = 0x78
+VK_F10 = 0x79
 VK_F12 = 0x7B
 LLKHF_INJECTED = 0x10
 LLMHF_INJECTED = 0x00000001
 
 # Software hotkeys that keyboard capture must never claim.
-RESERVED_HOTKEY_VKS = {VK_F8, VK_F9, VK_F12}
+RESERVED_HOTKEY_VKS = {VK_F8, VK_F9, VK_F10, VK_F12}
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -114,7 +115,7 @@ class FocusInputGuard:
         self._system_blocked = False
         self._input_requests: queue.Queue = queue.Queue()
         self._block_requests: queue.Queue = queue.Queue()
-        # 每次发输入前在钩子线程上执行的回调（抢回目标窗口前台）。
+        # 发送方入队前执行的回调；窗口操作不能阻塞持有输入锁的钩子线程。
         self._before_input: Callable[[], None] | None = None
         # 会话号：每次 start() 递增。正在退出的旧线程据此判断自己是否还是
         # “当前会话”，避免它的 finally 拆掉新会话刚装好的输入分发器。
@@ -207,15 +208,17 @@ class FocusInputGuard:
         wininput.set_input_dispatcher(None)
 
     def set_before_input(self, callback: Callable[[], None] | None) -> None:
-        """Register a pre-input hook executed on the hook thread before sending.
-
-        专注模式下所有输入都由钩子线程发出，发之前要把目标窗口抢回前台，
-        否则按键会发给当时的前台窗口（游戏丢焦点 → 这一次按键没反应）。
-        """
+        """Register a focus check executed by the sender before queueing input."""
         self._before_input = callback
 
     def _dispatch_input(self, input_obj) -> None:
         """Execute an input packet on the thread that owns BlockInput."""
+        callback = self._before_input
+        if callback is not None:
+            try:
+                callback()
+            except Exception:
+                pass
         if threading.current_thread() is self._thread:
             self._send_input_here(input_obj)
             return
@@ -250,14 +253,7 @@ class FocusInputGuard:
                 request["done"].set()
 
     def _send_input_here(self, input_obj) -> None:
-        """Send one packet from the hook thread after re-checking input focus."""
-        callback = self._before_input
-        if callback is not None:
-            try:
-                callback()
-            except Exception:
-                # 抢前台失败不能吞掉输入：照常发送，由直发路径继续尝试。
-                pass
+        """Only inject input here; never run game/window callbacks on the owner."""
         wininput._send_input_direct(input_obj)
 
     def _release_dispatcher(self, session: int) -> None:
@@ -313,6 +309,10 @@ class FocusInputGuard:
                 if vk == VK_F12 and not (int(data.flags) & LLKHF_INJECTED):
                     if message in (WM_KEYDOWN, WM_SYSKEYDOWN) and not self._f12_down:
                         self._f12_down = True
+                        # The UI stop callback is queued and may be delayed by a
+                        # hung window operation. Unlock on the owner immediately.
+                        if self._system_blocked and user32.BlockInput(False):
+                            self._system_blocked = False
                         if self._on_f12:
                             try:
                                 self._on_f12()
@@ -384,7 +384,7 @@ class KeyCapturer:
 
     The hook consumes the key-down event so it never reaches other windows.
     Esc cancels by default, or is captured when ``allow_escape`` is true.
-    F8 / F9 / F12 (software hotkeys) and injected keys pass through untouched.
+    F8 / F9 / F10 / F12 (software hotkeys) and injected keys pass through untouched.
     Callbacks fire on the hook thread; callers marshal them back to the UI
     thread (e.g. widget.after).
     """

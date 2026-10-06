@@ -34,6 +34,89 @@ from tests.helpers.patches import package_patch
 
 
 class TemplateRegionTests(unittest.TestCase):
+    def test_region_preview_flashes_current_region_and_restores_windows(self):
+        dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
+        dialog.region_var = Mock()
+        dialog.region_var.get.return_value = "-1200,80,320,200"
+        manager, root = Mock(), Mock()
+        manager.state.return_value = "normal"
+        root.state.return_value = "zoomed"
+        dialog._ancestors_to_hide = Mock(return_value=[manager, root])
+        for name in ("grab_release", "withdraw", "deiconify", "after", "lift", "grab_set", "focus_force"):
+            setattr(dialog, name, Mock())
+        dialog.winfo_exists = Mock(return_value=True)
+        with patch('macroflow.ui.dialogs.module_objects.show_overlay') as show:
+            dialog._show_region_preview()
+        show.assert_called_once_with(-1200, 80, 320, 200, duration_ms=3000,
+                                     label="识图区域", key="module-region-preview")
+        manager.withdraw.assert_called_once()
+        root.withdraw.assert_called_once()
+        dialog.withdraw.assert_called_once()
+        dialog.after.call_args.args[1]()
+        root.state.assert_called_with("zoomed")
+        manager.state.assert_called_with("normal")
+        dialog.grab_set.assert_called_once()
+
+    def test_region_preview_button_tracks_region_selection(self):
+        dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
+        dialog.region_var = Mock()
+        dialog.region_var.get.return_value = ""
+        dialog._entry_button_row = Mock()
+        with patch('macroflow.ui.dialogs.module_objects.ttk.Button') as button:
+            control = dialog._region_picker_row(Mock())
+        self.assertIs(control, dialog._entry_button_row.return_value)
+        button.return_value.configure.assert_called_with(state="disabled")
+        dialog.region_var.get.return_value = "10,20,300,200"
+        dialog.region_var.trace_add.call_args.args[1]()
+        button.return_value.configure.assert_called_with(state="normal")
+
+    def test_hidden_modal_grabs_input_only_when_shown(self):
+        dialog = ModalDialog.__new__(ModalDialog)
+        for name in ("withdraw", "title", "configure", "transient", "grab_set",
+                     "resizable", "geometry", "update_idletasks", "winfo_id", "protocol",
+                     "_install_duration_units", "_shrink_to_content", "deiconify",
+                     "lift", "focus_force", "wait_window"):
+            setattr(dialog, name, Mock())
+        with patch('macroflow.ui.dialogs.base.tk.Toplevel.__init__'), \
+             patch('macroflow.ui.dialogs.base.monitor_work_area_for',
+                   return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}), \
+             patch('macroflow.ui.dialogs.base.set_dark_titlebar'), \
+             patch('macroflow.ui.dialogs.base.place_window_on_parent'):
+            ModalDialog.__init__(dialog, Mock(), '模块编辑', defer_show=True)
+        dialog.grab_set.assert_not_called()
+        ModalDialog.show(dialog)
+        dialog.grab_set.assert_called_once()
+        dialog.wait_window.assert_called_once()
+
+    def test_region_preview_rejects_empty_or_invalid_regions(self):
+        dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
+        dialog.region_var = Mock()
+        dialog._ancestors_to_hide = Mock()
+        for value in ("", "1,2", "1,2,0,20", "x,2,10,20"):
+            dialog.region_var.get.return_value = value
+            with patch('macroflow.ui.dialogs.module_objects.show_overlay') as show, \
+                 patch('macroflow.ui.dialogs.module_objects.show_floating_notice'):
+                dialog._show_region_preview()
+            show.assert_not_called()
+        dialog._ancestors_to_hide.assert_not_called()
+
+    def test_manager_lists_modules_without_screen_regions(self):
+        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.objects = {
+            "module:process": {"name": "进程检测", "category": "workflow_global",
+                               "recognize": "process", "region": []},
+            "module:direct": {"name": "直接执行", "category": "switch",
+                              "recognize": "none", "region": []},
+        }
+        dialog.trees = {key: Mock() for key in dialog.TAB_KEYS}
+        dialog.virtual_trees = {key: Mock() for key in dialog.TAB_KEYS}
+        dialog._reload_trees()
+        for tab in ("all", "switch", "workflow_global"):
+            rows = dialog.virtual_trees[tab].set_rows.call_args.args[0]
+            self.assertTrue(rows)
+            for row in rows:
+                self.assertEqual(row.values[0], "无需屏幕区域")
+
     def test_image_inventory_is_a_separate_dialog_not_a_manager_tab(self):
         self.assertEqual(
             TemplateRegionManagerDialog.TAB_KEYS,
@@ -704,6 +787,9 @@ class TemplateRegionTests(unittest.TestCase):
         form.region_var.get.return_value = region
         form.recognize_var = Mock()
         form.recognize_var.get.return_value = recognize
+        form.process_name_var = Mock()
+        form.process_name_var.get.return_value = ""
+        form.row_process_name = Mock()
         form.expected_text_var = Mock()
         form.expected_text_var.get.return_value = ""
         form.match_mode_var = Mock()
@@ -770,6 +856,16 @@ class TemplateRegionTests(unittest.TestCase):
         form.second_click_region_var.get.return_value = ""
         form.segment = []
         form.timeout_segment = []
+        form.timed_detection_var = Mock()
+        form.timed_detection_var.get.return_value = False
+        form.timed_condition_var = Mock()
+        form.timed_condition_var.get.return_value = "连续未检测到"
+        form.timed_duration_var = Mock()
+        form.timed_duration_var.get.return_value = "30000"
+        form.timed_segment = []
+        for field in ("timed_heading", "row_timed_detection", "row_timed_condition",
+                      "row_timed_duration", "timed_segment_frame"):
+            setattr(form, field, Mock())
         form.name_var = Mock()
         form.name_var.get.return_value = ""
         form._toggle_sections = Mock()
@@ -2639,7 +2735,7 @@ class TemplateRegionTests(unittest.TestCase):
         dialog._scrollbar.winfo_reqwidth.return_value = 20
         self._patch_work_area(self._work_area())
         dialog._resize_for_content()
-        self.assertEqual(dialog.geometry.call_args.args[0], "660x400+50+60")
+        self.assertEqual(dialog.geometry.call_args.args[0], "660x304+50+60")
 
     def test_module_dialog_button_rows_are_packed_before_lists(self):
         # pack 按顺序分配空间：屏幕放不下时最后挂的控件先被裁。按钮行必须排在
@@ -2731,6 +2827,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_deferred_module_form_is_shown_once_after_layout(self):
         dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         dialog._deferred_show = True
+        dialog.grab_set = Mock()
         # 该表单在 __init__ 里已按 content_* 定过尺寸，show() 不再走收缩分支。
         dialog._macroflow_fitted_to_content = True
         dialog.deiconify = Mock()

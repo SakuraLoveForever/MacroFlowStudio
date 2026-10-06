@@ -332,6 +332,7 @@ def segment_action_is_blocking(action: dict) -> bool:
         return bool(obj and (
             (obj.get("blocking") and not action.get("blocking_timeout_enabled", False))
             or obj.get("wait_text_absent")
+            or obj.get("timed_detection")
         ))
     return bool(action.get("blocking"))
 
@@ -553,9 +554,15 @@ def module_manager_label(key: str, obj: dict) -> str:
         name = f"【已禁用】{name}"
     if (
         obj.get("blocking")
+        or obj.get("timed_detection")
         or obj.get("wait_text_absent")
     ) and not obj.get("pure_action"):
         name = f"【阻塞识别】{name}"
+    if obj.get("recognize") == "process":
+        name += f" · 进程 {obj.get('process_name', '')}"
+    if obj.get("timed_detection"):
+        condition = "检测到" if obj.get("timed_condition") == "present" else "未检测到"
+        name = f"【连续{condition} {obj.get('timed_duration_ms', 30000)} ms】{name}"
     if module_manager_special_action_summary(obj):
         name = f"【特殊代码段】{name}"
     return name
@@ -575,6 +582,7 @@ def module_manager_special_action_summary(obj: dict) -> str:
             or obj.get("after_action") == "run_actions",
         ),
         ("超时", "on_timeout_actions", bool(obj.get("run_code_on_timeout", False))),
+        ("持续状态", "timed_actions", bool(obj.get("timed_detection", False))),
     ):
         if not enabled:
             continue
@@ -596,7 +604,7 @@ def module_manager_tag(obj: dict) -> str:
         return "disabled"
     if module_manager_special_action_summary(obj):
         return "special_action"
-    blocking = obj.get("blocking") or obj.get("wait_text_absent")
+    blocking = obj.get("blocking") or obj.get("wait_text_absent") or obj.get("timed_detection")
     return "blocking" if blocking and not obj.get("pure_action") else ""
 
 

@@ -486,7 +486,8 @@ class ModalDialog(tk.Toplevel):
         self.title(title)
         self.configure(background=COLOR_BG)
         self.transient(parent)
-        self.grab_set()
+        if not self._deferred_show:
+            self.grab_set()
         self._align_top = bool(align_top)
         # 声明尺寸放不下当前显示器时按可用区域压缩：压缩后内容可能被裁，
         # 所以同时放开拉伸，用户仍能把窗口拉回来。
@@ -517,6 +518,7 @@ class ModalDialog(tk.Toplevel):
         if getattr(self, "_deferred_show", False):
             self.deiconify()
             self.update_idletasks()
+            self.grab_set()
         self.lift()
         self.focus_force()
         self.wait_window()

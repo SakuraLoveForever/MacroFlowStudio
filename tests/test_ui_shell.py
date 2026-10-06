@@ -202,11 +202,14 @@ class StartupVisibilityTests(unittest.TestCase):
         preview.winfo_id.return_value = 123
         preview.winfo_x.return_value = 120
         preview.winfo_y.return_value = 230
+        app._app_window_hwnd = Mock(return_value=123)
+        area = {'left': -100, 'top': 20, 'width': 1000, 'height': 800}
         rect = [120, 230, 420, 100]
         def move_preview(_hwnd, x, y):
             rect[:2] = [x, y]
             return True
-        with patch("macroflow.ui.app.guards.tk.Toplevel", return_value=preview), \
+        with patch("macroflow.ui.app.guards.get_monitor_work_area_for_window", return_value=area), \
+             patch("macroflow.ui.app.guards.tk.Toplevel", return_value=preview), \
              patch("macroflow.ui.app.guards.ttk.Frame", return_value=body), \
              patch("macroflow.ui.app.guards.ttk.Label", return_value=label), \
              patch("macroflow.ui.app.guards.get_window_rect", side_effect=lambda _hwnd: tuple(rect)), \
@@ -216,9 +219,14 @@ class StartupVisibilityTests(unittest.TestCase):
             callbacks["<ButtonPress-1>"](Mock(x_root=300, y_root=400))
             callbacks["<B1-Motion>"](Mock(x_root=320, y_root=430))
             callbacks["<B1-Motion>"](Mock(x_root=350, y_root=460))
+            callbacks["<B1-Motion>"](Mock(x_root=-500, y_root=-500))
+            callbacks["<B1-Motion>"](Mock(x_root=2000, y_root=2000))
             callbacks["<ButtonRelease-1>"](Mock())
-        self.assertEqual(move.call_args_list, [call(123, 140, 260), call(123, 170, 290)])
-        self.assertEqual(app.execution_mini_position, [170, 290])
+        self.assertEqual(move.call_args_list, [
+            call(123, 140, 260), call(123, 170, 290),
+            call(123, -100, 20), call(123, 480, 720),
+        ])
+        self.assertEqual(app.execution_mini_position, [480, 720])
         app._persist_sidebar_settings.assert_called_once_with()
         preview.destroy.assert_called_once_with()
 
@@ -227,18 +235,26 @@ class StartupVisibilityTests(unittest.TestCase):
         app.mini_window = Mock()
         app.mini_window.winfo_id.return_value = 123
         app.execution_mini_position = []
-        app._execution_mini_position = Mock(return_value=(120, 230))
         app._persist_sidebar_settings = Mock()
+        app._app_window_hwnd = Mock(return_value=123)
+        area = {'left': -100, 'top': 20, 'width': 1000, 'height': 800}
         drag_surface = Mock()
-        with patch("macroflow.ui.app.guards.get_window_rect", return_value=(100, 200, 420, 88)), \
+        with patch("macroflow.ui.app.guards.get_monitor_work_area_for_window", return_value=area), \
+             patch("macroflow.ui.app.guards.get_window_rect", return_value=(100, 200, 420, 100)), \
              patch("macroflow.ui.app.guards.move_window_no_activate") as move:
             app._bind_operation_mini_drag(drag_surface)
             callbacks = {entry.args[0]: entry.args[1] for entry in drag_surface.bind.call_args_list}
             callbacks["<ButtonPress-1>"](Mock(x_root=110, y_root=210))
             callbacks["<B1-Motion>"](Mock(x_root=130, y_root=240))
+            callbacks["<B1-Motion>"](Mock(x_root=-500, y_root=-500))
+            self.assertEqual(app.execution_mini_position, [-100, 20])
+            callbacks["<B1-Motion>"](Mock(x_root=2000, y_root=2000))
+            self.assertEqual(app.execution_mini_position, [480, 720])
             callbacks["<ButtonRelease-1>"](Mock())
-        move.assert_any_call(123, 120, 230)
-        self.assertEqual(app.execution_mini_position, [120, 230])
+        self.assertEqual(move.call_args_list, [
+            call(123, 120, 230), call(123, -100, 20), call(123, 480, 720),
+        ])
+        self.assertEqual(app.execution_mini_position, [480, 720])
         app._persist_sidebar_settings.assert_called_once_with()
 
     def test_operation_mini_keeps_reference_footprint_after_dpi_change(self):
@@ -246,7 +262,7 @@ class StartupVisibilityTests(unittest.TestCase):
         with patch("macroflow.ui.app.guards.px", side_effect=lambda value: value * 2):
             self.assertEqual(app._operation_mini_size(), (420, 100))
 
-    def test_operation_mini_keeps_corner_margin_after_dpi_change(self):
+    def test_operation_mini_defaults_to_bottom_right_without_margin(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
         app.root.winfo_id.return_value = 123
@@ -255,7 +271,7 @@ class StartupVisibilityTests(unittest.TestCase):
         with package_patch('app', 'get_monitor_work_area_for_window', return_value=area), \
              package_patch('app', 'is_window', return_value=True), \
              patch("macroflow.ui.app.guards.px", side_effect=lambda value: value * 2):
-            self.assertEqual(app._execution_mini_position(), (556, 628))
+            self.assertEqual(app._execution_mini_position(), (580, 700))
 
     def test_operation_mini_moves_back_to_corner_after_resolution_change(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -268,44 +284,42 @@ class StartupVisibilityTests(unittest.TestCase):
             app._reposition_operation_mini()
         move.assert_called_once_with(123, 556, 640)
 
-    def test_saved_mini_keeps_bottom_right_margins_when_resolution_changes(self):
+    def test_display_change_resets_mini_to_bottom_right(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
-        app.execution_mini_position = [2116, 1228]
-        app.mini_window = None
+        app.mini_window = Mock()
+        app._reposition_operation_mini = Mock()
         app._persist_sidebar_settings = Mock()
-        old_area = {'left': 0, 'top': 0, 'width': 2560, 'height': 1400}
-        new_area = {'left': -1920, 'top': 20, 'width': 1920, 'height': 1040}
-        app._adapt_execution_mini_position(old_area, new_area)
-        self.assertEqual(app.execution_mini_position, [-444, 888])
-        app._adapt_execution_mini_position(new_area, old_area)
-        self.assertEqual(app.execution_mini_position, [2116, 1228])
+        for saved in ([], [24, 72], [2116, 1228]):
+            for area in (
+                {'left': -1920, 'top': 20, 'width': 1920, 'height': 1040},
+                {'left': 0, 'top': 0, 'width': 2560, 'height': 1400},
+                {'left': 100, 'top': 20, 'width': 300, 'height': 80},
+            ):
+                with self.subTest(saved=saved, area=area):
+                    app.execution_mini_position = saved
+                    app._adapt_execution_mini_position(area)
+                    self.assertEqual(app.execution_mini_position, [
+                        area['left'] + max(0, area['width'] - 420),
+                        area['top'] + max(0, area['height'] - 100),
+                    ])
+        self.assertEqual(app._reposition_operation_mini.call_count, 9)
 
-    def test_saved_mini_keeps_top_left_margins_when_resolution_changes(self):
+    def test_dpi_change_repositions_mini_even_when_fitted_dpi_is_unchanged(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
-        app.execution_mini_position = [24, 72]
-        app.mini_window = None
-        app._persist_sidebar_settings = Mock()
-        app._adapt_execution_mini_position(
-            {'left': 0, 'top': 0, 'width': 2560, 'height': 1400},
-            {'left': 100, 'top': 20, 'width': 1920, 'height': 1040},
-        )
-        self.assertEqual(app.execution_mini_position, [124, 92])
-
-    def test_saved_mini_keeps_anchors_across_resolution_round_trip(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.execution_mini_position = [1070, 656]
-        app.mini_window = None
-        app._persist_sidebar_settings = Mock()
-        old_area = {'left': 0, 'top': 0, 'width': 2560, 'height': 1400}
-        new_area = {'left': 0, 'top': 0, 'width': 1920, 'height': 1040}
-        app._adapt_execution_mini_position(old_area, new_area)
-        self.assertEqual(app.execution_mini_position, [1070, 296])
-        app._adapt_execution_mini_position(new_area, old_area)
-        self.assertEqual(app.execution_mini_position, [1070, 656])
-        # 用户拖动后，应按新位置重新选择对齐边。
-        app.execution_mini_position = [24, 72]
-        app._adapt_execution_mini_position(old_area, new_area)
-        self.assertEqual(app.execution_mini_position, [24, 72])
+        app.root = Mock()
+        app.root.winfo_id.return_value = 123
+        area = {'left': 0, 'top': 0, 'width': 1920, 'height': 1040}
+        app._display_work_area = area
+        app._display_dpi = 96
+        app._ui_scaling_dpi = Mock(return_value=96)
+        app._apply_display_dpi = Mock()
+        app._adapt_execution_mini_position = Mock()
+        with patch('macroflow.ui.app.helpers.get_window_dpi', return_value=144), \
+             patch('macroflow.ui.app.helpers.get_monitor_work_area_for_window', return_value=area):
+            app._watch_display_dpi()
+            app._watch_display_dpi()
+        app._adapt_execution_mini_position.assert_called_once_with(area)
+        app._apply_display_dpi.assert_not_called()
 
     def test_execution_mini_position_is_clamped_to_the_app_monitor(self):
         # 多屏下必须按"软件所在显示器"的可用区域收敛，不能用虚拟桌面尺寸，

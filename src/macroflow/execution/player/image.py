@@ -30,11 +30,13 @@ from macroflow.input.wininput import (
     send_text, set_cursor_pos,
 )
 from macroflow.ui.detect_overlay import show_overlay
+from macroflow.core.timed_detection import sustained_detection
 import math
 import time
 
 from .base import (
     MAX_SCRIPT_REF_DEPTH,
+    is_process_running,
 )
 from .control import (
     PlaybackStopped,
@@ -42,6 +44,50 @@ from .control import (
 
 class ImageMixin:
     """识图动作：等待命中、超时分支、备用模块与二次识别。"""
+
+    def _execute_timed_detection(self, action, obj, template, region, hwnd, script_stack, depth):
+        condition = obj.get("timed_condition", "absent")
+        duration = int(obj.get("timed_duration_ms", 30000))
+        label = "检测到" if condition == "present" else "未检测到"
+        self._trace(f"模块 {obj.get('name', '')}：等待连续{label} {duration} ms，状态变化重新计时。", module_detail=True)
+        if depth >= MAX_SCRIPT_REF_DEPTH:
+            raise RuntimeError("持续状态模块步骤嵌套过深")
+        state = {}
+        while True:
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            try:
+                if obj.get("recognize") == "process":
+                    process_name = str(obj.get("process_name", "")).strip()
+                    if not process_name:
+                        raise RuntimeError("进程检测模块未设置进程名")
+                    detected = is_process_running(process_name)
+                elif obj.get("recognize") == "text":
+                    if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
+                        raise PlaybackStopped()
+                    text, boxes = recognize_region_with_boxes(region)
+                    expected = str(obj.get("expected_text", ""))
+                    mode = obj.get("match_mode", "contains")
+                    detected = (matches_expected(text, expected, mode)
+                                or find_expected_match(boxes, expected, mode) is not None)
+                else:
+                    detected = find_template(template, float(obj.get("threshold", 0.85)), region,
+                                             ignore_background=bool(obj.get("ignore_background")),
+                                             scale=self._template_scale()) is not None
+            except CAPTURE_ERRORS as exc:
+                if obj.get("recognize") == "process":
+                    self._trace(f"进程检测失败，重新计时：{exc}", module_detail=True)
+                else:
+                    self._note_capture_failure(exc)
+                detected = None
+            else:
+                self._clear_capture_failure()
+            if sustained_detection(state, detected, condition, duration, time.perf_counter()):
+                self._trace(f"模块 {obj.get('name', '')}：连续{label}达到 {duration} ms，执行自定义步骤。", module_detail=True)
+                self._run_action_sequence(list(obj.get("timed_actions") or []), hwnd,
+                                          script_stack=script_stack, depth=depth + 1)
+                return self._module_result_route(action, obj, succeeded=True)
+            self._wait(max(50, int(obj.get("interval_ms", 1000))))
 
     def _execute_image(self, action: dict, hwnd: int | None,
                        script_stack: set[str] | None = None,
@@ -237,6 +283,9 @@ class ImageMixin:
         # 图。否则两个 1920 宽显示器会让模板按 2 倍缩放，导致同分辨率换屏
         # 后也无法命中。
         recognition_region = region if region is not None else self._target_screen
+        if module_obj is not None and module_obj.get("timed_detection"):
+            return self._execute_timed_detection(action, module_obj, template,
+                                                 recognition_region, hwnd, script_stack, depth)
         fallback_capture_region = (
             fallback_region if fallback_region is not None else self._target_screen
         )

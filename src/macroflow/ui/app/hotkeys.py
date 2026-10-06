@@ -14,7 +14,7 @@ from macroflow.execution.player import (
     screen_template_scale,
 )
 from macroflow.input.input_guard import (
-    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS, VK_F8,
+    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS, VK_F8, VK_F10,
 )
 from macroflow.input.wininput import (
     WindowInfo, activate_window, enum_windows, get_cursor_pos,
@@ -76,7 +76,7 @@ class HotkeysMixin:
                     # 专注模式下实体输入由 FocusInputGuard 统一拦截，快捷键
                     # 在守卫钩子线程里识别触发，这里只保留 F12 紧急停止。
                     if key == keyboard.Key.f12:
-                        self._ui(self.stop_all)
+                        self._emergency_stop_from_hook()
                     return
                 if key == keyboard.Key.f8:
                     if VK_F8 in self._hotkey_pressed:
@@ -88,8 +88,13 @@ class HotkeysMixin:
                         self._ui(self.toggle_record, False)
                 elif key == keyboard.Key.f9:
                     self._ui(self.run_current_script)
+                elif key == keyboard.Key.f10:
+                    if VK_F10 in self._hotkey_pressed:
+                        return
+                    self._hotkey_pressed.add(VK_F10)
+                    self._ui(self.run_workflow)
                 elif key == keyboard.Key.f12:
-                    self._ui(self.stop_all)
+                    self._emergency_stop_from_hook()
                 else:
                     vk = _key_vk(key)
                     binding = self._hotkey_vk_map.get(vk)
@@ -99,7 +104,7 @@ class HotkeysMixin:
                         self._hotkey_pressed.add(vk)
                         self._trigger_hotkey_script(binding)
             except Exception:
-                # 回调异常不能杀死 pynput 监听器，否则 F8/F9/F12 全部失效、
+                # 回调异常不能杀死 pynput 监听器，否则 F8/F9/F10/F12 全部失效、
                 # 紧急停止也无从谈起。记录后继续监听。
                 try:
                     self._log("热键回调异常：" + traceback.format_exc())
@@ -116,7 +121,7 @@ class HotkeysMixin:
         self.hotkey_listener.start()
         if not self.hotkey_listener.running:
             self._log(
-                "热键监听器启动失败：F8/F9/F12 可能无法使用，"
+                "热键监听器启动失败：F8/F9/F10/F12 可能无法使用，"
                 "请以管理员身份运行或检查安全软件是否拦截了低级键盘钩子。"
             )
     @staticmethod
@@ -283,6 +288,7 @@ class HotkeysMixin:
         if self.exiting:
             return
         self.exiting = True
+        self._cancel_workflow_recovery()
         if self.recorder.running:
             # The recorder owns the newest actions until it is stopped. Move
             # them into the editor before taking the shutdown snapshot.

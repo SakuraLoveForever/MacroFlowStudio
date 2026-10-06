@@ -11,7 +11,10 @@ if __package__ in (None, ""):
     if str(_SRC_ROOT) not in sys.path:
         sys.path.insert(0, str(_SRC_ROOT))
 
-from macroflow.ui.app.startup import main  # noqa: E402
-
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) == 4 and sys.argv[1] == "--watchdog":
+        from macroflow.execution.recovery import run_watchdog
+        run_watchdog(Path(sys.argv[2]), int(sys.argv[3]))
+    else:
+        from macroflow.ui.app.startup import main
+        main()

@@ -827,7 +827,7 @@ class HotkeyBindingDialog(ModalDialog):
             show_floating_notice(self, "快捷键不可用", f"{name} 是系统功能键，不能单独作为快捷键。")
             return
         if self.key_vk in RESERVED_HOTKEY_VKS:
-            show_floating_notice(self, "快捷键不可用", "F8/F9/F12 已被录制、执行与紧急停止占用。")
+            show_floating_notice(self, "快捷键不可用", "F8/F9/F10/F12 已被录制、执行与紧急停止占用。")
             return
         raw = self.script_var.get().strip()
         path = self._script_labels.get(raw)
@@ -891,7 +891,7 @@ class HotkeyScriptsDialog(ModalDialog):
         bottom = ttk.Frame(self, padding=pad(18, 8, 18, 14))
         bottom.pack(fill="x")
         ttk.Label(
-            bottom, text="F8/F9/F12 为系统功能键，不可绑定；快捷键脚本按纯动作执行。",
+            bottom, text="F8/F9/F10/F12 为系统功能键，不可绑定；快捷键脚本按纯动作执行。",
             foreground=COLOR_MUTED,
         ).pack(side="left")
         ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")

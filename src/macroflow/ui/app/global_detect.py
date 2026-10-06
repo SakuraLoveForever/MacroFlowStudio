@@ -360,10 +360,13 @@ class GlobalDetectMixin:
             "warned_missing_module": False,
             "standalone_replay": standalone_replay,
         }
+        if module_ref and obj is not None:
+            for field in ("timed_detection", "timed_condition", "timed_duration_ms", "timed_actions", "process_name"):
+                guard[field] = obj.get(field)
         with self.guards_lock:
             self.global_guards[key] = guard
         self._invalidate_detection_config()
-        name = guard["template"].name or "未设置"
+        name = str(guard.get("process_name", "")) if guard.get("recognize") == "process" else guard["template"].name or "未设置"
         if region_mode == "window":
             region_text = "目标窗口"
         elif region_mode == "template":
@@ -384,6 +387,10 @@ class GlobalDetectMixin:
         else:
             tail = "执行脚本动作，再继续检测。"
         hold_text = f"持续超过 {hold} ms" if guard.get("hold_enabled", False) else "识别到立即执行"
+        if guard.get("timed_detection"):
+            condition = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
+            hold_text = f"连续{condition} {guard.get('timed_duration_ms', 30000)} ms；状态变化重新计时"
+            tail = "执行持续状态自定义步骤，同一持续状态仅触发一次。"
         repeat_text = (
             "条件仍存在时按间隔重试，目标消失后停止 · "
             if guard.get("wait_text_absent") else ""

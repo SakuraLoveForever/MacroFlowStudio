@@ -1,4 +1,5 @@
 from __future__ import annotations
+from macroflow.execution.recovery import CaptureUnavailable
 
 from macroflow.core.models import (
     ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
@@ -328,6 +329,8 @@ class WorkflowMixin:
             if recognize == "text":
                 expected = str(module_obj.get("expected_text", "")).strip()
                 template_name = f"文字识别：{expected}" if expected else "文字识别"
+            elif recognize == "process":
+                template_name = f"进程检测：{module_obj.get('process_name', '')}"
             elif recognize == "number":
                 template_name = "数字识别"
             else:
@@ -939,6 +942,9 @@ class WorkflowMixin:
         step.setdefault("original_repeats", int(step.get("repeats", 0)))
         step["repeats"] = remaining
         workflow_path = getattr(self, "workflow_path", None)
+        recovery = getattr(self, "_workflow_recovery", None)
+        if recovery is not None:
+            recovery.checkpoint()
         if workflow_path is not None:
             try:
                 save_workflow(self.workflow, workflow_path)
@@ -1383,6 +1389,16 @@ class WorkflowMixin:
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
             return
+        continuing_recovery = (resume_action_index is not None
+                               and getattr(self, "_workflow_recovery", None) is not None)
+        automatic_generation = getattr(self, "_automatic_recovery_generation", None)
+        if automatic_generation is not None \
+                and automatic_generation != getattr(self, "_recovery_cancel_generation", 0):
+            return
+        with self._recovery_lock():
+            self._cancel_workflow_recovery(manual=not getattr(self, "_automatic_restarting", False))
+            launch_generation = (automatic_generation if automatic_generation is not None
+                                 else getattr(self, "_recovery_cancel_generation", 0))
         self._save_activation_interval()
         workflow_steps = self._workflow_only_steps()
         global_modules = [dict(step) for step in self._global_module_steps()]
@@ -1418,6 +1434,8 @@ class WorkflowMixin:
             if start_delay_seconds is None:
                 self._shutdown_detection_worker()
                 return
+            if getattr(self, "_automatic_restarting", False):
+                start_delay_seconds = 0
         else:
             # 全局模块断点恢复与“重新执行工作流”属于同一次运行，不重复等待。
             start_delay_seconds = 0
@@ -1438,7 +1456,7 @@ class WorkflowMixin:
             self._log(f"工作流缺失脚本：第 {row_text} 行；这些行将在执行时跳过。")
         start_text = self.workflow_start_var.get().strip()
         start_at = None
-        if start_text:
+        if start_text and not getattr(self, "_automatic_restarting", False):
             try:
                 start_at = datetime.strptime(start_text, "%Y-%m-%d %H:%M:%S")
             except ValueError:
@@ -1488,9 +1506,6 @@ class WorkflowMixin:
         self._clear_global_guards()
         if not preserve_global_cooldowns:
             self._clear_global_detect_cooldowns()
-        self.workflow_stop.clear()
-        if getattr(self, "player", None) is not None:
-            self.player.reset()
         if not suppress_start_sound:
             self._sound("run_start")
         self._hide_main_for_execution()
@@ -1519,7 +1534,25 @@ class WorkflowMixin:
                     "script_globals_enabled": script_globals_enabled},
             daemon=True,
         )
-        self.worker.start()
+        # Recovery belongs only to a complete production workflow. A test or
+        # selected fragment must never silently expand into the full workflow.
+        if (not partial_run or continuing_recovery) and not self.workflow_test_mode_active \
+                and hasattr(self, "session_log_path"):
+            self._arm_workflow_recovery()
+        # F12 and tray Quit share this short critical section with starting the
+        # replacement, so a manual stop cannot be cleared by a delayed handoff.
+        with self._recovery_lock():
+            cancelled = launch_generation != getattr(self, "_recovery_cancel_generation", 0)
+            if not cancelled:
+                self.workflow_stop.clear()
+                if getattr(self, "player", None) is not None:
+                    self.player.reset()
+                self.worker.start()
+        if cancelled:
+            self._cancel_workflow_recovery(manual=False)
+            self._shutdown_detection_worker()
+            self._finish_execution_visibility()
+            return
         self._show_execution_mini()
         if self.workflow_test_mode_active:
             self._append_mini_step("工作流测试模式：普通计次行最多执行 1 次，且不扣减剩余次数。")
@@ -1872,7 +1905,9 @@ class WorkflowMixin:
                 self._ui(self._log, "工作流执行完成。")
                 self._ui(self._sound, "run_done")
         except Exception as exc:
-            self._ui(self._handle_worker_error, "工作流执行失败", exc)
+            if not isinstance(exc, CaptureUnavailable) \
+                    or not self._request_workflow_recovery(str(exc)):
+                self._ui(self._handle_worker_error, "工作流执行失败", exc)
         finally:
             allow_display_sleep()
             self.current_workflow_step_index = None
@@ -1895,6 +1930,7 @@ class WorkflowMixin:
             if not restarting:
                 self._ui(self._finish_execution_visibility)
                 self.workflow_test_mode_active = False
+            self._finish_workflow_recovery()
     def _register_workflow_global_modules(self, modules: list[dict]) -> bool:
         """Register the workflow guards for a workflow or a partial script run."""
         for module in modules:

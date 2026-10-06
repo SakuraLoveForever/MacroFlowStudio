@@ -275,9 +275,10 @@ class ShellMixin:
             on_guard_poll=self._evaluate_global_guards,
             on_ocr_engine_wait=self._wait_ocr_ready,
             on_resolution_monitor_request=self._resolution_monitor_hwnd,
+            on_heartbeat=self._workflow_heartbeat,
         )
         self.input_guard = FocusInputGuard(
-            lambda: self._ui(self.stop_all),
+            self._emergency_stop_from_hook,
             on_hotkey=self._on_hotkey_vk,
         )
         # 快捷键脚本专用播放器：独立于主播放器，可与录制/主脚本执行并行。
@@ -373,7 +374,7 @@ class ShellMixin:
         self._refresh_hotkey_summary()
         self.refresh_script_files()
         self.refresh_workflow_files()
-        self._log("应用已就绪。F8 空闲时录制/停止、执行时暂停/继续，F9 执行当前脚本，F12 紧急停止。")
+        self._log("应用已就绪。F8 空闲时录制/停止、执行时暂停/继续，F9 执行当前脚本，F10 执行当前工作流，F12 紧急停止。")
         self._set_status("就绪", "success")
         self._sync_windows_startup(log_errors=True)
         self._schedule_timed_backup()
@@ -391,7 +392,8 @@ class ShellMixin:
             self.root.after(300, lambda: self._load_startup_script(resolve_path(self.startup_open_script)))
         if self.startup_edit_module:
             self.root.after(300, lambda: self._open_module_object_editor(self.startup_edit_module))
-        if self.startup_run_workflow_var.get() and not explicit_editor_start:
+        if self.startup_run_workflow_var.get() and not explicit_editor_start \
+                and "--recover-workflow" not in sys.argv:
             self.root.after(700, self._run_configured_startup_workflow)
         if not explicit_editor_start:
             # 恢复上次关闭时脚本编辑页的完整状态（含未保存动作）。
@@ -1431,7 +1433,7 @@ class ShellMixin:
         workflow_action_bar = ttk.Frame(header, style="Workspace.TFrame")
         workflow_action_bar.pack(fill="x", pady=pad(8, 0))
         ttk.Button(
-            workflow_action_bar, text="运行工作流", command=self.run_workflow,
+            workflow_action_bar, text="运行工作流    F10", command=self.run_workflow,
             bootstyle="success",
         ).pack(side="right")
         self.workflow_pause_button = ttk.Button(

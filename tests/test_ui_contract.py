@@ -24,7 +24,7 @@ class PackageEntryTests(unittest.TestCase):
         allowed_extra = {
             "main", "base", "constants", "summaries", "startup", "shell",
             "helpers", "global_detect", "guards", "tray", "window_binding",
-            "recording", "scripts", "execution", "workflow", "hotkeys",
+            "recording", "recovery", "scripts", "execution", "workflow", "hotkeys",
             "script_edit", "annotations",
         }
         leaked = sorted(exported - {"MacroFlowApp"} - allowed_extra)

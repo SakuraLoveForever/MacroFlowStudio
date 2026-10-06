@@ -20,8 +20,10 @@ from macroflow.core.storage import (
 )
 from PIL import Image, ImageEnhance, ImageTk
 from macroflow.ui.animation import animator_for
+from macroflow.ui.detect_overlay import show_overlay
 from pathlib import Path
 from macroflow.core.image_match import capture_bgr
+from macroflow.execution.player import running_process_names
 import copy
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -312,7 +314,9 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "text": "识别文字",
             "number": "读取数字",
             "none": "无需识图",
+            "process": "进程检测",
         }.get(obj.get("recognize"), "模板图片"))
+        self.process_name_var = tk.StringVar(value=str(obj.get("process_name", "")))
         self.expected_text_var = tk.StringVar(value=str(obj.get("expected_text", "")))
         self.match_mode_var = tk.StringVar(
             value="等于" if obj.get("match_mode") == "equals" else "包含",
@@ -335,7 +339,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         fallback_key = str(obj.get("fallback_module_key", "")).strip()
         self.fallback_module_keys = {"（不启用）": ""}
         for key, value in fallback_objects.items():
-            if key == old_key or value.get("recognize") in ("number", "none") or value.get("pure_action"):
+            if key == old_key or value.get("recognize") in ("number", "none", "process") or value.get("pure_action"):
                 continue
             name = str(value.get("name", "")).strip() or Path(key.replace("\\", "/")).stem
             label = name if name not in self.fallback_module_keys else f"{name} · {key}"
@@ -399,6 +403,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             obj.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
         )
         self.timeout_segment = [dict(item) for item in obj.get("on_timeout_actions") or []]
+        self.timed_detection_var = tk.BooleanVar(value=bool(obj.get("timed_detection", False)))
+        self.timed_condition_var = tk.StringVar(value="连续检测到" if obj.get("timed_condition") == "present" else "连续未检测到")
+        self.timed_duration_var = duration_var(obj.get("timed_duration_ms", 30000))
+        self.timed_segment = [dict(item) for item in obj.get("timed_actions") or []]
         # 表单行数多，小屏 / 高 DPI（打包版按真实 DPI 渲染）下固定高度窗口会把
         # 底部的延时、识别成功后动作、点击按钮等行挤出窗口且没有滚动条（用户
         # 报告“相似度、检测间隔、延时、动作、点击按钮等都没有输入的地方”）。
@@ -466,11 +474,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         row += 1
         self.row_region = self._labeled_row(
             body, row, "框选区域 (x,y,w,h)",
-            lambda m: self._entry_button_row(
-                m, readonly=True, textvariable=self.region_var,
-                button_text="框选区域…", command=self._pick_region, expand=True,
-            ),
-            "识别时在屏幕上搜索的区域，留空 = 全屏搜索。",
+            self._region_picker_row,
+            "识别时在屏幕上搜索的区域，留空 = 全屏搜索。点击“显示识图区域”可闪烁红框定位当前区域。",
         )
         row += 1
         self.detect_section_heading = self._section_heading(body, row, "识别设置")
@@ -478,13 +483,19 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.row_recognize = self._labeled_row(
             body, row, "识别方式",
             lambda m: self._row_combo(
-                m, self.recognize_var, ("模板图片", "识别文字", "读取数字", "无需识图"),
+                m, self.recognize_var, ("模板图片", "识别文字", "读取数字", "无需识图", "进程检测"),
                 width=14, set_attr="recognize_combo",
             ),
             "模板图片：按图像匹配；识别文字：截取区域做 OCR；读取数字：把指定区域"
-            "内的数字从左到右拼成整数，并由脚本行判断；无需识图：模块执行到时直接运行。",
+            "内的数字从左到右拼成整数，并由脚本行判断；无需识图：模块执行到时直接运行；进程检测：按自定义进程名计时。",
         )
         self.recognize_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
+        row += 1
+        self.row_process_name = self._labeled_row(
+            body, row, "进程名",
+            self._process_picker_row,
+            "展开列表选择当前运行的进程，每次展开自动刷新。不区分大小写；同名进程有一个运行即视为检测到。已保存的进程停止后仍保留在选项中。",
+        )
         row += 1
         self.row_expected_text = self._labeled_row(
             body, row, "期望文字",
@@ -683,6 +694,31 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         row += 1
         self.segment_frame = self._build_segment_panel(body, row)
         row += 1
+        self.timed_heading = self._section_heading(body, row, "持续状态触发")
+        row += 1
+        self.row_timed_detection = self._labeled_row(
+            body, row, "持续状态触发",
+            lambda m: dark_checkbutton(m, "启用", self.timed_detection_var, command=self._toggle_sections),
+            "连续检测到或连续未检测到目标达到设定时长后，只执行下方自定义步骤。状态变化后重新计时；全局模块每段持续状态只触发一次。",
+        )
+        row += 1
+        self.row_timed_condition = self._labeled_row(
+            body, row, "触发条件",
+            lambda m: self._row_combo(m, self.timed_condition_var, ("连续检测到", "连续未检测到")),
+            "根据图片或文字的实际检测结果计时。",
+        )
+        row += 1
+        self.row_timed_duration = self._labeled_row(
+            body, row, "持续时长",
+            lambda m: ttk.Entry(m, textvariable=self.timed_duration_var, width=14),
+            "状态必须持续达到该时长；状态反转或截图失败后重新计时。",
+        )
+        row += 1
+        self.timed_segment_frame = self._build_segment_panel(
+            body, row, segment_attr="timed_segment", listbox_attr="timed_segment_listbox",
+            title="持续状态满足后执行的步骤",
+        )
+        row += 1
         self.timeout_section_heading = self._section_heading(body, row, "未识别超时")
         row += 1
         self.row_run_code_on_timeout = self._labeled_row(
@@ -804,6 +840,26 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         ttk.Separator(frame).pack(side="left", fill="x", expand=True, padx=pad(10, 0))
         return frame
 
+    def _process_picker_row(self, frame):
+        current = self.process_name_var.get().strip()
+        self.process_name_combo = ttk.Combobox(
+            frame, textvariable=self.process_name_var, state="readonly", width=30,
+            values=[current] if current else [], postcommand=self._refresh_process_choices,
+        )
+        self.process_name_combo.grid(row=0, column=1, sticky="ew")
+        return self.process_name_combo
+
+    def _refresh_process_choices(self):
+        try:
+            names = running_process_names()
+        except OSError as exc:
+            show_floating_notice(self, "无法枚举进程", f"读取进程列表失败：{exc}")
+            return
+        current = self.process_name_var.get().strip()
+        if current and current.lower() not in names:
+            names.append(current)
+        self.process_name_combo.configure(values=sorted(names, key=str.lower))
+
     def _image_picker_row(self, frame):
         row = ttk.Frame(frame)
         row.columnconfigure(0, weight=1)
@@ -882,6 +938,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         category = self.category_var.get()
         # 特殊模块 = 纯动作（无图片）：只保留 分类 + 名称，隐藏全部检测/行为行。
         pure = category == "特殊模块"
+        process_mode = not pure and self.recognize_var.get() == "进程检测"
         text_mode = not pure and self.recognize_var.get() == "识别文字"
         number_mode = not pure and self.recognize_var.get() == "读取数字"
         direct_mode = not pure and self.recognize_var.get() == "无需识图"
@@ -907,15 +964,16 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         # 名称行对普通模块和特殊模块（纯动作，只保留 分类+名称）都可见；
         # 传 pure 会把普通模块的名称行也 grid_remove 掉（v1.82.1 回归）。
         self._set_row(self.row_name, True)
-        self._set_row(self.row_image, not pure and not text_mode and not number_mode and not direct_mode)
-        self._set_row(self.row_region, not pure and not direct_mode)
+        self._set_row(self.row_process_name, process_mode)
+        self._set_row(self.row_image, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
+        self._set_row(self.row_region, not pure and not direct_mode and not process_mode)
         self._set_row(self.detect_section_heading, not pure)
         self._set_row(self.row_recognize, not pure)
         self._set_row(self.row_expected_text, text_mode)
         self._set_row(self.row_match_mode, text_mode)
         self._set_row(self.row_wait_text_absent, not pure and not number_mode and not direct_mode)
-        self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode)
-        self._set_row(self.row_ignore_background, not pure and not text_mode and not number_mode and not direct_mode)
+        self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
+        self._set_row(self.row_ignore_background, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
         self._set_row(self.row_interval, not pure and not direct_mode)
         self._set_row(
             self.row_cooldown,
@@ -995,6 +1053,25 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             self.row_not_found_timeout, timeout_enabled or switch_failure_timeout,
         )
         self._set_row(self.timeout_segment_frame, timeout_enabled)
+        timed_available = not pure and not number_mode and not direct_mode
+        timed_enabled = timed_available and (process_mode or self.timed_detection_var.get())
+        for timed_row in (self.timed_heading, self.row_timed_detection):
+            self._set_row(timed_row, timed_available and (not process_mode or timed_row is self.timed_heading))
+        for timed_row in (self.row_timed_condition, self.row_timed_duration, self.timed_segment_frame):
+            self._set_row(timed_row, timed_enabled)
+        if timed_enabled:
+            # 持续状态模式仅执行自己的步骤，不同时应用普通识别的点击与超时行为。
+            for ordinary_row in (self.segment_section_heading, self.row_run_code_after_action,
+                                 self.segment_frame, self.timeout_section_heading,
+                                 self.row_run_code_on_timeout, self.row_not_found_timeout,
+                                 self.timeout_segment_frame, self.row_wait_text_absent,
+                                 self.row_blocking, self.row_delay, self.action_section_heading,
+                                 self.row_after, self.row_hold, self.row_button, self.row_click_count,
+                                 self.row_ocr_offset, self.row_click_point, self.row_second_template,
+                                 self.row_second_timeout, self.row_second_click_target,
+                                 self.row_second_click_region, self.row_fallback_module,
+                                 self.row_fallback_click, self.row_cooldown):
+                self._set_row(ordinary_row, False)
         self._resize_for_content()
 
     def _set_row(self, row, visible: bool):
@@ -1014,17 +1091,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             self.update_idletasks()
             area = monitor_work_area_for(self.master)
             width = min(
-                max(
-                    self.winfo_width(),
-                    self.body.winfo_reqwidth() + self._scrollbar.winfo_reqwidth(),
-                ),
+                self.body.winfo_reqwidth() + self._scrollbar.winfo_reqwidth(),
                 max(1, int(area["width"]) - px(DIALOG_FRAME_MARGIN)),
             )
             height = min(
-                max(self.winfo_height(), self.body.winfo_reqheight() + 4),
+                self.body.winfo_reqheight() + 4,
                 max(1, int(area["height"]) - px(DIALOG_FRAME_MARGIN)),
             )
-            # 放大后仍留在同一块屏内：位置按新尺寸收进可用区域，不跳屏。
+            # 按当前内容增减尺寸，并保持在同一块显示器内。
             x, y = clamp_to_work_area(area, width, height, self.winfo_x(), self.winfo_y())
             self.geometry(f"{width}x{height}+{x}+{y}")
         except tk.TclError:
@@ -1079,6 +1153,46 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         self.picker.start()
 
+    def _region_picker_row(self, frame):
+        entry = self._entry_button_row(
+            frame, readonly=True, textvariable=self.region_var,
+            button_text="框选区域…", command=self._pick_region, expand=True,
+        )
+        button = ttk.Button(frame, text="显示识图区域", command=self._show_region_preview)
+        button.grid(row=0, column=3, padx=pad(8, 0), sticky="w")
+        def update_button(*_args):
+            button.configure(state="normal" if self.region_var.get().strip() else "disabled")
+        self.region_var.trace_add("write", update_button)
+        update_button()
+        return entry
+
+    def _show_region_preview(self):
+        region = self._parse_region_or_empty(self.region_var.get(), label="识图区域")
+        if not region:
+            return
+        windows = [(window, window.state()) for window in self._ancestors_to_hide()]
+        def restore():
+            for window, state in reversed(windows):
+                try:
+                    window.state(state)
+                except tk.TclError:
+                    pass
+            if self.winfo_exists():
+                self.deiconify()
+                self.lift()
+                self.grab_set()
+                self.focus_force()
+        self.grab_release()
+        self.withdraw()
+        for window, _state in windows:
+            window.withdraw()
+        try:
+            show_overlay(*region, duration_ms=3000, label="识图区域", key="module-region-preview")
+            self.after(3200, restore)
+        except Exception:
+            restore()
+            raise
+
     def _pick_region(self):
         self.picker = ScreenRegionPicker(
             self, self.master,
@@ -1128,6 +1242,11 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             )
             self.destroy()
             return
+        process_mode = self.recognize_var.get() == "进程检测"
+        process_name = self.process_name_var.get().strip()
+        if process_mode and (not process_name or any(part in process_name for part in ("/", "\\", ":", "\x00"))):
+            show_floating_notice(self, "进程名无效", "请从进程列表选择要检测的进程。")
+            return
         text_mode = self.recognize_var.get() == "识别文字"
         number_mode = self.recognize_var.get() == "读取数字"
         direct_mode = self.recognize_var.get() == "无需识图"
@@ -1138,15 +1257,15 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         if number_mode and self.category_var.get() != "切换模块":
             show_floating_notice(self, "类别不适用", "读取数字模块只能保存为切换模块。")
             return
-        if not text_mode and not number_mode and not direct_mode and not template_key:
+        if not process_mode and not text_mode and not number_mode and not direct_mode and not template_key:
             show_floating_notice(self, "缺少模板图片", "请先“选择图片…”或“截图新建…”。")
             return
         region: list[int] = []
-        if not text_mode and not direct_mode and not self.region_var.get().strip():
+        if not process_mode and not text_mode and not direct_mode and not self.region_var.get().strip():
             # 模板图片和数字读取必须指定区域；识别文字方式留空表示全屏。
             show_floating_notice(self, "缺少框选区域", "请先“框选区域…”。")
             return
-        if self.region_var.get().strip():
+        if not process_mode and self.region_var.get().strip():
             parts = self.region_var.get().split(",")
             if len(parts) != 4:
                 show_floating_notice(self, "缺少框选区域", "请先“框选区域…”。")
@@ -1164,7 +1283,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         expected_text = self.expected_text_var.get().strip()
         match_mode = "equals" if self.match_mode_var.get() == "等于" else "contains"
         threshold = 0.85
-        if not text_mode and not number_mode and not direct_mode:
+        if not process_mode and not text_mode and not number_mode and not direct_mode:
             try:
                 threshold = float(self.threshold_var.get())
             except ValueError:
@@ -1202,7 +1321,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 "延时和持续时间必须是大于等于 0 的整数；点击次数必须是大于等于 1 的整数。",
             )
             return
-        after_value = AFTER_ACTION_VALUES.get(self.after_action_var.get(), "click_match")
+        timed_enabled = process_mode or (not number_mode and not direct_mode and self.timed_detection_var.get())
+        after_value = "continue" if timed_enabled else AFTER_ACTION_VALUES.get(self.after_action_var.get(), "click_match")
         if direct_mode and after_value not in ("click_custom", "continue"):
             after_value = "continue"
         try:
@@ -1261,7 +1381,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                     )
                     return
         run_code_after_action = (
-            not number_mode and not direct_global and bool(self.run_code_after_action_var.get())
+            not timed_enabled and not number_mode and not direct_global and bool(self.run_code_after_action_var.get())
         )
         if run_code_after_action:
             if not self.segment:
@@ -1271,8 +1391,20 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 )
                 return
             ensure_action_ids(self.segment)
+        try:
+            timed_duration = int(self.timed_duration_var.get())
+        except ValueError:
+            timed_duration = 0
+        if timed_enabled:
+            if not 1 <= timed_duration <= 86400000:
+                show_floating_notice(self, "持续时长格式错误", "持续时长必须大于 0 且不超过 24 小时。")
+                return
+            if not self.timed_segment:
+                show_floating_notice(self, "自定义步骤为空", "请至少添加一个持续状态触发后执行的步骤。")
+                return
+            ensure_action_ids(self.timed_segment)
         run_code_on_timeout = (
-            not number_mode and (not direct_mode or direct_global)
+            not timed_enabled and not number_mode and (not direct_mode or direct_global)
             and bool(self.run_code_on_timeout_var.get())
         )
         try:
@@ -1293,6 +1425,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             ensure_action_ids(self.timeout_segment)
         name = self.name_var.get().strip() or (
             "识别文字" if text_mode else
+            f"进程检测 {process_name}" if process_mode else
             "读取数字" if number_mode else
             "无需识图" if direct_mode else self._default_name_for_image(template_key)
         )
@@ -1342,9 +1475,17 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "run_code_on_timeout": run_code_on_timeout,
             "not_found_timeout_ms": not_found_timeout,
             "on_timeout_actions": [] if number_mode else self.timeout_segment,
+            "process_name": process_name if process_mode else "",
+            "timed_detection": bool(timed_enabled),
+            "timed_condition": "present" if self.timed_condition_var.get() == "连续检测到" else "absent",
+            "timed_duration_ms": timed_duration if timed_duration > 0 else 30000,
+            "timed_actions": self.timed_segment,
             "wait_text_absent": False if direct_mode or number_mode else bool(self.wait_text_absent_var.get()),
         }
-        if text_mode:
+        if process_mode:
+            module_dict.update({"recognize": "process", "template": "", "region": [],
+                                "blocking": False, "wait_text_absent": False})
+        elif text_mode:
             module_dict["recognize"] = "text"
             module_dict["expected_text"] = expected_text
             module_dict["match_mode"] = match_mode
@@ -1831,6 +1972,11 @@ class TemplateRegionManagerDialog(ModalDialog):
         )
         for key, obj in items:
             pure = bool(obj.get("pure_action"))
+            region = obj.get("region") or [0, 0, 0, 0]
+            text = (
+                "无需屏幕区域" if obj.get("recognize") in ("none", "process") else
+                ",".join(map(str, region)) if region[2] > 0 else "未设置区域（全屏）"
+            )
             if tab_key == "all":
                 if pure:
                     tag = module_manager_tag(obj)
@@ -1840,8 +1986,6 @@ class TemplateRegionManagerDialog(ModalDialog):
                         self._row_color(tag),
                     ))
                 else:
-                    region = obj.get("region", [0, 0, 0, 0])
-                    text = ",".join(map(str, region)) if region[2] > 0 else "未设置区域（全屏）"
                     tag = module_manager_tag(obj)
                     rows.append(VirtualRow(
                         key, module_manager_label(key, obj),
@@ -1851,8 +1995,6 @@ class TemplateRegionManagerDialog(ModalDialog):
             elif tab_key in ("switch", "workflow_global", "script_global"):
                 if obj.get("category") != tab_key or pure:
                     continue
-                region = obj.get("region", [0, 0, 0, 0])
-                text = ",".join(map(str, region)) if region[2] > 0 else "未设置区域（全屏）"
                 tag = module_manager_tag(obj)
                 rows.append(VirtualRow(
                     key, module_manager_label(key, obj),
@@ -2671,6 +2813,8 @@ class ModulePickerDialog(ModalDialog):
                 label += " · 识别文字"
                 if obj.get("wait_text_absent"):
                     label += " · 持续执行至文字消失"
+            elif obj.get("recognize") == "process":
+                label += f" · 进程检测 {obj.get('process_name', '')}"
             elif obj.get("recognize") == "number":
                 label += " · 读取数字"
             elif obj.get("wait_text_absent"):
@@ -2752,7 +2896,7 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
         key = str(action.get("module_key") or action.get("template", ""))
         obj = registered_module_object(key)
         number_routes = bool(result_routes and obj and obj.get("recognize") == "number")
-        self.blocking_module = bool(obj and obj.get("blocking", False))
+        self.blocking_module = bool(obj and obj.get("blocking", False) and not obj.get("timed_detection"))
         super().__init__(
             parent, "编辑数字读取" if number_routes else "编辑模块引用",
             680, 640 if number_routes else 570 if result_routes else 330,

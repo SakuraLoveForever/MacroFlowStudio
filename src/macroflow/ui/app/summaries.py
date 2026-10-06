@@ -96,6 +96,11 @@ def _module_ref_summary(action: dict, label: str,
         "workflow_global": "工作流全局模块",
         "script_global": "脚本全局模块",
     }.get(obj.get("category"), label)
+    if obj.get("timed_detection"):
+        condition = "检测到" if obj.get("timed_condition") == "present" else "未检测到"
+        target = f" · 进程 {obj.get('process_name', '')}" if obj.get("recognize") == "process" else ""
+        detail = f"引用{category}模块 {name}{target} · 连续{condition} {obj.get('timed_duration_ms', 30000)} ms → 自定义步骤"
+        return action_kind_label(kind, label), detail, f"{int(action.get('delay_ms', 0))} ms"
     after = str(obj.get("after_action", "click_match"))
     direct_mode = obj.get("recognize") == "none"
     number_mode = obj.get("recognize") == "number"

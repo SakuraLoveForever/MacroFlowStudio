@@ -144,7 +144,7 @@ class WinInputTests(unittest.TestCase):
     def test_activate_window_does_not_restore_non_minimized_window(self):
         with patch("macroflow.input.wininput.is_window", return_value=True), \
              patch("macroflow.input.wininput.user32.IsIconic", return_value=False), \
-             patch("macroflow.input.wininput.user32.ShowWindow") as show, \
+             patch("macroflow.input.wininput.user32.ShowWindowAsync") as show, \
              patch("macroflow.input.wininput.kernel32.GetCurrentThreadId", return_value=1), \
              patch("macroflow.input.wininput.user32.GetWindowThreadProcessId", return_value=1), \
              patch("macroflow.input.wininput.user32.BringWindowToTop"), \
@@ -158,7 +158,7 @@ class WinInputTests(unittest.TestCase):
     def test_activate_window_restores_only_minimized_window(self):
         with patch("macroflow.input.wininput.is_window", return_value=True), \
              patch("macroflow.input.wininput.user32.IsIconic", return_value=True), \
-             patch("macroflow.input.wininput.user32.ShowWindow") as show, \
+             patch("macroflow.input.wininput.user32.ShowWindowAsync") as show, \
              patch("macroflow.input.wininput.kernel32.GetCurrentThreadId", return_value=1), \
              patch("macroflow.input.wininput.user32.GetWindowThreadProcessId", return_value=1), \
              patch("macroflow.input.wininput.user32.BringWindowToTop"), \
@@ -184,8 +184,7 @@ class WinInputTests(unittest.TestCase):
             self.assertTrue(activate_window(123))
         set_focus.assert_not_called()
 
-    def test_activate_window_set_focus_only_when_activation_failed(self):
-        # SetForegroundWindow 未把窗口带到前台（前台是别的窗口）：才补 SetFocus。
+    def test_activate_window_does_not_force_focus_when_activation_failed(self):
         with patch("macroflow.input.wininput.is_window", return_value=True), \
              patch("macroflow.input.wininput.user32.IsIconic", return_value=False), \
              patch("macroflow.input.wininput.kernel32.GetCurrentThreadId", return_value=1), \
@@ -196,8 +195,27 @@ class WinInputTests(unittest.TestCase):
              patch("macroflow.input.wininput.user32.GetForegroundWindow", return_value=999), \
              patch("macroflow.input.wininput.time.sleep"):
             self.assertFalse(activate_window(123))
-        set_focus.assert_called_once()
-        self.assertEqual(set_focus.call_args.args[0].value, 123)
+        set_focus.assert_not_called()
+
+    def test_activation_never_shares_input_queue_with_unresponsive_game(self):
+        with patch.object(wininput_module, "is_window", return_value=True), \
+             patch.object(wininput_module.user32, "IsIconic", return_value=True), \
+             patch.object(wininput_module.user32, "ShowWindowAsync", return_value=True) as restore, \
+             patch.object(wininput_module.user32, "ShowWindow") as synchronous_show, \
+             patch.object(wininput_module.kernel32, "GetCurrentThreadId", return_value=1), \
+             patch.object(wininput_module.user32, "GetWindowThreadProcessId", return_value=2), \
+             patch.object(wininput_module.user32, "AttachThreadInput") as attach, \
+             patch.object(wininput_module.user32, "BringWindowToTop") as bring, \
+             patch.object(wininput_module.user32, "SetFocus") as focus, \
+             patch.object(wininput_module.user32, "SetForegroundWindow"), \
+             patch.object(wininput_module.user32, "GetForegroundWindow", return_value=None), \
+             patch.object(wininput_module.time, "sleep"):
+            self.assertFalse(activate_window(123))
+        restore.assert_called_once()
+        synchronous_show.assert_not_called()
+        attach.assert_not_called()
+        bring.assert_not_called()
+        focus.assert_not_called()
 
     def test_force_english_input_changes_layout_and_closes_ime(self):
         layout = 0x04090409
@@ -495,6 +513,7 @@ class KeyCaptureTests(unittest.TestCase):
         capturer, captured, post, patches = self._install_capturer(events, release)
         try:
             self.assertEqual(self._press(captured["proc"], VK_F9), 0)
+            self.assertEqual(self._press(captured["proc"], 0x79), 0)  # F10
             self.assertEqual(self._press(captured["proc"], 0x7B), 0)  # F12
             post.assert_not_called()
         finally:
@@ -596,6 +615,27 @@ class KeyCaptureTests(unittest.TestCase):
 
 
 class FocusModeTests(unittest.TestCase):
+    def test_f10_runs_current_workflow_once_per_physical_press(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.input_guard = Mock(active=False)
+        app._hotkey_pressed = set()
+        app._hotkey_vk_map = {}
+        app._ui = lambda callback, *args: callback(*args)
+        app.run_workflow = Mock()
+        app._log = Mock()
+        with patch("macroflow.ui.app.hotkeys.keyboard.Listener", return_value=Mock(running=True)) as factory:
+            app._start_hotkeys()
+        press = factory.call_args.kwargs["on_press"]
+        release = factory.call_args.kwargs["on_release"]
+        press(keyboard.Key.f10, injected=True)
+        app.run_workflow.assert_not_called()
+        press(keyboard.Key.f10)
+        press(keyboard.Key.f10)
+        app.run_workflow.assert_called_once_with()
+        release(keyboard.Key.f10)
+        press(keyboard.Key.f10)
+        self.assertEqual(app.run_workflow.call_count, 2)
+
     def test_focus_pause_releases_input_and_relocks_before_resuming(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.worker = Mock()
@@ -895,6 +935,53 @@ class FocusModeTests(unittest.TestCase):
 
 
 class InputGuardRestartTests(unittest.TestCase):
+    def test_input_owner_does_not_run_window_focus_callback(self):
+        guard = FocusInputGuard()
+        callback = Mock()
+        guard.set_before_input(callback)
+        with patch.object(wininput_module, "_send_input_direct") as send:
+            guard._send_input_here("packet")
+        callback.assert_not_called()
+        send.assert_called_once_with("packet")
+
+    def test_focus_callback_runs_on_sender_before_queueing_packet(self):
+        guard = FocusInputGuard()
+        guard.active = True
+        guard._thread_id = 123
+        sender = threading.current_thread()
+        observed = []
+        guard.set_before_input(lambda: observed.append(threading.current_thread()))
+
+        def post(*_args):
+            request = guard._input_requests.get_nowait()
+            request["done"].set()
+            return True
+
+        with patch.object(input_guard_module.user32, "PostThreadMessageW", side_effect=post):
+            guard._dispatch_input("packet")
+        self.assertEqual(observed, [sender])
+
+    def test_f12_unlocks_before_ui_callback_is_processed(self):
+        guard = FocusInputGuard()
+        queued = []
+        guard._on_f12 = lambda: queued.append("UI stop queued")
+        f12 = KBDLLHOOKSTRUCT(vkCode=VK_F12, flags=0)
+
+        def get_message(*_args):
+            guard._keyboard_proc(0, WM_KEYDOWN, ctypes.addressof(f12))
+            self.assertFalse(guard._system_blocked)
+            return 0
+
+        with patch.object(input_guard_module.user32, "SetWindowsHookExW", return_value=1), \
+             patch.object(input_guard_module.user32, "GetMessageW", side_effect=get_message), \
+             patch.object(input_guard_module.user32, "UnhookWindowsHookEx"), \
+             patch.object(input_guard_module.user32, "CallNextHookEx", return_value=0), \
+             patch.object(input_guard_module.user32, "BlockInput", return_value=True) as block:
+            guard._run()
+        self.assertIsNone(guard._error)
+        self.assertEqual(queued, ["UI stop queued"])
+        self.assertEqual(block.call_args_list, [call(True), call(False)])
+
     """专注模式守卫的启动/退出竞态：连续两次执行不能被“上一次还没退完”否掉。"""
 
     def test_start_waits_for_previous_hook_thread_instead_of_failing(self):

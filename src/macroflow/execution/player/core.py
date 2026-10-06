@@ -7,6 +7,7 @@ from macroflow.core.models import (
 from typing import Callable
 from pathlib import Path
 from macroflow.execution.timeline import PlaybackTimeline
+from macroflow.execution.recovery import CaptureUnavailable
 from macroflow.input.wininput import (
     activate_window, get_cursor_pos, get_foreground_window_info,
     get_display_resolution_for_window, get_display_scaling_for_window,
@@ -60,7 +61,9 @@ class CoreMixin:
                  on_ocr_engine_wait: Callable[[], bool] | None = None,
                  on_resolution_monitor_request: Callable[[], int | None] | None = None,
                  on_timing: Callable[[dict], None] | None = None,
+                 on_heartbeat: Callable[[], None] | None = None,
                  guard_settle_ms: int = GUARD_SETTLE_MS):
+        self.on_heartbeat = on_heartbeat
         self.on_status = on_status
         self.on_notice = on_notice
         self.on_global_detect_request = on_global_detect_request
@@ -165,10 +168,14 @@ class CoreMixin:
             self._pause_started_at = None
             self._resume_event.set()
     def wait_while_paused(self) -> float:
+        if self.on_heartbeat:
+            self.on_heartbeat()
         if not self.paused:
             return 0.0
         started = time.perf_counter()
         while self.paused and not self.stop_event.is_set():
+            if self.on_heartbeat:
+                self.on_heartbeat()
             self._resume_event.wait(0.1)
         if self.stop_event.is_set():
             raise PlaybackStopped()
@@ -254,7 +261,7 @@ class CoreMixin:
                 module_detail=True,
             )
         if now - self._capture_failure_since >= CAPTURE_FAILURE_GRACE_S:
-            raise RuntimeError(
+            raise CaptureUnavailable(
                 f"屏幕截图连续 {CAPTURE_FAILURE_GRACE_S:.0f} 秒失败"
                 f"（可能处于锁屏 / 屏保 / 独占全屏状态）：{exc}"
             ) from exc

@@ -1,10 +1,11 @@
 from __future__ import annotations
+from macroflow.core.timed_detection import sustained_detection
 
 from macroflow.execution.player import (
     JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
     AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
     JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
-    screen_template_scale,
+    screen_template_scale, is_process_running,
 )
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
@@ -102,6 +103,9 @@ class GuardsMixin:
         result = worker.poll()
         if result is not None:
             self._detection_request = None
+            recovery = getattr(self, "_workflow_recovery", None)
+            if recovery is not None:
+                recovery.detector_pending_at = None
             if (result.run_id != getattr(self, "_detection_run_id", 0)
                     or result.config_version != getattr(self, "_guard_config_version", 0)):
                 # 守卫状态已在检测线程里推进（冷却截止时间），
@@ -126,6 +130,9 @@ class GuardsMixin:
             config_version = getattr(self, "_guard_config_version", 0)
             worker.submit(run_id, config_version)
             self._detection_request = (run_id, config_version)
+            recovery = getattr(self, "_workflow_recovery", None)
+            if recovery is not None:
+                recovery.detector_pending_at = time.monotonic()
         return None
     def _rollback_detection_hit(self, hit) -> None:
         """Undo the guard state advanced by one detection result we cannot deliver."""
@@ -140,6 +147,8 @@ class GuardsMixin:
             if guard is None:
                 return
             guard["timeout_triggered"] = False
+            if hit.get("kind") == "timed":
+                guard.get("timed_state", {}).pop("fired", None)
             guard["cooldown_until"] = 0.0
             cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
             if cooldowns is not None:
@@ -204,6 +213,8 @@ class GuardsMixin:
             pending_version = getattr(self, "_pending_global_guard_hits_version", None)
             if pending_version is None or pending_version == version:
                 return DetectionEvaluation(pending.pop(0))
+            for hit in pending:
+                self._rollback_detection_hit(hit)
             pending.clear()
             self._pending_global_guard_hits_version = None
         now = time.perf_counter()
@@ -230,19 +241,22 @@ class GuardsMixin:
         if detection_context is None:
             detection_context = self._detection_event_context = threading.local()
         detection_context.events = deferred_events
-        needs_capture = any(str(guard.get("recognize", "")) != "none" for guard in due)
+        needs_capture = any(str(guard.get("recognize", "")) not in ("none", "process") for guard in due)
         screen = origin = None
         if needs_capture:
             try:
                 screen, origin = capture_bgr()
             except Exception as exc:
+                for guard in due:
+                    if str(guard.get("recognize", "")) not in ("none", "process"):
+                        guard.pop("timed_state", None)
                 self._defer_detection_event(
                     deferred_events, "log", text=f"全局检测：屏幕截图失败：{exc}",
                 )
-                detection_context.events = None
-                return DetectionEvaluation(None, tuple(deferred_events))
-            # 全屏截图偶发会让独占全屏游戏短暂失焦：截图后立即校验并恢复绑定窗口前台。
-            self._defer_detection_event(deferred_events, "restore_foreground")
+                due = [guard for guard in due if str(guard.get("recognize", "")) in ("none", "process")]
+            else:
+                # 截图成功后恢复目标窗口前台；进程检测不依赖这个操作。
+                self._defer_detection_event(deferred_events, "restore_foreground")
         self._evaluating_guards = True
         hits: list[dict] = []
         try:
@@ -275,10 +289,37 @@ class GuardsMixin:
         if recognize == "none":
             detected = False
             guard["warned_missing_template"] = False
+        elif recognize == "process":
+            process_name = str(guard.get("process_name", "")).strip()
+            if not process_name:
+                guard.pop("timed_state", None)
+                return None
+            try:
+                detected = is_process_running(process_name)
+            except OSError as exc:
+                detected = None
+                if not guard.get("warned_find_error"):
+                    self._ui(self._guard_global_event, guard, f"进程检测失败，重新计时：{exc}")
+                guard["warned_find_error"] = True
+            else:
+                guard["warned_find_error"] = False
+            guard["warned_missing_template"] = False
         elif recognize == "text":
             detected, match = self._guard_text_detect(guard, screen, origin)
         else:
             detected, match = self._guard_image_detect(guard, screen, origin)
+        if guard.get("timed_detection"):
+            observation = None if guard.get("warned_missing_template") or guard.get("warned_find_error") else detected
+            state = guard.setdefault("timed_state", {})
+            if sustained_detection(state, observation, guard.get("timed_condition", "absent"),
+                                   int(guard.get("timed_duration_ms", 30000)), now):
+                label = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
+                self._ui(self._guard_global_event, guard,
+                         f"持续状态触发：连续{label} {guard.get('timed_duration_ms', 30000)} ms，执行自定义步骤。")
+                guard["trigger_kind"] = "timed"
+                hit = self._build_guard_hit(guard, resolve_hwnd=False)
+                return {**hit, "actions": list(guard.get("timed_actions") or []), "delay_ms": 0}
+            return None
         if guard.get("wait_text_absent"):
             if detected:
                 if not guard.get("target_absent_armed"):
@@ -315,7 +356,8 @@ class GuardsMixin:
         subject = (
             str(guard.get("expected_text", "")).strip() or "识别文字"
             if recognize == "text" else
-            "无需识图" if recognize == "none" else guard["template"].name
+            "无需识图" if recognize == "none" else
+            str(guard.get("process_name", "")) if recognize == "process" else guard["template"].name
         )
         condition_subject = self._global_monitor_subject(guard, subject)
         absent_target_name = "期望文字" if recognize == "text" else "目标模板"
@@ -464,6 +506,8 @@ class GuardsMixin:
                 list(obj.get("on_success_actions") or [])
                 if bool(obj.get("run_code_after_action", False)) else []
             )
+            for field in ("timed_detection", "timed_condition", "timed_duration_ms", "timed_actions", "process_name"):
+                guard[field] = obj.get(field)
             guard["recognize"] = str(obj.get("recognize", ""))
             guard["expected_text"] = str(obj.get("expected_text", ""))
             guard["match_mode"] = str(obj.get("match_mode", "contains"))
@@ -699,7 +743,8 @@ class GuardsMixin:
         subject = (
             str(guard.get("expected_text", "")).strip() or "识别文字"
             if recognize == "text" else
-            "无需识图" if recognize == "none" else guard["template"].name
+            "无需识图" if recognize == "none" else
+            str(guard.get("process_name", "")) if recognize == "process" else guard["template"].name
         )
         hit = {
             "kind": str(guard.get("trigger_kind", "success")),
@@ -709,6 +754,8 @@ class GuardsMixin:
             "hwnd": hwnd,
             "match": guard.get("match_data"),
         }
+        if hit["kind"] == "timed":
+            return hit
         click = guard.get("click")
         custom_click = isinstance(click, (list, tuple)) and len(click) == 2
         # 旧配置兼容：没有显式点击位置、没有语句体回放时，点击识别到的位置
@@ -845,6 +892,8 @@ class GuardsMixin:
         self._detection_request = None
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending is not None:
+            for hit in pending:
+                self._rollback_detection_hit(hit)
             pending.clear()
         self._pending_global_guard_hits_version = None
     def _clear_global_guards(self) -> None:
@@ -880,6 +929,7 @@ class GuardsMixin:
         """
         deadline = time.perf_counter() + max(0.0, float(seconds))
         while True:
+            self._workflow_heartbeat()
             if self.workflow_stop.is_set() or self.player.stop_event.is_set():
                 return False
             try:
@@ -1118,8 +1168,8 @@ class GuardsMixin:
         # 多屏下后者返回虚拟桌面尺寸，小窗会被推到屏幕外面（右下角外）。
         area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
             or get_primary_screen_rect()
-        default_x = area["left"] + area["width"] - width - 24
-        default_y = area["top"] + area["height"] - height - 72
+        default_x = area["left"] + area["width"] - width
+        default_y = area["top"] + area["height"] - height
         x, y = default_x, default_y
         saved = getattr(self, "execution_mini_position", None)
         if isinstance(saved, (list, tuple)) and len(saved) == 2:
@@ -1127,38 +1177,29 @@ class GuardsMixin:
                 x, y = int(saved[0]), int(saved[1])
             except (TypeError, ValueError):
                 x, y = default_x, default_y
+        return self._clamp_execution_mini_position(x, y, width, height)
+    def _clamp_execution_mini_position(self, x: int, y: int,
+                                       width: int | None = None,
+                                       height: int | None = None) -> tuple[int, int]:
+        default_width, default_height = self._operation_mini_size()
+        width = default_width if width is None else width
+        height = default_height if height is None else height
+        area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
+            or get_primary_screen_rect()
         return (
             max(area["left"], min(x, area["left"] + max(0, area["width"] - width))),
             max(area["top"], min(y, area["top"] + max(0, area["height"] - height))),
         )
-    def _adapt_execution_mini_position(self, old_area: dict, new_area: dict) -> None:
-        saved = getattr(self, "execution_mini_position", None)
-        if isinstance(saved, (list, tuple)) and len(saved) == 2:
-            width, height = self._operation_mini_size()
-            # 保持到最近边缘的物理像素距离，避免分辨率变化后角落位置漂移。
-            placement = getattr(self, "_execution_mini_placement", None)
-            reuse_anchors = placement is not None and placement[0] == tuple(saved)
-            anchors = []
-            position = []
-            for index, (origin, extent, size) in enumerate(
-                (("left", "width", width), ("top", "height", height))
-            ):
-                old_span = max(0, old_area[extent] - size)
-                new_span = max(0, new_area[extent] - size)
-                offset = max(0, min(int(saved[index]) - old_area[origin], old_span))
-                if reuse_anchors:
-                    end, margin = placement[1][index]
-                else:
-                    end = offset > old_span / 2
-                    margin = old_span - offset if end else offset
-                anchors.append((end, margin))
-                offset = new_span - margin if end else margin
-                position.append(new_area[origin] + max(0, min(offset, new_span)))
-            # 多次切换分辨率时保持同一对齐边；用户拖动后重新计算。
-            self._execution_mini_placement = (tuple(position), anchors)
-            if position != list(saved):
-                self.execution_mini_position = position
-                self._persist_sidebar_settings()
+    def _adapt_execution_mini_position(self, area: dict) -> None:
+        """分辨率或缩放变化后，小窗直接贴住当前工作区右下角。"""
+        width, height = self._operation_mini_size()
+        position = [
+            area["left"] + max(0, area["width"] - width),
+            area["top"] + max(0, area["height"] - height),
+        ]
+        if position != getattr(self, "execution_mini_position", None):
+            self.execution_mini_position = position
+            self._persist_sidebar_settings()
         mini = getattr(self, "mini_window", None)
         if mini is not None and mini.winfo_exists():
             self._reposition_operation_mini()
@@ -1190,9 +1231,12 @@ class GuardsMixin:
         def move(event):
             if drag["offset"] is None:
                 return
+            x, y = self._clamp_execution_mini_position(
+                event.x_root - drag["offset"][0], event.y_root - drag["offset"][1],
+                width, height,
+            )
             if move_window_no_activate(
-                preview.winfo_id(), event.x_root - drag["offset"][0],
-                event.y_root - drag["offset"][1],
+                preview.winfo_id(), x, y,
             ):
                 drag["moved"] = True
         def release(_event):
@@ -1249,8 +1293,9 @@ class GuardsMixin:
         def move(event):
             if drag["offset"] is None:
                 return
-            x = event.x_root - drag["offset"][0]
-            y = event.y_root - drag["offset"][1]
+            x, y = self._clamp_execution_mini_position(
+                event.x_root - drag["offset"][0], event.y_root - drag["offset"][1],
+            )
             self.execution_mini_position = [x, y]
             move_window_no_activate(self.mini_window.winfo_id(), x, y)
             drag["moved"] = True
