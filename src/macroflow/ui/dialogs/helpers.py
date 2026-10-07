@@ -619,8 +619,8 @@ def module_manager_selection_colors(obj: dict | None) -> tuple[str, str]:
     return "#FFFFFF", "#1F6B45"
 
 
-def configure_module_list_scrollbar(tree, scrollbar) -> None:
-    """模块列表的纵向滚动条：内容超出一屏才出现，并且明显可见。
+def configure_module_list_scrollbar(tree, scrollbar, *, autohide: bool = True) -> None:
+    """配置明显可见的模块列表滚动条，可按内容自动显隐。
 
     两个问题一起解决：内容装得下时滚动条仍占着一条空槽；ttkbootstrap 的
     darkly 主题里滚动条凹槽与列表底色几乎一致，内容确实超出一屏时滚动条也
@@ -638,6 +638,8 @@ def configure_module_list_scrollbar(tree, scrollbar) -> None:
     # 明确指定样式：ttkbootstrap 的默认滚动条样式在这里读不出对比度。
     scrollbar.configure(style="ModuleList.Vertical.TScrollbar")
     scrollbar.pack(side="right", fill="y")
+    if not autohide:
+        return
     state = {"visible": True}
 
     def set_visible(visible: bool) -> None:

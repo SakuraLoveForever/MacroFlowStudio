@@ -13,6 +13,7 @@ import tempfile
 import threading
 import tkinter as tk
 import unittest
+from unittest.mock import Mock
 import ttkbootstrap
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar
@@ -24,6 +25,30 @@ def close_test_root(root):
 
 
 class LogStreamsTests(unittest.TestCase):
+    def test_global_trigger_colors_survive_append_and_view_replay(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.log_text = Mock()
+        app.log_view_var = Mock()
+        app.log_view_var.get.return_value = 'trace'
+        text = ('普通步骤\n全局检测触发：模块[A]，开始执行处理段。\n'
+                '全局检测处理动作：点击 left。\n全局检测超时：模块[B]。\n'
+                '持续状态触发：执行自定义步骤。\n全局检测：识别到模块[A]。\n')
+        app._trace_view_buffer = [text]
+        app._insert_log_view(text, 'trace')
+        inserts = app.log_text.insert.call_args_list
+        self.assertEqual(inserts[0].args, ('end', '普通步骤\n', ()))
+        for insert in inserts[1:]:
+            self.assertEqual(insert.args[2], ('global_trigger',))
+        app.log_text.insert.reset_mock()
+        app._render_log_view()
+        self.assertEqual(app.log_text.insert.call_args_list, inserts)
+        app.log_text.tag_configure.assert_called_with('global_trigger', foreground='#FF6B6B')
+        global_widget = Mock()
+        app.global_log_widgets = {'workflow': global_widget}
+        app._global_view_buffers = {'workflow': [text]}
+        app._render_global_view()
+        self.assertEqual(global_widget.insert.call_args_list, inserts)
+
     """两个分开的日志：事件日志（去重）+ 执行明细（每行动作一条）。"""
 
     def _app(self, folder: Path) -> MacroFlowApp:

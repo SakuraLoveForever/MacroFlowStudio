@@ -192,8 +192,7 @@ class VirtualTreeRows:
         return row.key if row else None
 
     def selected_keys(self) -> tuple[str, ...]:
-        return tuple(row.key for iid in self.tree.selection()
-                     if (row := self._bound.get(iid)) is not None)
+        return tuple(row.key for row in self.rows if row.key in self._selected)
 
     def select_key(self, key: str) -> None:
         for index, row in enumerate(self.rows):
@@ -207,8 +206,11 @@ class VirtualTreeRows:
 
     def _remember_selection(self, _event=None) -> None:
         if not self._binding:
-            self._selected = set(self.selected_keys())
             selected = set(self.tree.selection())
+            # 复用行时 Tk 的选择事件会延后到达；这些事件不能清掉屏幕外的选择。
+            if selected == self._selected_iids:
+                return
+            self._selected = {self._bound[iid].key for iid in selected if iid in self._bound}
             for iid in self._selected_iids | selected:
                 if iid in self._bound:
                     self._emphasize(iid, iid in selected)

@@ -151,6 +151,27 @@ class VirtualTreeTests(unittest.TestCase):
         tree.flush()
         self.assertEqual(view.selected_keys(), ("0",))
 
+    def test_deferred_selection_events_after_scroll_keep_selected_module(self):
+        tree = FakeTree()
+        view = VirtualTreeRows(tree, Mock(), row_height=20)
+        view.set_rows(rows(100))
+        tree.flush()
+        tree.selected = (tree.attached[2],)
+        view._remember_selection()
+        view.yview_scroll(40, "units")
+        tree.flush()
+        # Tk 在 detach/selection_set 之后异步发送 TreeviewSelect。
+        view._remember_selection()
+        self.assertEqual(view.selected_keys(), ("2",))
+        view.yview("moveto", 0)
+        tree.flush()
+        view._remember_selection()
+        self.assertEqual(view.selected_keys(), ("2",))
+        self.assertEqual(tree.selected, (tree.attached[2],))
+        tree.selected = (tree.attached[5],)
+        view._remember_selection()
+        self.assertEqual(view.selected_keys(), ("5",))
+
     def test_entrance_updates_only_first_screen_without_creating_items(self):
         tree = FakeTree()
         animator = Mock()

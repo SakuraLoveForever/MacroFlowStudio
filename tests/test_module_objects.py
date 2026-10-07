@@ -34,13 +34,57 @@ from tests.helpers.patches import package_patch
 
 
 class TemplateRegionTests(unittest.TestCase):
+    def test_persistent_scrollbar_leaves_virtual_scroll_control_intact(self):
+        from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar
+        tree, scrollbar = Mock(), Mock()
+        with patch('macroflow.ui.dialogs.helpers.ttk.Style'):
+            configure_module_list_scrollbar(tree, scrollbar, autohide=False)
+        scrollbar.pack.assert_called_once_with(side='right', fill='y')
+        scrollbar.configure.assert_called_once_with(style='ModuleList.Vertical.TScrollbar')
+        tree.configure.assert_not_called()
+        tree.bind.assert_not_called()
+        scrollbar.pack_forget.assert_not_called()
+
+    def test_manager_reserves_scrollbar_space_and_enter_edits_selection(self):
+        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.trees = {}
+        dialog.virtual_trees = {}
+        dialog.module_tree_style = Mock()
+        dialog.module_tree_style.lookup.return_value = 24
+        dialog._open_edit = Mock()
+        dialog._apply_sort_heading = Mock()
+        dialog._show_module_context_menu = Mock()
+        dialog._update_action_buttons = Mock()
+        order = []
+        with patch('macroflow.ui.dialogs.module_objects.ttk.Frame'), \
+             patch('macroflow.ui.dialogs.module_objects.ttk.Treeview') as tree, \
+             patch('macroflow.ui.dialogs.module_objects.ttk.Scrollbar'), \
+             patch('macroflow.ui.dialogs.module_objects.configure_module_list_scrollbar', create=True) as configure, \
+             patch('macroflow.ui.dialogs.module_objects.VirtualTreeRows'), \
+             patch('macroflow.ui.dialogs.module_objects.animator_for'):
+            configure.side_effect = lambda *_args, **_kwargs: order.append('scrollbar')
+            tree.return_value.pack.side_effect = lambda **_kwargs: order.append('tree')
+            dialog._build_tab('all', Mock())
+            configure.assert_called_once()
+            self.assertFalse(configure.call_args.kwargs['autohide'])
+            self.assertEqual(order, ['scrollbar', 'tree'])
+            bindings = {item.args[0]: item.args[1] for item in tree.return_value.bind.call_args_list}
+            self.assertEqual(bindings['<Return>'](Mock()), 'break')
+            dialog._open_edit.assert_called_once()
+            dialog._open_edit.reset_mock()
+            self.assertEqual(bindings['<KP_Enter>'](Mock()), 'break')
+            dialog._open_edit.assert_called_once()
+
     def test_region_preview_flashes_current_region_and_restores_windows(self):
         dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         dialog.region_var = Mock()
         dialog.region_var.get.return_value = "-1200,80,320,200"
         manager, root = Mock(), Mock()
-        manager.state.return_value = "normal"
-        root.state.return_value = "zoomed"
+        manager.attributes.return_value = 0.9
+        root.attributes.return_value = 1.0
+        dialog.attributes = Mock(return_value=1.0)
+        dialog.update_idletasks = Mock()
+        dialog._root = Mock(return_value=root)
         dialog._ancestors_to_hide = Mock(return_value=[manager, root])
         for name in ("grab_release", "withdraw", "deiconify", "after", "lift", "grab_set", "focus_force"):
             setattr(dialog, name, Mock())
@@ -49,12 +93,48 @@ class TemplateRegionTests(unittest.TestCase):
             dialog._show_region_preview()
         show.assert_called_once_with(-1200, 80, 320, 200, duration_ms=3000,
                                      label="识图区域", key="module-region-preview")
-        manager.withdraw.assert_called_once()
-        root.withdraw.assert_called_once()
-        dialog.withdraw.assert_called_once()
-        dialog.after.call_args.args[1]()
-        root.state.assert_called_with("zoomed")
-        manager.state.assert_called_with("normal")
+        manager.withdraw.assert_not_called()
+        root.withdraw.assert_not_called()
+        dialog.withdraw.assert_not_called()
+        for window in (dialog, manager, root):
+            window.attributes.assert_called_with("-alpha", 0.0)
+        root.after.call_args.args[1]()
+        root.attributes.assert_called_with("-alpha", 1.0)
+        manager.attributes.assert_called_with("-alpha", 0.9)
+        dialog.attributes.assert_called_with("-alpha", 1.0)
+        manager.state.assert_not_called()
+        root.state.assert_not_called()
+        dialog.grab_set.assert_called_once()
+        # 表单关闭后，根窗口上的回调仍可恢复管理器和主窗口。
+        dialog.winfo_exists.return_value = False
+        dialog.attributes.side_effect = tk.TclError("window destroyed")
+        manager.attributes.reset_mock()
+        root.attributes.reset_mock()
+        root.after.call_args.args[1]()
+        root.attributes.assert_called_once_with("-alpha", 1.0)
+        manager.attributes.assert_called_once_with("-alpha", 0.9)
+        dialog.grab_set.assert_called_once()
+
+    def test_region_preview_restores_windows_when_overlay_fails(self):
+        dialog = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
+        dialog.region_var = Mock()
+        dialog.region_var.get.return_value = "10,20,300,200"
+        manager = Mock()
+        manager.attributes.return_value = 0.8
+        dialog._ancestors_to_hide = Mock(return_value=[manager])
+        dialog.attributes = Mock(return_value=1.0)
+        dialog.update_idletasks = Mock()
+        dialog.grab_release = Mock()
+        dialog.lift = Mock()
+        dialog.grab_set = Mock()
+        dialog.focus_force = Mock()
+        dialog.winfo_exists = Mock(return_value=True)
+        with patch('macroflow.ui.dialogs.module_objects.show_overlay',
+                   side_effect=RuntimeError("overlay failed")):
+            with self.assertRaisesRegex(RuntimeError, "overlay failed"):
+                dialog._show_region_preview()
+        manager.attributes.assert_called_with("-alpha", 0.8)
+        dialog.attributes.assert_called_with("-alpha", 1.0)
         dialog.grab_set.assert_called_once()
 
     def test_region_preview_button_tracks_region_selection(self):

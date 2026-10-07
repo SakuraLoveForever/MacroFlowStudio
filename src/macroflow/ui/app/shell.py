@@ -1785,7 +1785,7 @@ class ShellMixin:
             widget.delete("1.0", "end")
             text = self._log_view_text(self._active_log_view())
             if text:
-                widget.insert("end", text)
+                self._insert_colored_log(widget, text)
             widget.see("end")
         finally:
             widget.configure(state="disabled")
@@ -1798,10 +1798,20 @@ class ShellMixin:
             return
         try:
             if self._active_log_view() == view:
-                widget.insert("end", text)
+                self._insert_colored_log(widget, text)
                 widget.see("end")
         finally:
             widget.configure(state="disabled")
+    @staticmethod
+    def _insert_colored_log(widget, text: str) -> None:
+        widget.tag_configure("global_trigger", foreground="#FF6B6B")
+        for line in text.splitlines(keepends=True):
+            highlighted = any(marker in line for marker in (
+                "全局检测触发：", "全局检测超时：", "全局检测处理", "全局模块步骤已执行：",
+                "持续状态触发：", "全局检测：",
+            ))
+            widget.insert("end", line, ("global_trigger",) if highlighted else ())
+
     def _clear_active_log_view(self) -> None:
         """清空当前视图（磁盘日志文件保留）。"""
         if self._active_log_view() == "global":
@@ -1826,7 +1836,7 @@ class ShellMixin:
                 continue
             widget.configure(state="normal")
             widget.delete("1.0", "end")
-            widget.insert("end", "".join(self._global_view_buffers[scope]))
+            self._insert_colored_log(widget, "".join(self._global_view_buffers[scope]))
             widget.see("end")
             widget.configure(state="disabled")
     def _queue_log_view_line(self, text: str, view: str) -> None:

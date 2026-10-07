@@ -66,6 +66,7 @@ from .base import (
 from .helpers import (
     _app_via_parent,
     bind_wheel_to_scroll_tree,
+    configure_module_list_scrollbar,
     configure_module_tree_styles,
     image_jump_target_options,
     module_manager_label,
@@ -1170,25 +1171,27 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         region = self._parse_region_or_empty(self.region_var.get(), label="识图区域")
         if not region:
             return
-        windows = [(window, window.state()) for window in self._ancestors_to_hide()]
+        # 保持窗口映射及父子关系，只临时透明，避免 withdraw 后管理窗口丢失。
+        windows = [(window, float(window.attributes("-alpha")))
+                   for window in [self, *self._ancestors_to_hide()]]
         def restore():
-            for window, state in reversed(windows):
+            for window, alpha in reversed(windows):
                 try:
-                    window.state(state)
+                    window.attributes("-alpha", alpha)
                 except tk.TclError:
                     pass
             if self.winfo_exists():
-                self.deiconify()
                 self.lift()
                 self.grab_set()
                 self.focus_force()
         self.grab_release()
-        self.withdraw()
-        for window, _state in windows:
-            window.withdraw()
         try:
+            for window, _alpha in windows:
+                window.attributes("-alpha", 0.0)
+            self.update_idletasks()
             show_overlay(*region, duration_ms=3000, label="识图区域", key="module-region-preview")
-            self.after(3200, restore)
+            # 即使编辑表单被关闭，也必须恢复主窗口与管理窗口。
+            self._root().after(3200, restore)
         except Exception:
             restore()
             raise
@@ -1912,8 +1915,8 @@ class TemplateRegionManagerDialog(ModalDialog):
             tree.tag_configure("special_action", foreground="#FF8DE1")
             tree.tag_configure("disabled", foreground="#707B85")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        configure_module_list_scrollbar(tree, scrollbar, autohide=False)
         tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
         row_height = int(self.module_tree_style.lookup("ModuleManagerNeutral.Treeview", "rowheight"))
         self.virtual_trees[tab_key] = VirtualTreeRows(
             tree, scrollbar, row_height=row_height, animator=animator_for(tree),
@@ -1922,6 +1925,8 @@ class TemplateRegionManagerDialog(ModalDialog):
             "<Double-1>",
             lambda _event: self._open_edit(),
         )
+        tree.bind("<Return>", lambda _event: (self._open_edit(), "break")[1])
+        tree.bind("<KP_Enter>", lambda _event: (self._open_edit(), "break")[1])
         tree.bind("<Button-3>", self._show_module_context_menu, add="+")
         tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
         self.trees[tab_key] = tree
