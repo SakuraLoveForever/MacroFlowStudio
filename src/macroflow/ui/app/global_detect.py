@@ -292,7 +292,7 @@ class GlobalDetectMixin:
             "interval_ms": interval,
             "cooldown_ms": cooldown,
             "cooldown_until": float(cooldowns.get(key, 0.0)),
-            "start_delay_ms": start_delay if module is None else 0,
+            "start_delay_ms": start_delay,
             "start_delay_since": time.perf_counter(),
             "start_delay_done": False,
             "fallback_module_key": str(config.get("fallback_module_key", "")).strip(),

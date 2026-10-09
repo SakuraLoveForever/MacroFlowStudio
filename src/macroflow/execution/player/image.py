@@ -130,7 +130,7 @@ class ImageMixin:
                     f"模块 {start_label} 进入前延时 {start_delay_ms} ms",
                     module_detail=True,
                 )
-                self._wait(self._scaled_delay(start_delay_ms))
+                self._wait(start_delay_ms)
         if module_obj is not None and module_obj.get("recognize") == "none":
             module_label = str(module_obj.get("name") or "无需识图模块")
             self._status(f"无需识图，直接执行模块：{module_label}")

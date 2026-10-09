@@ -153,9 +153,9 @@ class DurationVar(tk.StringVar):
     """Display ms/seconds/minutes, while Python callers always receive milliseconds."""
 
     def __init__(self, value=0, master=None):
-        super().__init__(master=master, value=str(value))
-        self.unit = tk.StringVar(master=master, value="ms")
-        self._last_unit = "ms"
+        super().__init__(master=master, value=f"{float(value) / 1000:g}")
+        self.unit = tk.StringVar(master=master, value="s")
+        self._last_unit = "s"
         self.unit.trace_add("write", self._unit_changed)
 
     def _raw(self) -> str:
@@ -566,6 +566,17 @@ class ModalDialog(tk.Toplevel):
                     variable = candidate
                     break
             if variable is not None:
+                if isinstance(widget, ttk.Spinbox):
+                    bounds_ms = {key: float(widget.cget(option)) for key, option in (
+                        ("from_", "from"), ("to", "to"), ("increment", "increment"),
+                    )}
+
+                    def sync_bounds(*_args, entry=widget, value=variable, bounds=bounds_ms):
+                        divisor = _UNIT_TO_MS[value.unit.get()]
+                        entry.configure(**{key: amount / divisor for key, amount in bounds.items()})
+
+                    variable.unit.trace_add("write", sync_bounds)
+                    sync_bounds()
                 manager = widget.winfo_manager()
                 combo = ttk.Combobox(
                     parent, textvariable=variable.unit, values=TIME_UNITS,

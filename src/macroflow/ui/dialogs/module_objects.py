@@ -570,10 +570,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         row += 1
         self.row_start_delay = self._labeled_row(
-            body, row, "进入模块前延时",
+            body, row, "识别前强制等待",
             lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
-            "进入该模块后、开始识别前的等待毫秒数；和下面「延时」（识别成功后才等、执行动作前）不是一回事。"
-            "脚本全局模块表示脚本开始执行后先等这段再开始识别。支持 ms / s / min。",
+            "进入模块后先完整等待，再首次识别；等待时限从识别开始计算。"
+            "不受播放速度影响，F12 可停止。全局模块从启用时开始等待，期间不识别。",
         )
         row += 1
         self.confirmation_heading = self._section_heading(body, row, "识别确认")
@@ -610,7 +610,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             body, row, "备用点击参数",
             lambda m: self._entry_pair_row(
                 m, self.fallback_click_count_var, self.fallback_click_interval_var,
-                "次数", "间隔 ms",
+                "次数", "间隔",
             ),
             "备用模块命中后连续点击的次数，以及两次点击之间的等待毫秒数。",
         )
@@ -1835,6 +1835,14 @@ class ModuleImageInventoryDialog(ModalDialog):
         )
 
 
+def _module_matches_search(key: str, obj: dict, query: str) -> bool:
+    text = " ".join(str(value) for value in (
+        obj.get("name", ""), obj.get("expected_text", ""),
+        obj.get("template", ""), obj.get("process_name", ""), key,
+    )).casefold()
+    return all(word in text for word in query.casefold().split())
+
+
 class TemplateRegionManagerDialog(ModalDialog):
     """Manage the module-object registry (template image + region + behavior).
 
@@ -1844,6 +1852,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     :class:`TemplateRegionFormDialog`；双击普通模块可直接编辑。
     """
 
+    search_query = ""
     TAB_KEYS = ("all", "switch", "workflow_global", "script_global", "special")
 
     def __init__(self, parent, app=None):
@@ -1869,6 +1878,12 @@ class TemplateRegionManagerDialog(ModalDialog):
         buttons = ttk.Frame(body)
         self.buttons_frame = buttons
         buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
+        self.search_var = tk.StringVar(value="")
+        search_row = ttk.Frame(body)
+        search_row.pack(fill="x", pady=pad(8, 0))
+        ttk.Label(search_row, text="搜索模块：").pack(side="left")
+        ttk.Entry(search_row, textvariable=self.search_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(search_row, text="清空", command=lambda: self.search_var.set("")).pack(side="left", padx=pad(6, 0))
         self.notebook = ttk.Notebook(body)
         self.notebook.pack(fill="both", expand=True, pady=pad(10, 0))
         for tab_key in self.TAB_KEYS:
@@ -1881,6 +1896,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         # 操作当前页签的树，不同步会导致"全部"页签下按钮静默失效）。
         self._on_tab_changed()
         self._reload_trees()
+        self.search_var.trace_add("write", self._search_modules)
         # 移除撤销栈：(key, object_dict)；"移除所选模块"后可用按钮或 Ctrl+Z 恢复。
         self._undo_stack: list[tuple[str, dict]] = []
         self.add_button = ttk.Button(buttons, text="新增模块", command=self._open_add)
@@ -2012,6 +2028,10 @@ class TemplateRegionManagerDialog(ModalDialog):
     def _current_view(self):
         return self.virtual_trees.get(self.current)
 
+    def _search_modules(self, *_args):
+        self.search_query = self.search_var.get()
+        self._reload_trees()
+
     def _reload_trees(self):
         for tab_key, tree in self.trees.items():
             self._reload_tree(tab_key, tree)
@@ -2034,6 +2054,8 @@ class TemplateRegionManagerDialog(ModalDialog):
             reverse=getattr(self, "sort_direction", "desc") == "desc",
         )
         for key, obj in items:
+            if not _module_matches_search(key, obj, self.search_query):
+                continue
             modified_at = str(obj.get("modified_at", ""))
             modified_text = modified_at.replace("T", " ").split(".")[0] if modified_at else "—"
             pure = bool(obj.get("pure_action"))
@@ -2771,6 +2793,8 @@ class ModulePickerDialog(ModalDialog):
             if category in ("switch", "workflow_global", "script_global", "special")
         ) or ("switch",)
 
+    search_query = ""
+
     def __init__(self, parent, actions: list[dict] | None = None,
                  nested: bool = False, segment_depth: int = 0,
                  categories: tuple[str, ...] | None = None,
@@ -2811,6 +2835,12 @@ class ModulePickerDialog(ModalDialog):
         # 按钮行先按 side="bottom" 占位，屏幕放不下时按钮不会被挤出窗口。
         buttons = ttk.Frame(body)
         buttons.pack(side="bottom", fill="x", pady=pad(12, 0))
+        self.search_var = tk.StringVar(value="")
+        search_row = ttk.Frame(body)
+        search_row.pack(fill="x", pady=pad(8, 0))
+        ttk.Label(search_row, text="搜索模块：").pack(side="left")
+        ttk.Entry(search_row, textvariable=self.search_var).pack(side="left", fill="x", expand=True)
+        ttk.Button(search_row, text="清空", command=lambda: self.search_var.set("")).pack(side="left", padx=pad(6, 0))
         notebook = ttk.Notebook(body)
         notebook.pack(fill="both", expand=True, pady=pad(10, 0))
         if "switch" in self.allowed_categories:
@@ -2829,6 +2859,7 @@ class ModulePickerDialog(ModalDialog):
             self.tab_special = ttk.Frame(notebook)
             notebook.add(self.tab_special, text="特殊模块")
             self._build_category_tab("special", self.tab_special)
+        self.search_var.trace_add("write", self._search_modules)
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         fit_window_to_content(self, parent)
 
@@ -2877,6 +2908,7 @@ class ModulePickerDialog(ModalDialog):
         keys = [
             key for key, obj in self.objects.items()
             if obj.get("category") == category and obj.get("enabled", True)
+            and _module_matches_search(key, obj, self.search_query)
             and (getattr(self, "allow_number", True) or obj.get("recognize") != "number")
         ]
         self.category_keys[category] = keys
@@ -2901,6 +2933,11 @@ class ModulePickerDialog(ModalDialog):
             empty_label.pack_forget()
         else:
             empty_label.pack(anchor="w", padx=px(10), pady=pad(6, 0))
+
+    def _search_modules(self, *_args):
+        self.search_query = self.search_var.get()
+        for category in self.listboxes:
+            self._refresh_category(category)
 
     def _refresh_lists(self):
         self.objects = load_module_objects()
@@ -3026,8 +3063,8 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
             module_row, text="替换模块…", command=self.replace_reference,
         ).grid(row=0, column=1, padx=pad(8, 0))
         for row, (label, variable) in enumerate((
-            ("识别前等待 (ms)", self.delay),
-            ("模块完成后等待 (ms)", self.after_delay),
+            ("识别前等待", self.delay),
+            ("模块完成后等待", self.after_delay),
         ), start=1):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(

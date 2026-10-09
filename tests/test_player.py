@@ -4911,22 +4911,14 @@ class PlayerTests(unittest.TestCase):
         taskkill.assert_not_called()
         self.assertTrue(any("未在运行" in text for text in statuses))
 
-    def test_close_app_graceful_then_force_fallback(self):
+    def test_close_app_graceful_timeout_stops(self):
         player = MacroPlayer()
-        statuses = []
-        player._status = lambda text: statuses.append(text)
-        # running → graceful → still running (wait expired) → force → gone
-        with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
-             package_patch('player', 'taskkill_process', side_effect=[(0, ''), (0, '')]) as taskkill:
-            player._execute_close_app({
-                "type": "close_app", "name": "clash-verge.exe",
-                "graceful": True, "graceful_wait_ms": 0,
-            })
-        self.assertEqual(
-            [(call.args[0], call.kwargs.get("force")) for call in taskkill.call_args_list],
-            [("clash-verge.exe", False), ("clash-verge.exe", True)],
-        )
-        self.assertTrue(any("强制结束" in text for text in statuses))
+        player._wait = Mock()
+        with package_patch('player', 'is_process_running', return_value=True), \
+             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill:
+            with self.assertRaisesRegex(RuntimeError, "未在指定时间内"):
+                player._execute_close_app(dict(name="demo.exe", graceful=True, graceful_wait_ms=0))
+        taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
 
     def test_close_app_force_direct(self):
         player = MacroPlayer()
@@ -4948,22 +4940,14 @@ class PlayerTests(unittest.TestCase):
             })
         taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
 
-    def test_close_app_graceful_access_denied_forces(self):
+    def test_close_app_graceful_access_denied_stops(self):
         player = MacroPlayer()
-        statuses = []
-        player._status = lambda text: statuses.append(text)
-        # 优雅关闭请求被拒绝（如权限不足）→ 不再干等，直接强制结束
-        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
-             package_patch('player', 'taskkill_process', side_effect=[(1, '拒绝访问'), (0, '')]) as taskkill:
-            player._execute_close_app({
-                "type": "close_app", "name": "demo.exe",
-                "graceful": True, "graceful_wait_ms": 60000,
-            })
-        self.assertEqual(
-            [(call.args[0], call.kwargs.get("force")) for call in taskkill.call_args_list],
-            [("demo.exe", False), ("demo.exe", True)],
-        )
-        self.assertTrue(any("关闭请求失败" in text for text in statuses))
+        player._wait = Mock()
+        with package_patch('player', 'is_process_running', return_value=True), \
+             package_patch('player', 'taskkill_process', return_value=(1, '拒绝访问')) as taskkill:
+            with self.assertRaisesRegex(RuntimeError, "关闭请求失败"):
+                player._execute_close_app(dict(name="demo.exe", graceful=True, graceful_wait_ms=0))
+        taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
 
     def test_close_app_elevated_fallback(self):
         player = MacroPlayer()
@@ -4975,7 +4959,7 @@ class PlayerTests(unittest.TestCase):
              package_patch('player', 'elevated_taskkill', return_value=True) as elev:
             player._execute_close_app({
                 "type": "close_app", "name": "app_launcher.exe",
-                "graceful": True, "graceful_wait_ms": 2000,
+                "graceful": False, "graceful_wait_ms": 2000,
                 "tree": False, "elevated_retry": True,
             })
         elev.assert_called_once_with("app_launcher.exe", tree=False)

@@ -25,17 +25,15 @@ class AppsMixin:
     """打开 / 关闭软件与前置窗口动作。"""
 
     def _close_process(self, image_name: str, graceful: bool = True,
-                       graceful_wait_ms: int = 2000, tree: bool = False,
+                       graceful_wait_ms: int = 15000, tree: bool = False,
                        elevated_retry: bool = False) -> None:
-        """End a process by image name; graceful close first, force with retries
-        as fallback, then optionally an elevated kill. Raises RuntimeError when
-        the process survives every attempt."""
+        """Normal close never escalates to force; force must be explicitly selected."""
         if not is_process_running(image_name):
             return
         if graceful:
             code, _err = taskkill_process(image_name, force=False, tree=tree)
             if code != 0:
-                self._status(f"{image_name} 关闭请求失败（权限不足或进程异常），改为强制结束")
+                raise RuntimeError(f"{image_name} 关闭请求失败：{_err}；已停止，未强制结束")
             else:
                 deadline = time.perf_counter() + max(0, int(graceful_wait_ms)) / 1000
                 while is_process_running(image_name):
@@ -47,7 +45,7 @@ class AppsMixin:
                 if not is_process_running(image_name):
                     self._log_event(f"已结束 {image_name}")
                     return
-                self._log_event(f"{image_name} 未响应关闭请求，强制结束")
+                raise RuntimeError(f"{image_name} 未在指定时间内正常退出；已停止，未强制结束")
         else:
             self._log_event(f"强制结束 {image_name}")
         for _ in range(3):
@@ -86,16 +84,30 @@ class AppsMixin:
         image_name = str(action.get("name", "")).strip()
         if not image_name:
             raise RuntimeError("关闭软件动作缺少进程名")
-        if not is_process_running(image_name):
-            self._log_event(f"{image_name} 未在运行，跳过")
-            return
-        self._close_process(
-            image_name,
-            graceful=bool(action.get("graceful", True)),
-            graceful_wait_ms=int(action.get("graceful_wait_ms", 2000)),
-            tree=bool(action.get("tree", False)),
-            elevated_retry=bool(action.get("elevated_retry", False)),
-        )
+        if is_process_running(image_name):
+            self._close_process(
+                image_name,
+                graceful=bool(action.get("graceful", True)),
+                graceful_wait_ms=int(action.get("graceful_wait_ms", 15000)),
+                tree=bool(action.get("tree", False)),
+                elevated_retry=bool(action.get("elevated_retry", False)),
+            )
+        else:
+            self._log_event(f"{image_name} 未在运行，跳过关闭请求")
+        related = action.get("wait_for_processes", [])
+        if not isinstance(related, list) or any(not isinstance(name, str) or not name.strip() for name in related):
+            raise RuntimeError("等待退出的进程名称必须是非空名称列表")
+        deadline = time.perf_counter() + max(0, int(action.get("graceful_wait_ms", 15000))) / 1000
+        while related:
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            pending = [name for name in related if is_process_running(name)]
+            if not pending:
+                break
+            if time.perf_counter() >= deadline:
+                raise RuntimeError(f"关联进程尚未退出，已停止重启：{', '.join(pending)}")
+            self._wait(100)
+
     def _execute_activate_window(self, action: dict) -> None:
         """Resolve a saved stable window signature and bring that live window forward."""
         signature = action.get("window") or {}

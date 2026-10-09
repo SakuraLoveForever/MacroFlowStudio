@@ -61,7 +61,7 @@ from .base import (
     SCRIPT_START_LABEL,
     TIME_UNITS,
     app_windows,
-    dark_checkbutton,
+    Tooltip, dark_checkbutton,
     duration_var,
     fit_window_to_content,
     key_to_vk,
@@ -380,7 +380,8 @@ class CloseAppDialog(ModalDialog):
         action = action or {}
         self.name = tk.StringVar(value=str(action.get("name", "")))
         self.graceful = tk.BooleanVar(value=bool(action.get("graceful", True)))
-        self.graceful_wait_ms = duration_var(action.get("graceful_wait_ms", 2000))
+        self.graceful_wait_ms = duration_var(action.get("graceful_wait_ms", 15000))
+        self.wait_for_processes = tk.StringVar(value=", ".join(action.get("wait_for_processes", [])))
         self.tree = tk.BooleanVar(value=bool(action.get("tree", False)))
         self.elevated_retry = tk.BooleanVar(value=bool(action.get("elevated_retry", True)))
         self.delay = duration_var(action.get("delay_ms", 0))
@@ -404,7 +405,7 @@ class CloseAppDialog(ModalDialog):
         ).grid(row=1, column=1, sticky="w")
 
         dark_checkbutton(
-            body, "先发送关闭请求（优雅退出），超时后强制结束", self.graceful,
+            body, "正常关闭（超时则停止；取消勾选才强制结束）", self.graceful,
         ).grid(row=2, column=1, sticky="w", pady=pad(10, 0))
         ttk.Label(body, text="优雅退出等待").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
@@ -412,33 +413,38 @@ class CloseAppDialog(ModalDialog):
             textvariable=self.graceful_wait_ms, width=10,
         ).grid(row=3, column=1, sticky="ew")
 
+        ttk.Label(body, text="同时等待退出的进程").grid(row=4, column=0, sticky="w", pady=px(8))
+        related_entry = ttk.Entry(body, textvariable=self.wait_for_processes)
+        related_entry.grid(row=4, column=1, sticky="ew")
+        Tooltip(related_entry, "可选，用英文逗号分隔进程名称；这些进程未自行退出前不会继续后续动作。")
+
         dark_checkbutton(
             body, "连同其子进程一起结束（进程树，慎用）", self.tree,
-        ).grid(row=4, column=1, sticky="w", pady=pad(8, 0))
+        ).grid(row=5, column=1, sticky="w", pady=pad(8, 0))
         dark_checkbutton(
             body, "普通权限结束失败时以管理员权限重试（会弹出 UAC 授权窗口）", self.elevated_retry,
-        ).grid(row=5, column=1, sticky="w", pady=pad(4, 0))
+        ).grid(row=6, column=1, sticky="w", pady=pad(4, 0))
 
-        ttk.Label(body, text="执行前延时").grid(row=6, column=0, sticky="w", pady=px(8))
+        ttk.Label(body, text="执行前延时").grid(row=7, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.delay, width=10,
-        ).grid(row=6, column=1, sticky="ew")
-        ttk.Label(body, text="执行后延时").grid(row=7, column=0, sticky="w", pady=px(8))
+        ).grid(row=7, column=1, sticky="ew")
+        ttk.Label(body, text="执行后延时").grid(row=8, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=86400000, increment=100,
             textvariable=self.after_delay, width=10,
-        ).grid(row=7, column=1, sticky="ew")
+        ).grid(row=8, column=1, sticky="ew")
 
         ttk.Label(
             body,
             text="执行到这一行时会结束指定软件，再继续后面的动作；进程不存在时自动跳过。"
             "普通权限反复强制结束仍失败（通常是目标软件以管理员身份运行）时，会尝试以管理员权限结束并弹出 UAC 授权窗口。",
             foreground=COLOR_MUTED, wraplength=px(480),
-        ).grid(row=8, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
+        ).grid(row=9, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
 
         buttons = ttk.Frame(body)
-        buttons.grid(row=9, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
+        buttons.grid(row=10, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
@@ -505,6 +511,7 @@ class CloseAppDialog(ModalDialog):
             "name": name,
             "graceful": self.graceful.get(),
             "graceful_wait_ms": graceful_wait_ms,
+            "wait_for_processes": [part.strip() for part in self.wait_for_processes.get().split(",") if part.strip()],
             "tree": self.tree.get(),
             "elevated_retry": self.elevated_retry.get(),
             "delay_ms": delay,
