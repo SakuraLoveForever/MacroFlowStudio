@@ -50,16 +50,18 @@ class ExecutionMixin:
         workflow = getattr(self, "workflow", None)
         names = list(workflow.foreground_minimize_processes) if workflow is not None else []
         if names:
-            self._ui(self._start_foreground_minimize_watch, names)
+            self._ui(self._start_foreground_minimize_watch, names,
+                     workflow.foreground_minimize_interval_ms)
         try:
             return super()._run_workflow_worker(*args, **kwargs)
         finally:
             if names:
                 self._ui(self._stop_foreground_minimize_watch)
 
-    def _start_foreground_minimize_watch(self, names):
+    def _start_foreground_minimize_watch(self, names, interval_ms=500):
         self._stop_foreground_minimize_watch()
         self._foreground_minimize_names = list(names)
+        self._foreground_minimize_interval_ms = interval_ms
         self._poll_foreground_minimize_watch()
 
     def _stop_foreground_minimize_watch(self):
@@ -83,7 +85,7 @@ class ExecutionMixin:
                 if hwnd:
                     activate_window(hwnd)
         self._foreground_minimize_timer = self.root.after(
-            200, self._poll_foreground_minimize_watch,
+            self._foreground_minimize_interval_ms, self._poll_foreground_minimize_watch,
         )
 
     def _refresh_execution_pause_controls(self):

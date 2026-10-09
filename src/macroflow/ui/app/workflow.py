@@ -143,11 +143,14 @@ class WorkflowMixin:
         combo.set(selected)
 
     def edit_foreground_minimize_processes(self):
-        names = ForegroundProcessesDialog(
+        settings = ForegroundProcessesDialog(
             self.root, self.workflow.foreground_minimize_processes,
+            self.workflow.foreground_minimize_interval_ms,
         ).show()
-        if names is not None:
+        if settings is not None:
+            names, interval_ms = settings
             self.workflow.foreground_minimize_processes = names
+            self.workflow.foreground_minimize_interval_ms = interval_ms
             self._schedule_workflow_draft_save()
 
     def _apply_workflow_restart_default(self, _event=None):

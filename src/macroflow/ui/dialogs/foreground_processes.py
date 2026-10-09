@@ -3,19 +3,26 @@ from tkinter import ttk
 
 from macroflow.core.models import normalize_foreground_processes
 from .base import (
-    COLOR_SURFACE, COLOR_TEXT, ModalDialog, app_windows, pad,
+    COLOR_SURFACE, COLOR_TEXT, ModalDialog, app_windows, pad, duration_var,
+    show_floating_notice,
 )
 from .screen_pickers import ScreenProcessPicker
 
 
 class ForegroundProcessesDialog(ModalDialog):
-    def __init__(self, parent, names):
-        super().__init__(parent, '工作流防遮挡进程', width=560, height=370)
+    def __init__(self, parent, names, interval_ms=500):
+        super().__init__(parent, '工作流防遮挡进程', width=560, height=420)
         frame = ttk.Frame(self, padding=pad(16))
         frame.pack(fill='both', expand=True)
         ttk.Label(frame, text='工作流运行时，下列进程的窗口切到前台就自动最小化。\n'
                   '暂停时不处理，结束后停止；绑定的游戏和本软件窗口受保护。\n'
                   '留空关闭此功能；保存后下次运行生效。', justify='left').pack(anchor='w')
+        interval_row = ttk.Frame(frame)
+        interval_row.pack(fill='x', pady=pad(10, 0))
+        ttk.Label(interval_row, text='检测间隔').pack(side='left')
+        self.interval = duration_var(interval_ms)
+        ttk.Entry(interval_row, textvariable=self.interval, width=10).pack(
+            side='left', padx=pad(8, 0))
         row = ttk.Frame(frame)
         row.pack(fill='x', pady=pad(10, 8))
         self.name = tk.StringVar(self)
@@ -58,5 +65,12 @@ class ForegroundProcessesDialog(ModalDialog):
             self.processes.delete(index)
 
     def _save(self):
-        self.result = list(self.processes.get(0, 'end'))
+        try:
+            interval_ms = int(self.interval.get())
+            if not 100 <= interval_ms <= 60000:
+                raise ValueError
+        except (ValueError, OverflowError):
+            show_floating_notice(self, '检测间隔无效', '请输入 0.1–60 秒之间的检测间隔。')
+            return
+        self.result = (list(self.processes.get(0, 'end')), interval_ms)
         self.destroy()
