@@ -37,7 +37,7 @@ tmp_ret = collect_all('cv2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 # ---------- OCR 运行期缺失的 stdlib 补齐 ----------
-# OCR 外置闭包（build/ocr_closure_modules.txt）引用、但当前 exe 的
+# OCR 外置闭包（tools/ocr_closure_modules.txt）引用、但当前 exe 的
 # PYZ/base_library.zip 里没有的 stdlib 模块（如 http.cookies——主程序从不
 # import 它，PyInstaller 分析不到），全部作为 hiddenimports 打进新 exe：
 # 否则打包版 OCR 首次使用会报 "No module named 'http.cookies'"。
@@ -46,7 +46,7 @@ def _ocr_missing_stdlib_hiddenimports():
 
     # PyInstaller 6.x 的 spec 执行环境不提供 __file__，用 SPECPATH（spec 所在目录）。
     spec_dir = Path(SPECPATH).resolve()
-    closure_file = spec_dir / "build" / "ocr_closure_modules.txt"
+    closure_file = spec_dir / "tools" / "ocr_closure_modules.txt"
     if not closure_file.is_file():
         return ["http.cookies"]
     closure = set(closure_file.read_text(encoding="utf-8").split())

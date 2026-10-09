@@ -31,7 +31,7 @@ if (Test-Path -LiteralPath $ProjectDependencies) {
 $BuildStamp = Join-Path $ProjectDir "build\MacroFlowStudio.inputs.sha256"
 $BuildInputPaths = @(
   (Join-Path $ProjectDir "MacroFlowStudio.spec"),
-  (Join-Path $ProjectDir "build\ocr_closure_modules.txt"),
+  (Join-Path $ProjectDir "tools\ocr_closure_modules.txt"),
   (Join-Path $ProjectDir "build.ps1")
 )
 $BuildInputPaths += @(Get-ChildItem -LiteralPath (Join-Path $ProjectDir "src") -File -Recurse |
@@ -100,7 +100,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\CHANGELOG.md"))) {
 
 # RapidOCR、ONNX Runtime CPU、wheel 内模型及未由 exe 提供的传递依赖
 # 都由依赖元数据计算后同步到单独目录。该脚本只重建 dist\rapidocr_ocr。
-& $ProjectPython (Join-Path $ProjectDir "build\ocr_deps_setup.py")
+& $ProjectPython (Join-Path $ProjectDir "tools\ocr_deps_setup.py")
 if ($LASTEXITCODE -ne 0) {
   throw "RapidOCR 组件准备失败（exit code $LASTEXITCODE）"
 }

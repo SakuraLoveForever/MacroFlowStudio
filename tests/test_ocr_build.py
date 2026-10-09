@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "build" / "ocr_deps_setup.py"
+SCRIPT = ROOT / "tools" / "ocr_deps_setup.py"
 SPEC = importlib.util.spec_from_file_location("ocr_deps_setup_test", SCRIPT)
 BUILD_SETUP = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BUILD_SETUP
@@ -16,7 +16,7 @@ SPEC.loader.exec_module(BUILD_SETUP)
 
 class OCRBuildRequirementsTests(unittest.TestCase):
     def test_stdlib_manifest_omits_unresolvable_module_aliases(self):
-        manifest = set((ROOT / "build" / "ocr_closure_modules.txt").read_text(encoding="utf-8").split())
+        manifest = set((ROOT / "tools" / "ocr_closure_modules.txt").read_text(encoding="utf-8").split())
 
         self.assertTrue({"collections.abc", "typing.io"}.isdisjoint(manifest))
 
@@ -70,7 +70,7 @@ class OCRBuildRequirementsTests(unittest.TestCase):
                             except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
                                 pass
 
-        manifest_path = ROOT / "build" / "ocr_closure_modules.txt"
+        manifest_path = ROOT / "tools" / "ocr_closure_modules.txt"
         manifest = set(manifest_path.read_text(encoding="utf-8").split())
         invalid = sorted(name for name in manifest if name.split(".", 1)[0] not in stdlib)
         missing = sorted(imported - manifest)

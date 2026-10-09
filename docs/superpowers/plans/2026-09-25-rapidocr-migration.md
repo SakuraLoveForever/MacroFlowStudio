@@ -40,7 +40,7 @@
 - **Create — tests/test_ocr_engine.py:** RapidOCR 适配、路径、惰性单例和故障语义的独立测试；避免触碰用户已经修改的 tests/test_recognition.py。
 - **Modify — src/macroflow/core/ocr.py:** 只替换 Paddle 引擎初始化和结果格式适配，保留该文件现有业务解析及未提交修改。
 - **Create — requirements-ocr.txt:** 固定 RapidOCR、ONNX Runtime 和源码运行所需的 OCR 依赖；复用主程序已有的 NumPy、OpenCV 和 Pillow，不再安装第二份 OpenCV。
-- **Modify — build/ocr_deps_setup.py, build.ps1:** 计算/同步 RapidOCR 外置依赖、模型和原生 DLL，停止构建 Paddle 运行目录。
+- **Modify — tools/ocr_deps_setup.py, build.ps1:** 计算/同步 RapidOCR 外置依赖、模型和原生 DLL，停止构建 Paddle 运行目录。
 - **Modify — MacroFlowStudio.spec:** 排除需要运行时外置加载的 RapidOCR/ONNX Runtime，同时保留其他应用依赖收集方式。
 - **Modify — verify_build.py:** 静态检查 RapidOCR 目录、模型、运行时 DLL 及 exe 中不含 OCR 引擎。
 - **Modify — pack.ps1, AGENTS.md:** 将发布 zip 的 OCR 目录从 Paddle 路径改为 RapidOCR 路径；AGENTS.md 只改这条路径说明。
@@ -329,7 +329,7 @@ Expected: adapter、单例、配置、模型缺失、离线路径和异常包装
 ## Task 3: 重建轻量离线打包链路
 
 **Files:**
-- Modify: build/ocr_deps_setup.py
+- Modify: tools/ocr_deps_setup.py
 - Modify: build.ps1
 - Modify: MacroFlowStudio.spec
 - Modify: verify_build.py
@@ -343,7 +343,7 @@ Expected: adapter、单例、配置、模型缺失、离线路径和异常包装
 
 - [ ] **Step 1: 调整依赖闭包工具**
 
-更新 build/ocr_deps_setup.py 的输出为 dist/rapidocr_ocr；从 .deps 中读取 rapidocr/onnxruntime 的已安装 Distribution.requires，递归解析依赖名和环境 marker，减去 exe 已提供的包后复制运行闭包、dist-info、.libs 和包内 DLL。模型 wheel 随 RapidOCR 包目录同步。核心集合和共享包边界如下：
+更新 tools/ocr_deps_setup.py 的输出为 dist/rapidocr_ocr；从 .deps 中读取 rapidocr/onnxruntime 的已安装 Distribution.requires，递归解析依赖名和环境 marker，减去 exe 已提供的包后复制运行闭包、dist-info、.libs 和包内 DLL。模型 wheel 随 RapidOCR 包目录同步。核心集合和共享包边界如下：
 
 ~~~python
 OCR_OUT = ROOT / "dist" / "rapidocr_ocr"

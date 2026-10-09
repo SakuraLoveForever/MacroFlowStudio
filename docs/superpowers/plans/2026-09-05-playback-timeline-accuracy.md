@@ -480,7 +480,7 @@ git commit -m "fix: preserve mouse coordinates and turn timing"
 - Verify: `tests/test_recorder_timeline.py`
 - Verify: `tests/test_recorder_injected.py`
 - Verify: `tests/test_core.py`
-- Create: `scripts/benchmark_playback_timing.py`
+- Create: `tools/benchmark_playback_timing.py`
 - Build output: `dist/MacroFlowStudio.exe`
 
 **Interfaces:**
@@ -527,7 +527,7 @@ The script must accept `--durations 10,60,600`, `--events 1000`, and `--json`. I
 Run:
 
 ```powershell
-python scripts/benchmark_playback_timing.py --durations 10,60,600 --events 1000 --json
+python tools/benchmark_playback_timing.py --durations 10,60,600 --events 1000 --json
 ```
 
 Expected: one JSON result per duration containing total drift, average/P95/P99/max lateness, and no dropped-event count. Record the machine load conditions with the result; do not treat this command as a unit-test pass/fail gate.

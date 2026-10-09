@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
 
-from scripts import benchmark_playback_timing
+from tools import benchmark_playback_timing
 
 
 class PlaybackTimingBenchmarkTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class PlaybackTimingBenchmarkTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
     def test_json_mode_reports_one_complete_result_per_duration(self):
-        script = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_playback_timing.py"
+        script = Path(__file__).resolve().parents[1] / "tools" / "benchmark_playback_timing.py"
         completed = subprocess.run(
             [sys.executable, str(script), "--durations", "0.01,0.02", "--events", "3", "--json"],
             check=True,
