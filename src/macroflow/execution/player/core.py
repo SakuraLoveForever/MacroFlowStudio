@@ -65,6 +65,7 @@ class CoreMixin:
                  guard_settle_ms: int = GUARD_SETTLE_MS):
         self.on_heartbeat = on_heartbeat
         self.on_status = on_status
+        self.on_action_start: Callable[[dict], None] | None = None
         self.on_notice = on_notice
         self.on_global_detect_request = on_global_detect_request
         # 特殊模块“重新执行工作流”只由应用在当前工作流中接管；独立脚本
@@ -706,6 +707,11 @@ class CoreMixin:
             try:
                 # 动作边界守卫评估：命中时内联执行处理段（可携带跳转/结束/推进语义）。
                 self._poll_guards()
+                if self.on_action_start:
+                    self.on_action_start({
+                        "script": self._active_script_name, "index": index,
+                        "total": total, "depth": depth, "action": action,
+                    })
                 # 等这一行的“执行前延时”：明细日志里单独记一段等待时长，
                 # 动作本身的耗时只算真正发出去的那一下。
                 default_delay = 1000 if action.get("type") == "image_match" else 0

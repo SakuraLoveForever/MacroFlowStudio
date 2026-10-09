@@ -1062,7 +1062,7 @@ class GuardsMixin:
         self._refresh_execution_pause_controls()
     def _operation_mini_size(self) -> tuple[int, int]:
         # 保持物理像素占用不随 DPI 增大，避免缩放后遮挡游戏识图区域。
-        return 420, 100
+        return 420, 152 if getattr(self, "mini_mode", "") == "execution" else 100
     def _show_operation_mini(self, mode: str):
         if self.mini_window and self.mini_window.winfo_exists() and self.mini_mode == mode:
             # 窗口创建后一直保持可见并置顶，无需重新显示。Tk 的 deiconify 会
@@ -1125,6 +1125,17 @@ class GuardsMixin:
                               anchor="w", justify="left", font=(FONT_FAMILY, -12),
                               height=1, borderwidth=0, padx=0, pady=0)
         count_label.pack(fill="x", pady=(4, 2))
+        self.mini_action_var = tk.StringVar(
+            value=getattr(self, "current_execution_action_text", "正在准备当前动作"),
+        )
+        action_label = tk.Label(
+            body, textvariable=self.mini_action_var,
+            background=COLOR_SURFACE, foreground=COLOR_TEXT,
+            anchor="w", justify="left", font=(FONT_FAMILY, -12),
+            wraplength=396, height=3, borderwidth=0, padx=0, pady=0,
+        )
+        if mode == "execution":
+            action_label.pack(fill="x", pady=(0, 4))
         self.mini_binding_label = tk.Label(
             body, textvariable=self.mini_window_var,
             background=COLOR_SURFACE, foreground=COLOR_MUTED,
@@ -1142,7 +1153,7 @@ class GuardsMixin:
         self.mini_event_var.set("等待执行信息" if mode == "execution" else "等待录制动作")
         self._mini_last_step = ""
         for widget in (mini, body, top, context_label, elapsed_label, count_label,
-                       self.mini_binding_label, event_label):
+                       self.mini_binding_label, event_label, action_label):
             self._bind_operation_mini_drag(widget)
         self.mini_ocr_progressbar = None
         # A normal top-level window may make an exclusive/fullscreen game leave

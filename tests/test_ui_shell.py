@@ -115,6 +115,7 @@ class StartupVisibilityTests(unittest.TestCase):
         with patch('macroflow.ui.app.guards.tk.Toplevel'), \
              patch('macroflow.ui.app.guards.ttk.Frame'), \
              patch('macroflow.ui.app.guards.ttk.Label'), \
+             patch('macroflow.ui.app.guards.tk.StringVar'), \
              patch('macroflow.ui.app.guards.tk.Label') as labels, \
              patch('macroflow.ui.app.guards.tk.Text') as events, \
              patch('macroflow.ui.app.guards.make_window_no_activate'), \
@@ -122,10 +123,10 @@ class StartupVisibilityTests(unittest.TestCase):
              patch('macroflow.ui.app.guards.set_rounded_window'):
             app._show_operation_mini('execution')
         events.assert_not_called()
-        self.assertEqual(len(labels.call_args_list), 3)
+        self.assertEqual(len(labels.call_args_list), 4)
         self.assertEqual(labels.call_args_list[0].kwargs['height'], 1)
-        self.assertEqual(labels.call_args_list[1].kwargs['textvariable'], app.mini_window_var)
-        self.assertEqual(labels.call_args_list[2].kwargs['textvariable'], app.mini_event_var)
+        self.assertEqual(labels.call_args_list[2].kwargs['textvariable'], app.mini_window_var)
+        self.assertEqual(labels.call_args_list[3].kwargs['textvariable'], app.mini_event_var)
         self.assertTrue(all(call.kwargs['font'][1] < 0 for call in labels.call_args_list))
 
     def test_mini_recovers_size_mapping_and_topmost_after_display_change(self):

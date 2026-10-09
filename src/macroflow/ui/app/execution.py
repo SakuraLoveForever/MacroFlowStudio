@@ -39,6 +39,8 @@ from .constants import (
 )
 from macroflow.ui.dialogs.segments import module_action_for_key
 
+from .summaries import action_summary
+
 class ExecutionMixin:
     """执行入口：F9、工作流、单独执行、执行小窗与收尾。"""
 
@@ -152,7 +154,26 @@ class ExecutionMixin:
             return
         self.execution_started_at = time.perf_counter()
         self.mini_elapsed_var.set("00:00")
+    def _on_action_start(self, event: dict) -> None:
+        action = event["action"]
+        kind, detail, _delay = action_summary(action)
+        script = str(event.get("script") or "当前脚本")
+        row = int(event["index"]) + 1
+        total = int(event["total"])
+        detail = " ".join(str(detail).replace("\n", "↵").split())
+        text = f"{script} · 第 {row}/{total} 行\n{kind}：{detail}"
+        self._ui(self._set_current_execution_action, text)
+
+    def _set_current_execution_action(self, text: str) -> None:
+        self.current_execution_action_text = text
+        variable = getattr(self, "mini_action_var", None)
+        if variable is not None:
+            variable.set(text)
+
     def _begin_detection_run(self) -> None:
+        if player := getattr(self, "player", None):
+            player.on_action_start = self._on_action_start
+        self._set_current_execution_action("正在准备当前动作")
         self._detection_run_id = getattr(self, "_detection_run_id", 0) + 1
         self._detection_request = None
     def _ensure_detection_worker(self) -> None:
