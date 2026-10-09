@@ -403,10 +403,6 @@
   "macroflow.ui.dialogs",
   "macroflow.ui.dialogs.segments"
  ],
- "elevated_taskkill": [
-  "macroflow.execution.player",
-  "macroflow.execution.player.apps"
- ],
  "enum_windows": [
   "macroflow.input.wininput",
   "macroflow.ui.app",
@@ -697,8 +693,7 @@
   "macroflow.ui.dialogs.screen_pickers"
  ],
  "is_process_running": [
-  "macroflow.execution.player",
-  "macroflow.execution.player.apps"
+  "macroflow.execution.player"
  ],
  "is_window": [
   "macroflow.execution.player",
@@ -1149,10 +1144,6 @@
   "macroflow.ui.app",
   "macroflow.ui.app.scripts",
   "macroflow.ui.app.workflow"
- ],
- "taskkill_process": [
-  "macroflow.execution.player",
-  "macroflow.execution.player.apps"
  ],
  "update_module_object": [
   "macroflow.ui.app",

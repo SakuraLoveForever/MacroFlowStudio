@@ -25,13 +25,11 @@ from .base import (
     MAX_SCRIPT_REF_DEPTH,
     TH32CS_SNAPPROCESS,
     _PROCESSENTRY32W,
-    elevated_taskkill,
     get_playback_screen_rect,
     is_process_running,
     running_process_names,
     scale_screen_point,
     screen_template_scale,
-    taskkill_process,
 )
 
 from .core import CoreMixin
@@ -69,7 +67,6 @@ from .base import (  # 原先由本模块导入的名字，保持可导入
     set_cursor_pos,
     set_display_resolution_for_window,
     set_display_scaling_for_window,
-    subprocess,
     wintypes,
 )
 from .core import (  # 原先由本模块导入的名字，保持可导入

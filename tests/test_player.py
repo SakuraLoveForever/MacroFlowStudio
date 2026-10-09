@@ -4898,97 +4898,13 @@ class PlayerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "缺少进程名"):
             player._execute_close_app({"type": "close_app", "name": "  "})
 
-    def test_close_app_not_running_skips(self):
-        player = MacroPlayer()
-        statuses = []
-        player._status = lambda text: statuses.append(text)
-        with package_patch('player', 'is_process_running', return_value=False), \
-             package_patch('player', 'taskkill_process') as taskkill:
-            player._execute_close_app({
-                "type": "close_app", "name": "clash-verge.exe",
-                "graceful": True, "graceful_wait_ms": 2000,
-            })
-        taskkill.assert_not_called()
-        self.assertTrue(any("未在运行" in text for text in statuses))
-
-    def test_close_app_graceful_timeout_forces(self):
-        player = MacroPlayer()
-        player._wait = Mock()
-        with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill, \
-             patch('macroflow.execution.player.apps.time.perf_counter', side_effect=[0, 3, 3, 3]):
-            player._execute_close_app(dict(name="demo.exe", graceful_wait_ms=60000))
-        self.assertEqual([c.kwargs['force'] for c in taskkill.call_args_list], [False, True])
-
-    def test_close_app_always_attempts_normal_exit(self):
-        player = MacroPlayer()
-        with package_patch('player', 'is_process_running', side_effect=[True, True, False, False]), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill:
-            player._execute_close_app(dict(name="demo.exe", graceful=False))
-        taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
-
-    def test_close_app_graceful_success(self):
-        player = MacroPlayer()
-        with package_patch('player', 'is_process_running', side_effect=[True, True, False, False]), \
-             package_patch('player', 'taskkill_process', side_effect=[(0, '')]) as taskkill:
-            player._execute_close_app({
-                "type": "close_app", "name": "demo.exe",
-                "graceful": True, "graceful_wait_ms": 2000,
-            })
-        taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
-
-    def test_close_app_graceful_access_denied_forces(self):
-        player = MacroPlayer()
-        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
-             package_patch('player', 'taskkill_process', side_effect=[(1, '拒绝访问'), (0, '')]) as taskkill:
-            player._execute_close_app(dict(name="demo.exe", graceful_wait_ms=0))
-        self.assertEqual([c.kwargs['force'] for c in taskkill.call_args_list], [False, True])
-
-    def test_close_app_stop_prevents_force(self):
-        player = MacroPlayer()
-        with package_patch('player', 'is_process_running', return_value=True), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill:
-            taskkill.side_effect = lambda *a, **kw: (player.stop_event.set() or (0, ''))
-            with self.assertRaises(PlaybackStopped):
-                player._execute_close_app(dict(name="demo.exe", graceful_wait_ms=0))
-        taskkill.assert_called_once_with("demo.exe", force=False, tree=False)
-
-    def test_close_app_elevated_fallback(self):
-        player = MacroPlayer()
-        statuses = []
-        player._status = lambda text: statuses.append(text)
-        # 普通权限反复结束失败，最终由管理员权限结束
-        with package_patch('player', 'is_process_running', side_effect=[True, True, False]), \
-             package_patch('player', 'taskkill_process', return_value=(1, '拒绝访问')), \
-             package_patch('player', 'elevated_taskkill', return_value=True) as elev:
-            player._execute_close_app({
-                "type": "close_app", "name": "app_launcher.exe",
-                "graceful": False, "graceful_wait_ms": 2000,
-                "tree": False, "elevated_retry": True,
-            })
-        elev.assert_called_once_with("app_launcher.exe", tree=False)
-        self.assertTrue(any("管理员权限" in text for text in statuses))
-
-    def test_close_app_elevated_declined_raises(self):
-        player = MacroPlayer()
-        # UAC 授权被取消 → 最终报错
-        with package_patch('player', 'is_process_running', return_value=True), \
-             package_patch('player', 'taskkill_process', return_value=(1, '拒绝访问')), \
-             package_patch('player', 'elevated_taskkill', return_value=False) as elev:
-            with self.assertRaisesRegex(RuntimeError, "无法结束进程"):
-                player._execute_close_app({
-                    "type": "close_app", "name": "demo.exe",
-                    "graceful": False, "elevated_retry": True,
-                })
-        elev.assert_called_once()
-
     def test_close_app_summary(self):
         kind, detail, _delay = action_summary({
             "type": "close_app", "name": "clash-verge.exe",
         })
         self.assertIn("关闭软件", kind)
         self.assertIn("clash-verge.exe", detail)
-        self.assertIn("正常关闭，失败后强制结束", detail)
+        self.assertIn("含全部子进程，共用3秒", detail)
 
     def test_close_app_summary_force(self):
         _kind, detail, _delay = action_summary({

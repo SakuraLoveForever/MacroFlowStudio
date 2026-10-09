@@ -1198,12 +1198,8 @@ class ImageTests(unittest.TestCase):
         dialog = CloseAppDialog.__new__(CloseAppDialog)
         dialog.name = Mock()
         dialog.name.get.return_value = " clash-verge.exe "
-        dialog.wait_for_processes_timeout_ms = Mock()
-        dialog.wait_for_processes_timeout_ms.get.return_value = "3000"
         dialog.wait_for_processes = Mock()
         dialog.wait_for_processes.get.return_value = " GameMon.des, GameMon64.des "
-        dialog.tree = Mock()
-        dialog.tree.get.return_value = False
         dialog.elevated_retry = Mock()
         dialog.elevated_retry.get.return_value = True
         dialog.delay = Mock()
@@ -1214,9 +1210,8 @@ class ImageTests(unittest.TestCase):
         dialog.save()
         self.assertEqual(dialog.result, {
             "type": "close_app", "name": "clash-verge.exe",
-            "wait_for_processes_timeout_ms": 3000,
             "wait_for_processes": ["GameMon.des", "GameMon64.des"],
-            "tree": False, "elevated_retry": True,
+            "elevated_retry": True,
             "delay_ms": 100, "after_delay_ms": 0,
         })
         dialog.destroy.assert_called_once()

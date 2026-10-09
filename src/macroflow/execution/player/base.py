@@ -11,7 +11,6 @@ from macroflow.input.wininput import (
     set_display_resolution_for_window, set_display_scaling_for_window,
     send_text, set_cursor_pos,
 )
-import subprocess
 from ctypes import wintypes
 
 JUMP_CURRENT_SCRIPT_LAST_RESULT = "jump_current_script_last"
@@ -115,35 +114,3 @@ def running_process_names() -> list[str]:
 def is_process_running(image_name: str) -> bool:
     image_name = image_name.strip().lower()
     return bool(image_name) and image_name in running_process_names()
-def taskkill_process(image_name: str, force: bool = False, tree: bool = False) -> tuple[int, str]:
-    """End a process via taskkill; returns (returncode, stderr).
-
-    returncode 0 means the request was accepted; /T ends the whole process tree.
-    """
-    cmd = ["taskkill", "/IM", image_name]
-    if force:
-        cmd.append("/F")
-    if tree:
-        cmd.append("/T")
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=15 if force else 3,
-        )
-        return proc.returncode, (proc.stderr or "").strip()
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return -1, str(exc)
-def elevated_taskkill(image_name: str, tree: bool = False) -> bool:
-    """Kill via an elevated taskkill (UAC prompt).
-
-    True when the elevated taskkill process was started; the user may still
-    decline the prompt or the kill may fail afterwards.
-    """
-    cmd = f'taskkill /IM "{image_name}" /F'
-    if tree:
-        cmd += " /T"
-    result = ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", "taskkill.exe", cmd, None, 0,
-    )
-    return result > 32

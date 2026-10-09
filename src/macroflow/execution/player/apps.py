@@ -12,10 +12,8 @@ from macroflow.input.wininput import (
 )
 import time
 
-from .base import (
-    elevated_taskkill,
-    is_process_running,
-    taskkill_process,
+from macroflow.execution.process_close import (
+    close_targets, include_descendants, kill_targets, pending_targets,
 )
 from .control import (
     PlaybackStopped,
@@ -24,95 +22,59 @@ from .control import (
 class AppsMixin:
     """打开 / 关闭软件与前置窗口动作。"""
 
-    def _close_process(self, image_name: str,
-                       tree: bool = False,
-                       elevated_retry: bool = False) -> None:
-        """Request normal exit first, then force termination if it fails."""
-        if not is_process_running(image_name):
-            return
-        if self.stop_event.is_set():
-            raise PlaybackStopped()
-        deadline = time.perf_counter() + 3.0
-        self._log_event(f"请求正常关闭 {image_name}，最多等待 3 秒")
-        code, _err = taskkill_process(image_name, force=False, tree=tree)
-        if code != 0:
-            self._log_event(f"{image_name} 正常关闭请求失败：{_err}；尝试强制结束")
-        else:
-            while is_process_running(image_name):
-                if self.stop_event.is_set():
-                    raise PlaybackStopped()
-                if time.perf_counter() >= deadline:
-                    break
-                self._wait(50)
-            if not is_process_running(image_name):
-                self._log_event(f"已结束 {image_name}")
-                return
-            self._log_event(f"{image_name} 正常关闭超时，尝试强制结束")
-        for _ in range(3):
-            if self.stop_event.is_set():
-                raise PlaybackStopped()
-            code, _err = taskkill_process(image_name, force=True, tree=tree)
-            if code != 0:
-                # taskkill 本身失败（如权限不足），轮询等待没有意义
-                self._wait(200)
-                continue
-            deadline = time.perf_counter() + 1000 / 1000
-            while True:
-                if not is_process_running(image_name):
-                    self._log_event(f"已强制结束 {image_name}")
-                    return
-                if self.stop_event.is_set():
-                    raise PlaybackStopped()
-                if time.perf_counter() >= deadline:
-                    break
-                self._wait(50)
-            self._wait(200)
-        if elevated_retry:
-            self._status(f"{image_name} 普通权限无法结束，尝试以管理员权限结束（可能弹出 UAC 授权窗口）")
-            if elevated_taskkill(image_name, tree=tree):
-                deadline = time.perf_counter() + 8000 / 1000
-                while True:
-                    if not is_process_running(image_name):
-                        self._status(f"已以管理员权限结束 {image_name}")
-                        return
-                    if self.stop_event.is_set():
-                        raise PlaybackStopped()
-                    if time.perf_counter() >= deadline:
-                        break
-                    self._wait(50)
-            self._status("管理员权限结束失败或授权被取消")
-        raise RuntimeError(f"无法结束进程：{image_name}")
     def _execute_close_app(self, action: dict) -> None:
         image_name = str(action.get("name", "")).strip()
         if not image_name:
             raise RuntimeError("关闭软件动作缺少进程名")
-        if is_process_running(image_name):
-            self._close_process(
-                image_name,
-                tree=bool(action.get("tree", False)),
-                elevated_retry=bool(action.get("elevated_retry", False)),
-            )
-        else:
-            self._log_event(f"{image_name} 未在运行，跳过关闭请求")
         related = action.get("wait_for_processes", [])
         if not isinstance(related, list) or any(not isinstance(name, str) or not name.strip() for name in related):
-            raise RuntimeError("等待退出的进程名称必须是非空名称列表")
-        related_wait_s = max(0, int(action.get("wait_for_processes_timeout_ms", 60000))) / 1000
-        deadline = time.perf_counter() + related_wait_s
-        last_pending = None
-        while related:
+            raise RuntimeError("一同关闭的进程名称必须是非空名称列表")
+        targets = close_targets([image_name, *related])
+        if not targets:
+            self._log_event(f"{image_name} 及关联进程未在运行，跳过关闭请求")
+            return
+        if self.stop_event.is_set():
+            raise PlaybackStopped()
+        deadline = time.perf_counter() + 3.0
+        self._log_event(f"正常关闭 {image_name}、子进程及关联进程，共用 3 秒退出时限")
+        code, error = kill_targets(targets, timeout=3.0)
+        if code == 0:
+            while pending_targets(targets):
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
+                if time.perf_counter() >= deadline:
+                    break
+                self._wait(50)
+        else:
+            self._log_event(f"正常关闭请求未全部成功：{error}；强制结束剩余进程")
+        if self.stop_event.is_set():
+            raise PlaybackStopped()
+        remaining = pending_targets(include_descendants(pending_targets(targets)))
+        if not remaining:
+            self._log_event(f"已结束 {image_name}、子进程及关联进程")
+            return
+        self._log_event(f"强制结束剩余进程 PID：{', '.join(str(p.pid) for p in remaining)}")
+        _code, error = kill_targets(remaining, force=True)
+        force_deadline = time.perf_counter() + 1.0
+        while pending_targets(remaining) and time.perf_counter() < force_deadline:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
-            pending = [name for name in related if is_process_running(name)]
-            if not pending:
-                self._log_event("关联进程已退出，继续后续动作")
-                break
-            if pending != last_pending:
-                self._log_event(f"等待关联进程退出：{', '.join(pending)}；最长 {related_wait_s:g} 秒")
-                last_pending = pending
-            if time.perf_counter() >= deadline:
-                raise RuntimeError(f"关联进程尚未退出，已停止重启：{', '.join(pending)}")
-            self._wait(100)
+            self._wait(50)
+        remaining = pending_targets(remaining)
+        if remaining and action.get("elevated_retry", False):
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            self._status("普通权限无法结束剩余进程，尝试管理员权限结束（可能弹出 UAC 授权窗口）")
+            _code, error = kill_targets(remaining, force=True, elevated=True)
+            elevated_deadline = time.perf_counter() + 8.0
+            while pending_targets(remaining) and time.perf_counter() < elevated_deadline:
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
+                self._wait(50)
+            remaining = pending_targets(remaining)
+        if remaining:
+            raise RuntimeError(f"无法结束进程 PID：{', '.join(str(p.pid) for p in remaining)}；{error}")
+        self._log_event(f"已强制结束 {image_name}、子进程及关联进程")
 
     def _execute_activate_window(self, action: dict) -> None:
         """Resolve a saved stable window signature and bring that live window forward."""

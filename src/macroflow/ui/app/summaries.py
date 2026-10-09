@@ -542,9 +542,9 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return action_kind_label(kind, "打开软件"), detail, delay
     if kind == "close_app":
         name = str(action.get("name", "")).strip() or "未设置"
-        mode = "正常关闭，失败后强制结束"
+        mode = "含全部子进程，共用3秒，失败后强制结束"
         extras = [flag for flag, on in (
-            ("进程树", action.get("tree")), ("管理员重试", action.get("elevated_retry")),
+            ("管理员重试", action.get("elevated_retry")),
         ) if on]
         detail = f"结束 {name}（{mode}" + ("、" + "、".join(extras) if extras else "") + "）"
         return action_kind_label(kind, "关闭软件"), detail, delay

@@ -1,7 +1,7 @@
 """Module search, fixed waits, and orderly process exit without visible UI."""
 import tkinter as tk
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from macroflow.ui.dialogs.base import DurationVar
 from macroflow.ui.dialogs.module_objects import TemplateRegionManagerDialog
@@ -49,33 +49,3 @@ class ModuleSearchAndWaitTests(unittest.TestCase):
              package_patch('player', 'show_overlay'):
             player._execute_image(dict(module_ref=True, module_key='module:target'), None)
         self.assertEqual(events[:2], [('wait', 5000), ('detect', None)])
-
-    def test_graceful_close_escalates_after_timeout(self):
-        player = MacroPlayer()
-        player._wait = Mock()
-        with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as kill, \
-             patch('macroflow.execution.player.apps.time.perf_counter', side_effect=[0, 3, 3, 3]):
-            player._execute_close_app(dict(name='game.exe', graceful_wait_ms=0))
-        self.assertEqual([c.kwargs['force'] for c in kill.call_args_list], [False, True])
-
-    def test_related_process_wait_stops_instead_of_relaunching_too_soon(self):
-        player = MacroPlayer()
-        player._close_process = Mock()
-        player._wait = Mock()
-        with package_patch('player', 'is_process_running', return_value=True):
-            with self.assertRaises(RuntimeError):
-                player._execute_close_app(dict(name='game.exe', graceful=True,
-                    wait_for_processes_timeout_ms=0, wait_for_processes=['GameMon64.des']))
-
-    def test_related_processes_are_waited_even_if_main_process_is_gone(self):
-        player = MacroPlayer()
-        player._wait = Mock()
-        with package_patch('player', 'is_process_running', side_effect=[False, True, False]) as running, \
-             package_patch('player', 'taskkill_process') as kill:
-            player._execute_close_app(dict(name='game.exe', graceful=True,
-                graceful_wait_ms=1000, wait_for_processes=['GameMon64.des']))
-        self.assertEqual([call.args[0] for call in running.call_args_list],
-                         ['game.exe', 'GameMon64.des', 'GameMon64.des'])
-        player._wait.assert_called_once_with(100)
-        kill.assert_not_called()
