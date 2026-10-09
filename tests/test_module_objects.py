@@ -1931,7 +1931,7 @@ class TemplateRegionTests(unittest.TestCase):
             dialog._show_module_context_menu(event)
         labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
         self.assertEqual(labels, [
-            "▶ 测试指定次数…", "改成工作流全局", "复制成工作流全局",
+            "识别测试", "▶ 测试指定次数…", "改成工作流全局", "复制成工作流全局",
         ])
         tree.selection_set.assert_called_once_with("virtual:normal:0")
         menu_class.return_value.tk_popup.assert_called_once_with(100, 120)
@@ -1957,6 +1957,7 @@ class TemplateRegionTests(unittest.TestCase):
                     for item in menu_class.return_value.add_command.call_args_list
                 ]
                 self.assertIn("▶ 测试指定次数…", labels)
+                self.assertIn("识别测试", labels)
                 tree.selection_set.assert_called_once_with("virtual:normal:0")
 
     def test_manager_module_test_asks_for_count_and_runs_selected_module(self):

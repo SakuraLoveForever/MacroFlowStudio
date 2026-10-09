@@ -91,6 +91,7 @@ from .segments import (
     module_reference_binding,
 )
 from .virtual_tree import VirtualRow, VirtualTreeRows
+from .module_test import start_module_recognition_test
 
 
 def _valid_scripts_in(root: Path) -> list[Path]:
@@ -771,6 +772,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         buttons.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="保存模块", command=self.save).pack(side="right", padx=px(8))
+        ttk.Button(buttons, text="识别测试", command=self.test_recognition).pack(side="left")
         self._toggle_sections()
         fit_scrollable_window_to_content(
             self, parent, body, self._scrollbar, align_top=True,
@@ -1290,6 +1292,28 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
 
     def _apply_picked_click_point(self, x, y):
         self.click_point_var.set(f"{int(x)},{int(y)}")
+
+    def test_recognition(self):
+        try:
+            mode = {"识别文字": "text", "读取数字": "number", "无需识图": "none",
+                    "进程检测": "process"}.get(self.recognize_var.get(), "image")
+            obj = {"name": self.name_var.get(), "recognize": mode,
+                   "pure_action": self.category_var.get() == "特殊模块"}
+            if mode == "process":
+                obj["process_name"] = self.process_name_var.get()
+            elif mode != "none" and not obj["pure_action"]:
+                raw_region = self.region_var.get().strip()
+                obj["region"] = [int(part) for part in raw_region.split(",")] if raw_region else []
+                if mode == "image":
+                    obj.update(template=self.image_var.get(), threshold=float(self.threshold_var.get()))
+                elif mode == "text":
+                    obj.update(expected_text=self.expected_text_var.get(),
+                               match_mode="equals" if self.match_mode_var.get() == "等于" else "contains")
+        except (ValueError, tk.TclError) as exc:
+            show_floating_notice(self, "识别测试失败", str(exc), duration_ms=500)
+            return
+        start_module_recognition_test(self, obj)
+
 
     def save(self):
         if self.category_var.get() == "特殊模块":
@@ -1921,6 +1945,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.add_button.pack(side="left")
         self.edit_button = ttk.Button(buttons, text="编辑选中", command=self._open_edit)
         self.edit_button.pack(side="left", padx=pad(8, 0))
+        ttk.Button(buttons, text="识别测试", command=self._test_selected_recognition).pack(side="left", padx=pad(8, 0))
         self.enabled_button = ttk.Button(
             buttons, text="禁用选中", command=self._toggle_selected_enabled,
         )
@@ -2175,6 +2200,10 @@ class TemplateRegionManagerDialog(ModalDialog):
             activebackground=COLOR_BLUE_SELECTION, activeforeground="#FFFFFF",
         )
         menu.add_command(
+            label="识别测试",
+            command=lambda: self._test_module_recognition(key),
+        )
+        menu.add_command(
             label="▶ 测试指定次数…",
             command=lambda: self._test_module_with_count(key),
         )
@@ -2198,6 +2227,22 @@ class TemplateRegionManagerDialog(ModalDialog):
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
+    def _test_selected_recognition(self):
+        selection = self._current_view().selected_keys()
+        if not selection:
+            show_floating_notice(self, "识别测试失败", "请先选中一个模块。", duration_ms=500)
+            return
+        self._test_module_recognition(selection[0])
+
+
+    def _test_module_recognition(self, key: str):
+        obj = self.objects.get(key)
+        if obj is None:
+            show_floating_notice(self, "识别测试失败", "模块不存在。", duration_ms=500)
+            return
+        start_module_recognition_test(self, obj)
+
 
     def _test_module_with_count(self, key: str):
         """Ask once for a repeat count, then test the saved module independently."""
