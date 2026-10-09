@@ -146,18 +146,24 @@ class HotkeysMixin:
                     vk, _ = key_to_vk(key)
                 except ValueError:
                     continue
-            bindings.append({"key": key, "vk": vk, "script": script})
+            bindings.append({"key": key, "vk": vk, "script": script,
+                             "enabled": bool(item.get("enabled", True))})
         return bindings
     def _apply_hotkey_bindings(self):
         """把当前绑定重建为 虚键码 → 绑定 的映射，并同步守卫与录制过滤。"""
         vk_map: dict[int, dict] = {}
         for binding in self.hotkey_scripts:
+            if not binding.get("enabled", True):
+                continue
             vk = int(binding.get("vk") or 0)
             if vk <= 0 or vk in RESERVED_HOTKEY_VKS:
                 continue
             vk_map[vk] = binding
         self._hotkey_vk_map = vk_map
         self._hotkey_recorder_filter_vks = set(vk_map)
+        active = getattr(self, "_hotkey_active_binding", None)
+        if active and active.get("vk") not in vk_map:
+            self._stop_hotkey_script()
         guard = getattr(self, "input_guard", None)
         if guard is not None:
             guard.set_hotkeys(set(vk_map) | {VK_F8})
@@ -175,7 +181,8 @@ class HotkeysMixin:
         parts = []
         for item in self.hotkey_scripts:
             name = Path(str(item.get("script", ""))).stem or "?"
-            parts.append(f"{item.get('key', '?')} → {name}")
+            suffix = "" if item.get("enabled", True) else "（已禁用）"
+            parts.append(f"{item.get('key', '?')} → {name}{suffix}")
         var.set("，".join(parts))
     def _configure_hotkey_scripts(self):
         dialog = HotkeyScriptsDialog(self.root, list(self.hotkey_scripts))
@@ -210,7 +217,7 @@ class HotkeysMixin:
             return
         self._trigger_hotkey_script(binding)
     def _trigger_hotkey_script(self, binding: dict):
-        if self.exiting or self.hotkey_config_open:
+        if self.exiting or self.hotkey_config_open or not binding.get("enabled", True):
             return
         if self._hotkey_script_running:
             self._ui(
@@ -219,12 +226,16 @@ class HotkeysMixin:
             )
             return
         self._hotkey_script_running = True
+        self._hotkey_active_binding = dict(binding)
         threading.Thread(
             target=self._hotkey_script_worker,
             args=(dict(binding),),
             name="MacroFlowHotkeyScript",
             daemon=True,
         ).start()
+    def _stop_hotkey_script(self):
+        self.hotkey_player.stop()
+
     def _hotkey_script_worker(self, binding: dict):
         """独立线程回放快捷键绑定的脚本（与录制/主脚本执行并行）。"""
         key_name = str(binding.get("key", "?"))
@@ -275,6 +286,7 @@ class HotkeysMixin:
         finally:
             allow_display_sleep()
             self._hotkey_script_running = False
+            self._hotkey_active_binding = None
     def on_close(self):
         """点主窗口关闭按钮：按设置直接退出，或收进托盘继续在后台运行。"""
         if getattr(self, "close_action_var", None) is not None \

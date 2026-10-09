@@ -871,12 +871,14 @@ class HotkeyScriptsDialog(ModalDialog):
         frame = ttk.Frame(self, padding=pad(14, 5, 14, 6))
         frame.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(
-            frame, columns=("key", "script"), show="headings", selectmode="browse",
+            frame, columns=("key", "script", "enabled"), show="headings", selectmode="browse",
         )
         self.tree.heading("key", text="快捷键")
         self.tree.heading("script", text="脚本")
+        self.tree.heading("enabled", text="状态")
         self.tree.column("key", width=px(110), anchor="center")
         self.tree.column("script", width=px(460), stretch=True)
+        self.tree.column("enabled", width=px(85), stretch=False, anchor="center")
         scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -886,6 +888,9 @@ class HotkeyScriptsDialog(ModalDialog):
         side.pack(side="left", fill="y", padx=pad(10, 0))
         ttk.Button(side, text="添加", command=self._add).pack(fill="x")
         ttk.Button(side, text="编辑", command=self._edit_selected).pack(fill="x", pady=pad(6, 0))
+        self.toggle_button = ttk.Button(side, text="启用/禁用", command=self._toggle_selected)
+        self.toggle_button.pack(fill="x", pady=pad(6, 0))
+        self.tree.bind("<<TreeviewSelect>>", self._sync_toggle_button)
         ttk.Button(side, text="删除", command=self._remove_selected).pack(fill="x", pady=pad(6, 0))
         ttk.Button(side, text="清空", command=self._clear_all).pack(fill="x", pady=pad(6, 0))
         bottom = ttk.Frame(self, padding=pad(18, 8, 18, 14))
@@ -905,6 +910,7 @@ class HotkeyScriptsDialog(ModalDialog):
         fit_window_to_content(self, parent)
 
     def _render(self):
+        selected = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         for index, item in enumerate(self.bindings):
             script = str(item.get("script", ""))
@@ -912,8 +918,28 @@ class HotkeyScriptsDialog(ModalDialog):
             # 只显示脚本名，不显示父辈目录。
             self.tree.insert(
                 "", "end", iid=str(index),
-                values=(str(item.get("key", "")), name),
+                values=(str(item.get("key", "")), name,
+                        "已启用" if item.get("enabled", True) else "已禁用"),
             )
+        if selected and int(selected[0]) < len(self.bindings):
+            self.tree.selection_set(selected[0])
+        self._sync_toggle_button()
+
+    def _sync_toggle_button(self, _event=None):
+        selected = self.tree.selection()
+        if not selected:
+            self.toggle_button.configure(text="启用/禁用", state="disabled")
+            return
+        enabled = self.bindings[int(selected[0])].get("enabled", True)
+        self.toggle_button.configure(text="禁用选中" if enabled else "启用选中", state="normal")
+
+    def _toggle_selected(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        item = self.bindings[int(selected[0])]
+        item["enabled"] = not item.get("enabled", True)
+        self._render()
 
     def _add(self):
         self._edit_index(None)
@@ -943,8 +969,10 @@ class HotkeyScriptsDialog(ModalDialog):
             show_floating_notice(self, "快捷键重复", f"快捷键 {key} 已被其他绑定使用。")
             return
         if index is None:
+            result["enabled"] = True
             self.bindings.append(result)
         else:
+            result["enabled"] = bool(current.get("enabled", True))
             self.bindings[index] = result
         self._render()
 
