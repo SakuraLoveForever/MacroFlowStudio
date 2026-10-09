@@ -29,6 +29,16 @@ from .base import (
 class ModuleResultMixin:
     """模块结果路由、失败代码段与模块点击去重。"""
 
+    def _module_match_click_point(self, obj: dict, match: dict) -> tuple[int, int]:
+        """识别中心加四向偏移；偏移按播放分辨率缩放，不带屏幕原点。"""
+        dx = int(obj.get("ocr_offset_right", 0)) - int(obj.get("ocr_offset_left", 0))
+        dy = int(obj.get("ocr_offset_down", 0)) - int(obj.get("ocr_offset_up", 0))
+        source = self._source_screen or {}
+        left, top = int(source.get("left", 0)), int(source.get("top", 0))
+        base_x, base_y = self._scale_point(left, top)
+        end_x, end_y = self._scale_point(left + dx, top + dy)
+        return match["center_x"] + end_x - base_x, match["center_y"] + end_y - base_y
+
     def _run_failure_segment(self, action: dict, hwnd: int | None,
                              script_stack: set[str] | None,
                              depth: int) -> None:
@@ -101,10 +111,7 @@ class ModuleResultMixin:
                     raise RuntimeError(f"模块 {module_label} 未设置自定义点击位置")
                 x, y = self._scale_point(int(raw_point[0]), int(raw_point[1]))
             else:
-                x, y = match["center_x"], match["center_y"]
-            if after_action == "click_match" and obj.get("recognize") == "text":
-                x += int(obj.get("ocr_offset_right", 0)) - int(obj.get("ocr_offset_left", 0))
-                y += int(obj.get("ocr_offset_down", 0)) - int(obj.get("ocr_offset_up", 0))
+                x, y = self._module_match_click_point(obj, match)
             self._click_module_point(x, y, button, click_count, hwnd)
             self._trace(
                 f"模块 {module_label} 已点击 ({x}, {y})"

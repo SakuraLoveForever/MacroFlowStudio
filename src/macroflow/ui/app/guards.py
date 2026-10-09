@@ -345,7 +345,16 @@ class GuardsMixin:
                     key=f"{guard['key']}:fallback",
                 )
                 if guard.get("fallback_click"):
-                    self._guard_fallback_click(guard, fallback_match, fallback_name)
+                    offset_x, offset_y = self._guard_scale_offset(
+                        int(fallback_obj.get("ocr_offset_right", 0))
+                        - int(fallback_obj.get("ocr_offset_left", 0)),
+                        int(fallback_obj.get("ocr_offset_down", 0))
+                        - int(fallback_obj.get("ocr_offset_up", 0)),
+                    )
+                    click_match = dict(fallback_match,
+                                       center_x=fallback_match["center_x"] + offset_x,
+                                       center_y=fallback_match["center_y"] + offset_y)
+                    self._guard_fallback_click(guard, click_match, fallback_name)
                 else:
                     self._ui(
                         self._guard_global_event, guard,
@@ -765,7 +774,7 @@ class GuardsMixin:
         # 引用模块守卫：命中后按模块对象配置的“动作”分发。
         # click_custom 的自定义坐标在注册时已写入 guard["click"]；
         # click_match（“点击识别区域”，模块默认动作）补上识别位置
-        # （含 OCR 偏移，与旧全局检测引擎行为一致）——否则引用模块
+        # （含图片/文字识别点击偏移）——否则引用模块
         # 命中后只触发不点击。
         if not click and hit["kind"] == "success" and guard.get("module_ref") \
                 and str(guard.get("after_action", "click_match")) == "click_match" \
@@ -799,6 +808,9 @@ class GuardsMixin:
                 "second_match_timeout_ms": max(0, int(second.get("timeout_ms", 3000))),
                 "second_match_click_target": str(second.get("click_target", "second")),
                 "second_match_click_region": second.get("click_region") or [],
+                **{field: int(guard.get(field, 0)) for field in (
+                    "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right",
+                )},
                 "button": str(guard.get("button", "left")),
                 "click_count": max(1, min(9999, int(guard.get("click_count", 1)))),
             }

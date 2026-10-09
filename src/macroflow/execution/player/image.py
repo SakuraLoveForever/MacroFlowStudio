@@ -463,8 +463,11 @@ class ImageMixin:
                         fallback_match["width"], fallback_match["height"],
                     )
                     if fallback_on_match.startswith("click_"):
+                        fallback_x, fallback_y = self._module_match_click_point(
+                            module_fallback, fallback_match,
+                        )
                         self._click_module_point(
-                            int(fallback_match["center_x"]), int(fallback_match["center_y"]),
+                            fallback_x, fallback_y,
                             str(module_fallback.get("button", "left")),
                             max(1, int(module_fallback.get("click_count", 1))),
                             hwnd,
@@ -747,7 +750,7 @@ class ImageMixin:
                      second_match["width"], second_match["height"])
         click_target = str(obj.get("second_match_click_target", "second"))
         if click_target == "first" and first_match:
-            x, y = first_match["center_x"], first_match["center_y"]
+            x, y = self._module_match_click_point(obj, first_match)
             target_label = "第一次识别位置"
         elif click_target == "custom_region":
             raw_click_region = obj.get("second_match_click_region", [])
@@ -757,10 +760,10 @@ class ImageMixin:
                 y = click_region[1] + click_region[3] // 2
                 target_label = "自定义框选区域"
             else:
-                x, y = second_match["center_x"], second_match["center_y"]
+                x, y = self._module_match_click_point(obj, second_match)
                 target_label = "第二次识别位置"
         else:
-            x, y = second_match["center_x"], second_match["center_y"]
+            x, y = self._module_match_click_point(obj, second_match)
             target_label = "第二次识别位置"
         click_count = max(1, min(9999, int(obj.get("click_count", 1))))
         self._click_module_point(

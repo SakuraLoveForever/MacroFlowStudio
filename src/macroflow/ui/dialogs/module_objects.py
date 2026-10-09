@@ -652,9 +652,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         row += 1
         self.row_ocr_offset = self._labeled_row(
-            body, row, "文字点击偏移 (px)",
+            body, row, "识别点击偏移 (px)",
             self._build_ocr_offset_control,
-            "以识别到的文字框中心为基准。分别填写向上、向下、向左、向右的像素；"
+            "以识别结果中心为基准，适用于图片和文字；二次识别按所选识别位置偏移，"
+            "自定义坐标或框选区域不偏移。分别填写向上、向下、向左、向右的像素；"
             "也可点“拖拽选取…”：在起点按住左键，拖到终点后松开，自动计算偏移。",
         )
         row += 1
@@ -1050,7 +1051,11 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         self._set_row(
             self.row_ocr_offset,
-            text_mode and after == "点击识别区域",
+            not pure and not number_mode and not direct_mode and not process_mode
+            and (after == "点击识别区域" or (
+                after == "二次识别后点击"
+                and self.second_click_target_var.get() != "自定义框选区域"
+            )),
         )
         self._set_row(self.row_click_point, not pure and after == "点击自定义位置")
         show_second = not pure and not text_mode and after == "二次识别后点击"
@@ -1391,7 +1396,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             }
         except ValueError:
             show_floating_notice(
-                self, "文字点击偏移格式错误",
+                self, "识别点击偏移格式错误",
                 "向上、向下、向左、向右偏移必须是大于等于 0 的整数像素。",
             )
             return
