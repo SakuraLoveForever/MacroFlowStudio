@@ -22,6 +22,7 @@ class PackageEntryTests(unittest.TestCase):
         exported = {name for name in dir(package) if not name.startswith("_")}
         # 只允许主窗口类与子模块名（导入子模块时会挂上）。
         allowed_extra = {
+            "action_palette",
             "main", "base", "constants", "summaries", "startup", "shell",
             "helpers", "global_detect", "guards", "tray", "window_binding",
             "recording", "recovery", "scripts", "execution", "workflow", "hotkeys",

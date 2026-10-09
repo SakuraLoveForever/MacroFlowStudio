@@ -724,10 +724,12 @@ class TemplateRegionTests(unittest.TestCase):
     def test_editor_page_opens_unified_region_manager(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
+        app.rebuild_action_tree = Mock()
         with package_patch('app', 'TemplateRegionManagerDialog') as manager_class:
             app.open_template_region_manager()
         manager_class.assert_called_once_with(app.root)
         manager_class.return_value.show.assert_called_once()
+        app.rebuild_action_tree.assert_called_once()
 
     def _object(self, region=(10, 20, 300, 400), category="switch", **overrides):
         obj = {

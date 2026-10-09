@@ -171,6 +171,7 @@ class ScriptsMixin:
         self._finish_action_tree_refresh()
     def _refresh_one_action_row(self, row: int) -> None:
         """单行编辑后的刷新：数据行号没变，只重画这一行。"""
+        self._action_rows.module_objects = module_objects_snapshot()
         self._set_action_row(row)
         self._finish_action_tree_refresh()
     def _sync_action_rows(self, old_ids: list[str]) -> None:
@@ -180,7 +181,7 @@ class ScriptsMixin:
         """
         index = self._action_rows
         new_ids = [action_id_of(action) for action in self.script.actions]
-        index.refresh(self.script.actions)
+        index.refresh(self.script.actions, module_objects_snapshot())
         edit = reconcile_action_rows(old_ids, new_ids)
         if edit.structural:
             self._apply_row_edit(edit, old_count=len(old_ids))
@@ -740,6 +741,7 @@ class ScriptsMixin:
         识图与全局识图共用同一份登记（template_regions.json），选中模板时自动导入。
         """
         TemplateRegionManagerDialog(self.root).show()
+        self.rebuild_action_tree()
         if getattr(self, "workflow_tree", None) is not None:
             self.rebuild_workflow_tree()
     def jump_to_module_reference(self, path: Path, action_index: int):

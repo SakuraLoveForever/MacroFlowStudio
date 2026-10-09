@@ -75,10 +75,8 @@ from .base import (
     pad,
     px,
     set_ui_scale,
-    split_toolbar_specs,
 )
 from .constants import (
-    ADD_ACTION_MENU_LABEL,
     ACTION_TREE_COLUMNS,
     APP_NAME,
     APP_VERSION,
@@ -96,7 +94,6 @@ from .constants import (
     COLOR_SURFACE_ALT,
     COLOR_TEXT,
     FLOATING_NOTICE_POSITIONS,
-    PRIMARY_ACTION_COMMANDS,
     FONT_BODY,
     FONT_BRAND,
     FONT_FAMILY,
@@ -114,6 +111,8 @@ from .constants import (
 from .startup import (
     main,
 )
+
+from .action_palette import action_category_specs
 
 class ShellMixin:
     """主窗口壳层：主题、变量、侧栏与各标签页、日志视图。"""
@@ -1100,33 +1099,49 @@ class ShellMixin:
         )
         Tooltip(badge, text, anchor=parent)
         return badge
-    def _show_add_action_menu(self):
-        """「+ 添加动作 ▾」：低频动作类型的入口。
+    def _build_action_palette(self, parent):
+        self.action_palette = ttk.Notebook(parent)
+        self.action_palette.pack(fill="x", padx=px(12), pady=pad(0, 6))
+        for label, primary, extra in action_category_specs(self._script_action_button_specs()):
+            tab = ttk.Frame(self.action_palette, padding=pad(8, 5))
+            self.action_palette.add(tab, text=label)
+            common = ttk.Frame(tab)
+            common.pack(fill="x")
+            for text, command, style in primary:
+                ttk.Button(common, text=text, command=getattr(self, command),
+                           style=style).pack(side="left", padx=px(3))
+            expanded = ttk.Frame(tab)
+            for index, (text, command, style) in enumerate(extra):
+                ttk.Button(expanded, text=text, command=getattr(self, command),
+                           style=style).grid(row=index // 4, column=index % 4,
+                                             sticky="w", padx=px(3), pady=px(3))
+            toggle = ttk.Button(common, text="展开 ▾", style="ScriptTool.TButton")
+            toggle.configure(command=lambda frame=expanded, button=toggle:
+                             self._toggle_action_category(frame, button))
+            toggle.pack(side="left", padx=px(8))
+        self.action_palette.bind("<<NotebookTabChanged>>", self._resize_action_palette)
 
-        菜单项与工具栏按钮来自同一份按钮清单、执行同一个命令函数，
-        所以把按钮折进菜单不会少任何一个动作能力。
-        """
-        menu = tk.Menu(
-            self.root, tearoff=False, background=COLOR_SURFACE, foreground=COLOR_TEXT,
-            activebackground="#1D4358", activeforeground="#FFFFFF",
-            borderwidth=1, relief="solid",
-        )
-        specs = tuple(
-            (text, command_name, _style)
-            for text, command_name, _style in self._script_action_button_specs()
-        )
-        overflow = [item for item in specs if item[1] not in set(PRIMARY_ACTION_COMMANDS)]
-        for text, command_name, _style in overflow:
-            menu.add_command(label=text, command=getattr(self, command_name))
-        menu.add_separator()
-        menu.add_command(
-            label="⇥ 引用脚本（实时读取）", command=lambda: self._insert_script(False),
-        )
-        menu.add_command(
-            label="⇥ 逐行插入脚本", command=lambda: self._insert_script(True),
-        )
-        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
-        self._popup_menu(menu, self.add_action_menu_button)
+    def _resize_action_palette(self, _event=None):
+        self.action_palette.update_idletasks()
+        selected = self.action_palette.select()
+        if selected:
+            tab = self.action_palette.nametowidget(selected)
+            self.action_palette.configure(height=tab.winfo_reqheight())
+
+    def _toggle_action_category(self, frame, button):
+        if frame.winfo_manager():
+            frame.pack_forget()
+            button.configure(text="展开 ▾")
+        else:
+            frame.pack(fill="x", pady=pad(5, 0))
+            button.configure(text="收起 ▴")
+        self.action_palette.after_idle(self._resize_action_palette)
+
+    def _insert_script_reference(self):
+        self._insert_script(False)
+
+    def _insert_script_inline(self):
+        self._insert_script(True)
 
     def _show_script_more_menu(self):
         """「⋯ 更多」：脚本插入与低频管理入口。"""
@@ -1159,6 +1174,9 @@ class ShellMixin:
     def _script_action_button_specs():
         """Return the action buttons exposed by the script editor toolbar."""
         return (
+            ("⇥ 引用脚本", "_insert_script_reference", "ScriptTool.TButton"),
+            ("⇥ 逐行插入脚本", "_insert_script_inline", "ScriptTool.TButton"),
+            ("⇥ 插入指定行…", "_insert_script_range", "ScriptTool.TButton"),
             ("◷ 延时", "add_delay", "ScriptTool.TButton"),
             ("◎ 重新绑定", "add_rebind_window", "ScriptTool.TButton"),
             ("▣ 前置窗口", "add_activate_window", "ScriptTool.TButton"),
@@ -1224,34 +1242,12 @@ class ShellMixin:
         ttk.Button(file_row, text="打开脚本目录", command=lambda: self.open_folder(self._script_category_dir()),
                    style="Ghost.TButton").pack(side="right", padx=pad(0, 6))
 
+        self._build_action_palette(self.script_tab)
         toolbar = ttk.Frame(self.script_tab, padding=pad(12, 3, 12, 8), style="Toolbar.TFrame")
         toolbar.pack(fill="x")
 
-        # 一行搞定：常用动作常驻，其余动作进「添加动作」菜单。动作类型较多，
-        # 全铺出来会占满两行，把动作列表挤下去。
         add_buttons = ttk.Frame(toolbar, style="Toolbar.TFrame")
         add_buttons.pack(side="left", fill="x")
-        action_specs = tuple(
-            (text, command_name, style_name)
-            for text, command_name, style_name in self._script_action_button_specs()
-        )
-        primary_specs, overflow_specs = split_toolbar_specs(
-            action_specs, set(PRIMARY_ACTION_COMMANDS),
-        )
-        for index, (text, command_name, style_name) in enumerate(primary_specs):
-            # padx 必须是单个像素值或二元组：pad(4, 0) 返回元组，Tk 会把
-            # "4 0" 当成一个距离解析并报 bad pad value，所以这里只取左间距。
-            ttk.Button(
-                add_buttons, text=text, command=getattr(self, command_name),
-                style=style_name,
-            ).pack(side="left", padx=(0 if index == 0 else px(4), 0))
-        self.add_action_menu_button = ttk.Button(
-            add_buttons, text=ADD_ACTION_MENU_LABEL,
-            command=self._show_add_action_menu, style="AccentScriptTool.TButton",
-        )
-        self.add_action_menu_button.pack(side="left", padx=px(4))
-
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=px(8))
 
         ttk.Label(add_buttons, text="插入位置", style="Muted.TLabel").pack(
             side="left", padx=pad(4, 2),
@@ -1296,7 +1292,6 @@ class ShellMixin:
             style="ScriptTool.TButton",
         )
         self.script_more_menu_button.pack(side="right")
-        self._script_overflow_specs = overflow_specs
         self._set_insert_position(False)
 
         # 全局脚本：触发条件区块 + 语句体标题（类别为"全局"时显示）。
@@ -1396,7 +1391,7 @@ class ShellMixin:
         scroll.grid(row=0, column=1, sticky="ns")
         horizontal_scroll.grid(row=1, column=0, sticky="ew")
         self.empty_action_hint = ttk.Label(
-            frame, text="还没有动作\n按 F8 或点「添加动作」里的「录制」开始，也可用上方按钮逐条添加",
+            frame, text="还没有动作\n按 F8 或点「录制/脚本」类别里的「录制」开始，也可用上方按钮逐条添加",
             style="Empty.TLabel", anchor="center", justify="center"
         )
         self.action_tree.bind("<Double-1>", lambda _: self.edit_selected_action())
