@@ -391,7 +391,7 @@ class CloseAppDialog(ModalDialog):
         super().__init__(parent, "关闭软件", 560, 400)
         action = action or {}
         self.name = tk.StringVar(value=str(action.get("name", "")))
-        self.graceful_wait_ms = duration_var(action.get("graceful_wait_ms", 15000))
+        self.wait_for_processes_timeout_ms = duration_var(action.get("wait_for_processes_timeout_ms", 60000))
         self.wait_for_processes = tk.StringVar(value=", ".join(action.get("wait_for_processes", [])))
         self.tree = tk.BooleanVar(value=bool(action.get("tree", False)))
         self.elevated_retry = tk.BooleanVar(value=bool(action.get("elevated_retry", True)))
@@ -419,12 +419,12 @@ class CloseAppDialog(ModalDialog):
         ).grid(row=1, column=1, sticky="w")
 
         ttk.Label(
-            body, text="先正常关闭，失败或超时后自动强制结束。",
+            body, text="先正常关闭，最多 3 秒，失败或超时后强制结束。",
         ).grid(row=2, column=1, sticky="w", pady=pad(10, 0))
-        ttk.Label(body, text="正常退出等待").grid(row=3, column=0, sticky="w", pady=px(8))
+        ttk.Label(body, text="关联退出等待上限").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=60000, increment=100,
-            textvariable=self.graceful_wait_ms, width=10,
+            textvariable=self.wait_for_processes_timeout_ms, width=10,
         ).grid(row=3, column=1, sticky="ew")
 
         ttk.Label(body, text="同时等待退出的进程").grid(row=4, column=0, sticky="w", pady=px(8))
@@ -522,7 +522,7 @@ class CloseAppDialog(ModalDialog):
             show_floating_notice(self, "进程名无效", "请输入要结束的进程名。")
             return
         try:
-            graceful_wait_ms = max(0, int(self.graceful_wait_ms.get()))
+            related_wait_ms = max(0, int(self.wait_for_processes_timeout_ms.get()))
             delay = max(0, int(self.delay.get()))
             after_delay = max(0, int(self.after_delay.get()))
         except ValueError:
@@ -531,7 +531,7 @@ class CloseAppDialog(ModalDialog):
         self.result = {
             "type": "close_app",
             "name": name,
-            "graceful_wait_ms": graceful_wait_ms,
+            "wait_for_processes_timeout_ms": related_wait_ms,
             "wait_for_processes": [part.strip() for part in self.wait_for_processes.get().split(",") if part.strip()],
             "tree": self.tree.get(),
             "elevated_retry": self.elevated_retry.get(),

@@ -1,7 +1,7 @@
 """Module search, fixed waits, and orderly process exit without visible UI."""
 import tkinter as tk
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from macroflow.ui.dialogs.base import DurationVar
 from macroflow.ui.dialogs.module_objects import TemplateRegionManagerDialog
@@ -54,7 +54,8 @@ class ModuleSearchAndWaitTests(unittest.TestCase):
         player = MacroPlayer()
         player._wait = Mock()
         with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as kill:
+             package_patch('player', 'taskkill_process', return_value=(0, '')) as kill, \
+             patch('macroflow.execution.player.apps.time.perf_counter', side_effect=[0, 3, 3, 3]):
             player._execute_close_app(dict(name='game.exe', graceful_wait_ms=0))
         self.assertEqual([c.kwargs['force'] for c in kill.call_args_list], [False, True])
 
@@ -65,7 +66,7 @@ class ModuleSearchAndWaitTests(unittest.TestCase):
         with package_patch('player', 'is_process_running', return_value=True):
             with self.assertRaises(RuntimeError):
                 player._execute_close_app(dict(name='game.exe', graceful=True,
-                    graceful_wait_ms=0, wait_for_processes=['GameMon64.des']))
+                    wait_for_processes_timeout_ms=0, wait_for_processes=['GameMon64.des']))
 
     def test_related_processes_are_waited_even_if_main_process_is_gone(self):
         player = MacroPlayer()

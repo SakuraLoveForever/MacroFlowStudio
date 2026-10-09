@@ -4915,8 +4915,9 @@ class PlayerTests(unittest.TestCase):
         player = MacroPlayer()
         player._wait = Mock()
         with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
-             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill:
-            player._execute_close_app(dict(name="demo.exe", graceful_wait_ms=0))
+             package_patch('player', 'taskkill_process', return_value=(0, '')) as taskkill, \
+             patch('macroflow.execution.player.apps.time.perf_counter', side_effect=[0, 3, 3, 3]):
+            player._execute_close_app(dict(name="demo.exe", graceful_wait_ms=60000))
         self.assertEqual([c.kwargs['force'] for c in taskkill.call_args_list], [False, True])
 
     def test_close_app_always_attempts_normal_exit(self):

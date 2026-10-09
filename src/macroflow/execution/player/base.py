@@ -129,7 +129,7 @@ def taskkill_process(image_name: str, force: bool = False, tree: bool = False) -
         proc = subprocess.run(
             cmd, capture_output=True, text=True,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            timeout=15,
+            timeout=15 if force else 3,
         )
         return proc.returncode, (proc.stderr or "").strip()
     except (OSError, subprocess.TimeoutExpired) as exc:

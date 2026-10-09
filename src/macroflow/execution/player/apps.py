@@ -25,18 +25,19 @@ class AppsMixin:
     """打开 / 关闭软件与前置窗口动作。"""
 
     def _close_process(self, image_name: str,
-                       graceful_wait_ms: int = 15000, tree: bool = False,
+                       tree: bool = False,
                        elevated_retry: bool = False) -> None:
         """Request normal exit first, then force termination if it fails."""
         if not is_process_running(image_name):
             return
         if self.stop_event.is_set():
             raise PlaybackStopped()
+        deadline = time.perf_counter() + 3.0
+        self._log_event(f"请求正常关闭 {image_name}，最多等待 3 秒")
         code, _err = taskkill_process(image_name, force=False, tree=tree)
         if code != 0:
             self._log_event(f"{image_name} 正常关闭请求失败：{_err}；尝试强制结束")
         else:
-            deadline = time.perf_counter() + max(0, int(graceful_wait_ms)) / 1000
             while is_process_running(image_name):
                 if self.stop_event.is_set():
                     raise PlaybackStopped()
@@ -88,7 +89,6 @@ class AppsMixin:
         if is_process_running(image_name):
             self._close_process(
                 image_name,
-                graceful_wait_ms=int(action.get("graceful_wait_ms", 15000)),
                 tree=bool(action.get("tree", False)),
                 elevated_retry=bool(action.get("elevated_retry", False)),
             )
@@ -97,13 +97,19 @@ class AppsMixin:
         related = action.get("wait_for_processes", [])
         if not isinstance(related, list) or any(not isinstance(name, str) or not name.strip() for name in related):
             raise RuntimeError("等待退出的进程名称必须是非空名称列表")
-        deadline = time.perf_counter() + max(0, int(action.get("graceful_wait_ms", 15000))) / 1000
+        related_wait_s = max(0, int(action.get("wait_for_processes_timeout_ms", 60000))) / 1000
+        deadline = time.perf_counter() + related_wait_s
+        last_pending = None
         while related:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
             pending = [name for name in related if is_process_running(name)]
             if not pending:
+                self._log_event("关联进程已退出，继续后续动作")
                 break
+            if pending != last_pending:
+                self._log_event(f"等待关联进程退出：{', '.join(pending)}；最长 {related_wait_s:g} 秒")
+                last_pending = pending
             if time.perf_counter() >= deadline:
                 raise RuntimeError(f"关联进程尚未退出，已停止重启：{', '.join(pending)}")
             self._wait(100)
