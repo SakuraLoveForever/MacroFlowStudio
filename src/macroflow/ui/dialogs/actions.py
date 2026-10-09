@@ -87,6 +87,7 @@ from .recognition import (
 )
 from .screen_pickers import (
     ScreenPointPicker,
+    ScreenProcessPicker,
 )
 from .segments import (
     RecordedInputDialog,
@@ -312,6 +313,9 @@ class OpenAppDialog(ModalDialog):
         ttk.Button(path_row, text="选择…", command=self.choose).pack(
             side="left", padx=pad(6, 0),
         )
+        ttk.Button(path_row, text="鼠标选取…", command=self._pick_application).pack(
+            side="left", padx=pad(6, 0),
+        )
 
         ttk.Label(body, text="启动参数").grid(row=1, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.args).grid(row=1, column=1, sticky="ew")
@@ -342,6 +346,14 @@ class OpenAppDialog(ModalDialog):
         buttons.grid(row=6, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+
+    def _pick_application(self):
+        self.picker = ScreenProcessPicker(
+            self, self.master, self.path.set,
+            hidden_windows=app_windows(self.master), full_path=True,
+            tip_text="移动到目标软件，预览程序路径；单击确认，Esc 取消",
+        )
+        self.picker.start()
 
     def choose(self):
         path = filedialog.askopenfilename(
@@ -398,6 +410,9 @@ class CloseAppDialog(ModalDialog):
         ttk.Button(name_row, text="选择…", command=self.choose).pack(
             side="left", padx=pad(6, 0),
         )
+        ttk.Button(name_row, text="鼠标选取…", command=self._pick_process).pack(
+            side="left", padx=pad(6, 0),
+        )
         ttk.Label(
             body,
             text="填任务管理器里的映像名称，如 clash-verge.exe；同名的所有进程都会被结束。",
@@ -452,6 +467,14 @@ class CloseAppDialog(ModalDialog):
         # 行数多、两条长说明文字在高 DPI 下换行更多，底部按钮行被挤出窗口，
         # 确定/取消按钮完全看不见。按内容实际需求重设窗口尺寸并重新居中。
         fit_window_to_content(self, parent)
+
+    def _pick_process(self):
+        self.picker = ScreenProcessPicker(
+            self, self.master, self.name.set,
+            hidden_windows=app_windows(self.master),
+            tip_text="移动到目标软件，预览进程名；单击确认，Esc 取消",
+        )
+        self.picker.start()
 
     def choose(self):
         try:

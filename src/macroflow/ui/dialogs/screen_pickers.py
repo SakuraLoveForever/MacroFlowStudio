@@ -366,6 +366,11 @@ class ScreenRegionPicker:
 class ScreenProcessPicker(ScreenRegionPicker):
     """Preview the process beneath the pointer and confirm it with one click."""
 
+    def __init__(self, owner, main, on_result, tip_text: str = "",
+                 hidden_windows: list | None = None, full_path: bool = False):
+        super().__init__(owner, main, on_result, tip_text, hidden_windows)
+        self.full_path = full_path
+
     def _show_overlay(self):
         # Enumerate before the curtain appears, retaining native front-to-back order.
         try:
@@ -383,7 +388,9 @@ class ScreenProcessPicker(ScreenRegionPicker):
         for window in self.windows:
             left, top, width, height = window.window_rect
             if left <= event.x_root < left + width and top <= event.y_root < top + height:
-                return Path(window.process_path).name if window.process_path else ""
+                if not window.process_path:
+                    return ""
+                return window.process_path if self.full_path else Path(window.process_path).name
         return ""
 
     def _drag_move(self, event):

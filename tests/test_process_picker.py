@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from macroflow.input.wininput import WindowInfo
-from macroflow.ui.dialogs import screen_pickers, module_objects
+from macroflow.ui.dialogs import actions, screen_pickers, module_objects
 
 
 class ProcessPickerTests(unittest.TestCase):
@@ -65,3 +65,35 @@ class ProcessPickerTests(unittest.TestCase):
             picker._show_overlay()
         picker.close.assert_called_once()
         notice.assert_called_once()
+
+    def test_application_picker_returns_full_executable_path(self):
+        picker = screen_pickers.ScreenProcessPicker(Mock(), Mock(), Mock(), full_path=True)
+        picker.windows = [WindowInfo(1, 'App', 'app', r'C:\Program Files\App\app.exe', (0, 0, 100, 100))]
+        picker.close = Mock()
+        picker._drag_begin(SimpleNamespace(x_root=20, y_root=20))
+        picker.on_result.assert_called_once_with(r'C:\Program Files\App\app.exe')
+
+    def test_open_application_picker_fills_path_only_on_confirmation(self):
+        form = actions.OpenAppDialog.__new__(actions.OpenAppDialog)
+        form.master = Mock()
+        form.path = Mock()
+        with patch.object(actions, 'ScreenProcessPicker') as constructor, \
+             patch.object(actions, 'app_windows', return_value=[form.master]):
+            form._pick_application()
+        self.assertTrue(constructor.call_args.kwargs['full_path'])
+        form.path.set.assert_not_called()
+        constructor.call_args.args[2](r'C:\Apps\target.exe')
+        form.path.set.assert_called_once_with(r'C:\Apps\target.exe')
+        constructor.return_value.start.assert_called_once()
+
+    def test_close_application_picker_fills_process_name_only_on_confirmation(self):
+        form = actions.CloseAppDialog.__new__(actions.CloseAppDialog)
+        form.master = Mock()
+        form.name = Mock()
+        with patch.object(actions, 'ScreenProcessPicker') as constructor, \
+             patch.object(actions, 'app_windows', return_value=[form.master]):
+            form._pick_process()
+        form.name.set.assert_not_called()
+        constructor.call_args.args[2]('target.exe')
+        form.name.set.assert_called_once_with('target.exe')
+        constructor.return_value.start.assert_called_once()
