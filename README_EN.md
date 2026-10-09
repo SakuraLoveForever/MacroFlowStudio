@@ -83,7 +83,7 @@ Editing: undo / redo, move up / move down (a contiguous multi-row selection move
 **Template matching** (for fixed patterns):
 
 - **Region**: full screen / bound window / custom region (drag-select with the left button)
-- **Threshold**: minimum similarity; enable "ignore background" when the template background changes color to match strokes only
+- **Threshold**: minimum similarity
 - **Timeout**: wait timeout in ms + polling interval; on timeout: continue / jump to a line / stop
 - **On match**: continue / click (region center or custom coordinates) / jump to a line / end the current script and move to the next workflow step
 - **Secondary match**: optionally confirm with another template after a hit
@@ -221,7 +221,7 @@ First public release, organized by feature area:
 
 ### Recognition & Module Objects
 
-- Template matching: region, threshold, ignore background, timeout branches, secondary confirmation
+- Template matching: region, threshold, timeout branches, secondary confirmation
 - Offline PaddleOCR: loaded on demand; real text-box coordinates, pixel offsets, wait-until-text-gone, number reading
 - Module repository: switch / workflow-global / script-global / special; enable / disable, bulk add / remove, post-action & timeout code segments, fallback recognition, multi-click, pre-recognition delay; script-row timeout skip for blocking references (off by default)
 - Window auto-hiding while picking coordinates on screen so the tool never blocks the target page

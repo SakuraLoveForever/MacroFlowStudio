@@ -179,7 +179,6 @@ class GlobalDetectMixin:
                 config["hold_enabled"] = obj.get("hold_enabled", False)
                 config["hold_ms"] = obj.get("hold_ms", 1000)
                 config["restart_delay_ms"] = obj.get("delay_ms", 0)
-                config["ignore_background"] = obj.get("ignore_background", False)
                 config["recognize"] = obj.get("recognize", "")
                 config["expected_text"] = obj.get("expected_text", "")
                 config["match_mode"] = obj.get("match_mode", "contains")
@@ -303,7 +302,6 @@ class GlobalDetectMixin:
             "fallback_click_interval_ms": max(0, min(60000, int(config.get("fallback_click_interval_ms", 100)))),
             "fallback_present": False,
             "fallback_click_since": 0.0,
-            "ignore_background": bool(config.get("ignore_background", False)),
             "recognize": str(config.get("recognize", "")),
             "expected_text": str(config.get("expected_text", "")),
             "match_mode": str(config.get("match_mode", "contains")),

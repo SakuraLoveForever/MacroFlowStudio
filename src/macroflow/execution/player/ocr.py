@@ -270,7 +270,6 @@ class OcrMixin:
             threshold = min(1.0, max(0.1, float(source.get("threshold", 0.85))))
             return find_template(
                 resolve_path(template), threshold, region,
-                ignore_background=bool(source.get("ignore_background", False)),
                 scale=self._template_scale(),
             ) is not None
         if kind == "ocr":

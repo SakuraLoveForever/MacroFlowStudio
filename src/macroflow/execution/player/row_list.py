@@ -392,7 +392,6 @@ class RowListMixin:
                 match = find_template(
                     resolve_path(str(module.get("template", ""))),
                     float(module.get("threshold", 0.85)), region,
-                    ignore_background=bool(module.get("ignore_background", False)),
                     scale=self._template_scale(),
                 )
             else:
@@ -400,7 +399,6 @@ class RowListMixin:
                 match = find_template_in_image(
                     resolve_path(str(module.get("template", ""))), screen,
                     float(module.get("threshold", 0.85)), origin, region,
-                    ignore_background=bool(module.get("ignore_background", False)),
                     scale=self._template_scale(),
                 )
             matched = match is not None

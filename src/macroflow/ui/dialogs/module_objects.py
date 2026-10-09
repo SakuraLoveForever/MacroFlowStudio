@@ -359,9 +359,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.fallback_click_var = tk.BooleanVar(value=fallback_on_match.startswith("click_"))
         self.fallback_click_count_var = tk.StringVar(value=str(obj.get("fallback_click_count", 1)))
         self.fallback_click_interval_var = duration_var(obj.get("fallback_click_interval_ms", 100))
-        self.ignore_background_var = tk.BooleanVar(
-            value=bool(obj.get("ignore_background", False)),
-        )
         self.blocking_var = tk.BooleanVar(value=bool(obj.get("blocking", False)))
         self.hold_enabled_var = tk.BooleanVar(value=bool(obj.get("hold_enabled", False)))
         self.hold_var = duration_var(obj.get("hold_ms", 1000))
@@ -523,13 +520,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             body, row, "相似度 (0.1–1.0)",
             lambda m: ttk.Entry(m, textvariable=self.threshold_var, width=14),
             "图像匹配相似度阈值，越高越严格，越低越容易误识别。",
-        )
-        row += 1
-        self.row_ignore_background = self._labeled_row(
-            body, row, "忽略背景",
-            lambda m: dark_checkbutton(m, "只识别字，忽略背景颜色", self.ignore_background_var),
-            "开启后只按模板上的文字笔画匹配，背景颜色、纹理、高亮变化都不影响识别。"
-            "适合按钮背景会变色/高亮/变灰的场景；背景无法自动识别时自动回退普通匹配。",
         )
         row += 1
         self.row_interval = self._labeled_row(
@@ -974,7 +964,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self._set_row(self.row_match_mode, text_mode)
         self._set_row(self.row_wait_text_absent, not pure and not number_mode and not direct_mode)
         self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
-        self._set_row(self.row_ignore_background, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
         self._set_row(self.row_interval, not pure and not direct_mode)
         self._set_row(
             self.row_cooldown,
@@ -1457,7 +1446,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "fallback_click": self._fallback_on_match_value().startswith("click_"),
             "fallback_click_count": fallback_click_count,
             "fallback_click_interval_ms": fallback_click_interval,
-            "ignore_background": bool(self.ignore_background_var.get()),
             "blocking": False if direct_mode else bool(self.blocking_var.get()),
             "hold_enabled": bool(self.hold_enabled_var.get()),
             "hold_ms": hold,

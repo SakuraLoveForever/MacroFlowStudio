@@ -484,7 +484,6 @@ class GuardsMixin:
                     guard.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS),
                 ))),
             )
-            guard["ignore_background"] = bool(obj.get("ignore_background", False))
             guard["hold_enabled"] = bool(obj.get("hold_enabled", False))
             guard["hold_ms"] = max(0, int(obj.get("hold_ms", guard["hold_ms"])))
             # 命中后、点击前的等待（就是模块表单里的「延时」）：游戏弹窗刚出现那
@@ -630,13 +629,11 @@ class GuardsMixin:
                 match = find_template_in_image(
                     template, screen, float(guard["threshold"]), origin,
                     region,
-                    ignore_background=bool(guard.get("ignore_background", False)),
                     scale=self._guard_template_scale(),
                 )
             else:
                 match = find_template(
                     template, float(guard["threshold"]), region,
-                    ignore_background=bool(guard.get("ignore_background", False)),
                     scale=self._guard_template_scale(),
                 )
         except Exception as exc:
@@ -683,16 +680,14 @@ class GuardsMixin:
             return None
         try:
             threshold = min(1.0, max(0.1, float(obj.get("threshold", 0.85))))
-            ignore_background = bool(obj.get("ignore_background", False))
+
             if screen is not None and origin is not None:
                 return find_template_in_image(
                     template, screen, threshold, origin, region,
-                    ignore_background=ignore_background,
                     scale=self._guard_template_scale(),
                 )
             return find_template(
                 template, threshold, region,
-                ignore_background=ignore_background,
                 scale=self._guard_template_scale(),
             )
         except Exception:
@@ -800,7 +795,6 @@ class GuardsMixin:
                 "second_match_template": str(second.get("template", "")),
                 "threshold": float(guard.get("threshold", 0.85)),
                 "interval_ms": max(50, int(guard.get("interval_ms", 250))),
-                "ignore_background": bool(guard.get("ignore_background", False)),
                 "blocking": bool(second.get("blocking", False)),
                 "second_match_timeout_ms": max(0, int(second.get("timeout_ms", 3000))),
                 "second_match_click_target": str(second.get("click_target", "second")),

@@ -1269,7 +1269,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -1473,7 +1473,7 @@ class PlayerTests(unittest.TestCase):
         }
         module_obj = {
             "template": "images/shared.png", "region": [11, 22, 333, 444],
-            "threshold": 0.91, "ignore_background": True,
+            "threshold": 0.91,
         }
         with package_patch('player', 'registered_module_object', return_value=module_obj), package_patch('player', 'find_template', return_value={'center_x': 20, 'center_y': 30}) as find:
             matched = player._multi_condition_matches(condition, None)
@@ -1481,7 +1481,7 @@ class PlayerTests(unittest.TestCase):
         self.assertTrue(matched)
         find.assert_called_once_with(
             resolve_path("images/shared.png"), 0.91, (11, 22, 333, 444),
-            ignore_background=True, scale=1.0,
+            scale=1.0,
         )
 
     def test_multi_condition_click_does_not_click_when_one_condition_is_missing(self):
@@ -1936,14 +1936,13 @@ class PlayerTests(unittest.TestCase):
         condition = {"type": "image", "module_key": "module:first"}
         module = {
             "template": "images/live.png", "threshold": 0.91,
-            "ignore_background": True,
         }
         row_region = (100, 200, 70, 26)
         with package_patch('player', 'registered_module_object', return_value=module), package_patch('player', 'find_template', return_value={}) as find:
             self.assertTrue(player._row_list_condition_matches(condition, row_region))
         find.assert_called_once_with(
             resolve_path("images/live.png"), 0.91, row_region,
-            ignore_background=True, scale=1.0,
+            scale=1.0,
         )
         with package_patch('player', 'registered_module_object', return_value=None):
             with self.assertRaisesRegex(RuntimeError, "module:first"):
@@ -1985,7 +1984,7 @@ class PlayerTests(unittest.TestCase):
         }
         module = {
             "name": "游戏中", "template": "images/game.png",
-            "threshold": 0.9, "ignore_background": False,
+            "threshold": 0.9,
         }
 
         with package_patch('player', 'capture_bgr', return_value=(screen, (100, 200)), create=True) as capture, package_patch('player', 'recognize_image_with_boxes', return_value=('11/12', [{'text': '11/12', 'score': 0.98}]), create=True), package_patch('player', 'find_template_in_image', return_value={'center_x': 220, 'center_y': 213}, create=True), package_patch('player', 'registered_module_object', return_value=module), package_patch('player', 'recognize_region_with_boxes', side_effect=AssertionError('逐行扫描不得重新截图做 OCR')), package_patch('player', 'find_template', side_effect=AssertionError('逐行扫描不得重新截图识图')):
@@ -2391,7 +2390,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -2432,7 +2431,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -2473,7 +2472,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
                 return None
@@ -2512,7 +2511,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -2856,7 +2855,7 @@ class PlayerTests(unittest.TestCase):
                 None, dict(fallback_match), None, dict(fallback_match), dict(main_match),
             ])
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 return next(sequence)
 
@@ -2896,7 +2895,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append((Path(template).name, region))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -2939,7 +2938,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return None
@@ -2981,7 +2980,7 @@ class PlayerTests(unittest.TestCase):
             main_png.write_bytes(b"x")
             fallback_png.write_bytes(b"x")
 
-            def fake_find(template, threshold, region, ignore_background=False, scale=1.0):
+            def fake_find(template, threshold, region, scale=1.0):
                 calls.append(str(template))
                 if str(template).endswith("fallback.png"):
                     return dict(fallback_match)
@@ -4464,7 +4463,7 @@ class PlayerTests(unittest.TestCase):
                  package_patch('player', 'send_button'):
                 player._execute_second_match(obj, None, first)
             find.assert_called_once_with(second_path, 0.85, (5, 6, 70, 80),
-                                         ignore_background=False, scale=1.0)
+                                         scale=1.0)
             move.assert_called_once_with(111, 222)
 
     def test_second_match_can_click_custom_region_center(self):

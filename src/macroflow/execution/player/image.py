@@ -72,7 +72,6 @@ class ImageMixin:
                                 or find_expected_match(boxes, expected, mode) is not None)
                 else:
                     detected = find_template(template, float(obj.get("threshold", 0.85)), region,
-                                             ignore_background=bool(obj.get("ignore_background")),
                                              scale=self._template_scale()) is not None
             except CAPTURE_ERRORS as exc:
                 if obj.get("recognize") == "process":
@@ -206,9 +205,6 @@ class ImageMixin:
         if wait_target_absent and not blocking_timeout_enabled:
             # “直到目标消失”本身就是无限等待条件，不受普通识别超时影响。
             wait_forever = True
-        ignore_background = bool(
-            (module_obj or action).get("ignore_background", False)
-        )
         module_timeout_enabled = bool(
             module_obj is not None and module_obj.get("run_code_on_timeout", False)
         )
@@ -405,7 +401,6 @@ class ImageMixin:
                 # 主模板始终在自己的区域检测；备用激活后两者同时检测（各自区域）。
                 try:
                     match = find_template(template, threshold, recognition_region,
-                                          ignore_background=ignore_background,
                                           scale=self._template_scale())
                 except CAPTURE_ERRORS as exc:
                     self._note_capture_failure(exc)
@@ -500,7 +495,6 @@ class ImageMixin:
                 try:
                     fallback_match = find_template(
                         fallback_template, threshold, fallback_capture_region,
-                        ignore_background=ignore_background,
                         scale=self._template_scale(),
                     )
                 except CAPTURE_ERRORS as exc:
@@ -716,7 +710,6 @@ class ImageMixin:
             template,
             min(1.0, max(0.1, float(obj.get("threshold", 0.85)))),
             region,
-            ignore_background=bool(obj.get("ignore_background", False)),
             scale=self._template_scale(),
         )
     def _execute_second_match(self, obj: dict, hwnd: int | None,
@@ -729,7 +722,7 @@ class ImageMixin:
         second_path = resolve_path(second)
         threshold = min(1.0, max(0.1, float(obj.get("threshold", 0.85))))
         interval_ms = max(50, int(obj.get("interval_ms", 250)))
-        ignore_background = bool(obj.get("ignore_background", False))
+
         region = None
         # 二次模板沿用它在模块对象仓库中登记的搜索区域；未登记有效区域则全屏。
         raw = registered_template_region(second)
@@ -743,7 +736,6 @@ class ImageMixin:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
             second_match = find_template(second_path, threshold, region,
-                                         ignore_background=ignore_background,
                                          scale=self._template_scale())
             if second_match:
                 break

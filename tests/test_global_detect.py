@@ -48,7 +48,6 @@ class GuardTestHelpers:
             "fallback_click_interval_ms": 100,
             "fallback_present": False,
             "fallback_click_since": 0.0,
-            "ignore_background": False,
             "recognize": "",
             "expected_text": "",
             "match_mode": "contains",

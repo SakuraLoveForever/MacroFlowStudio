@@ -890,8 +890,6 @@ class TemplateRegionTests(unittest.TestCase):
         form.category_var.get.return_value = "切换模块"
         form.threshold_var = Mock()
         form.threshold_var.get.return_value = "0.85"
-        form.ignore_background_var = Mock()
-        form.ignore_background_var.get.return_value = False
         form.interval_var = Mock()
         form.interval_var.get.return_value = "1000"
         form.cooldown_var = Mock()
@@ -1144,7 +1142,7 @@ class TemplateRegionTests(unittest.TestCase):
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay",
+            "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay",
             "row_fallback_module", "row_fallback_click",
             "row_blocking", "row_delay", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
@@ -1596,7 +1594,7 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent",
-            "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay", "row_fallback_module",
+            "row_interval", "row_cooldown", "row_start_delay", "row_fallback_module",
             "row_fallback_click", "row_blocking", "row_delay",
             "action_section_heading", "row_after", "row_hold", "row_button",
             "row_click_count",
@@ -1630,7 +1628,7 @@ class TemplateRegionTests(unittest.TestCase):
         hidden = {
             item.args[0] for item in form._set_row.call_args_list if not item.args[1]
         }
-        for row in ("row_image", "row_threshold", "row_ignore_background",
+        for row in ("row_image", "row_threshold",
                     "row_second_template", "row_second_timeout"):
             self.assertIn(getattr(form, row), hidden)
         for row in (
@@ -1645,7 +1643,7 @@ class TemplateRegionTests(unittest.TestCase):
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_ignore_background", "row_interval", "row_cooldown", "row_start_delay",
+            "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay",
             "row_fallback_module", "row_fallback_click",
             "row_blocking", "row_delay", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
