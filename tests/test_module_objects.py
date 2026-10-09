@@ -399,6 +399,7 @@ class TemplateRegionTests(unittest.TestCase):
                 (
                     "未设置区域（全屏）",
                     "附加：重新执行工作流；超时：结束当前最里层脚本，继续执行",
+                    "—",
                 ),
             )
             self.assertEqual(
@@ -442,11 +443,12 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(dialog.sort_direction, "desc")
         dialog._reload_trees.assert_called_once_with()
         heading = tree.heading.call_args
-        self.assertEqual(heading.args[0], "#0")
-        self.assertEqual(heading.kwargs["text"], "模块名称 ↓")
+        self.assertEqual(heading.args[0], "modified_at")
+        self.assertEqual(heading.kwargs["text"], "修改时间 ↓")
 
     def test_clicking_sort_heading_toggles_direction(self):
         dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.sort_column = "name"
         dialog.sort_direction = "asc"
         dialog._set_sort_direction = Mock()
         dialog._toggle_sort_direction()
@@ -831,11 +833,11 @@ class TemplateRegionTests(unittest.TestCase):
         # 全部页签：switch / global 显示区域，纯动作显示名称与区域 "—"。
         calls = dialog.virtual_trees["all"].set_rows.call_args.args[0]
         by_iid = {row.key: row for row in calls}
-        self.assertEqual(by_iid["images/a.png"].values, ("10,20,300,400", "—"))
-        self.assertEqual(by_iid["images/b.png"].values, ("未设置区域（全屏）", "—"))
-        self.assertEqual(by_iid["images/g.png"].values, ("10,20,300,400", "—"))
+        self.assertEqual(by_iid["images/a.png"].values, ("10,20,300,400", "—", "—"))
+        self.assertEqual(by_iid["images/b.png"].values, ("未设置区域（全屏）", "—", "—"))
+        self.assertEqual(by_iid["images/g.png"].values, ("10,20,300,400", "—", "—"))
         self.assertEqual(by_iid["重新执行工作流"].text, "重新执行工作流")
-        self.assertEqual(by_iid["重新执行工作流"].values, ("—", "固定特殊模块"))
+        self.assertEqual(by_iid["重新执行工作流"].values, ("—", "固定特殊模块", "—"))
         # 切换 / 全局页签各列所属类别；特殊页签只列纯动作（名称 + 类型）。
         self.assertEqual(
             [row.key for row in dialog.virtual_trees["switch"].set_rows.call_args.args[0]],
@@ -853,7 +855,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(
             [row.key for row in special_calls], ["重新执行工作流"],
         )
-        self.assertEqual(special_calls[0].values, ("特殊",))
+        self.assertEqual(special_calls[0].values, ("特殊", "—"))
 
     def _form(self, image="", region="", after_action="点击识别区域", recognize="模板图片"):
         """构造表单桩：__new__ 跳过 __init__，用 Mock 变量代替控件。"""

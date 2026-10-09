@@ -1801,7 +1801,8 @@ class TemplateRegionManagerDialog(ModalDialog):
         self.current = "all"
         self.trees: dict[str, ttk.Treeview] = {}
         self.virtual_trees: dict[str, VirtualTreeRows] = {}
-        self.sort_direction = "asc"
+        self.sort_column = "modified_at"
+        self.sort_direction = "desc"
         self.module_tree_style = ttk.Style(self)
         configure_module_tree_styles(self.module_tree_style)
         body = ttk.Frame(self, padding=px(12))
@@ -1892,7 +1893,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         list_frame.pack(fill="both", expand=True, padx=px(4), pady=pad(4, 0))
         if tab_key == "special":
             tree = ttk.Treeview(
-                list_frame, columns=("kind",), show="tree headings", height=10,
+                list_frame, columns=("kind", "modified_at"), show="tree headings", height=10,
                 style="ModuleManagerNeutral.Treeview",
             )
             tree.heading("#0", text="名称")
@@ -1902,7 +1903,7 @@ class TemplateRegionManagerDialog(ModalDialog):
             tree.tag_configure("disabled", foreground="#707B85")
         else:
             tree = ttk.Treeview(
-                list_frame, columns=("region", "special_actions"), show="tree headings", height=10,
+                list_frame, columns=("region", "special_actions", "modified_at"), show="tree headings", height=10,
                 style="ModuleManagerNeutral.Treeview",
             )
             tree.heading("#0", text="模块名称")
@@ -1910,10 +1911,11 @@ class TemplateRegionManagerDialog(ModalDialog):
             tree.heading("special_actions", text="代码段特殊模块")
             tree.column("#0", width=px(310))
             tree.column("region", width=px(190), anchor="center")
-            tree.column("special_actions", width=px(420))
+            tree.column("special_actions", width=px(260))
             tree.tag_configure("blocking", foreground="#F2B84B")
             tree.tag_configure("special_action", foreground="#FF8DE1")
             tree.tag_configure("disabled", foreground="#707B85")
+        tree.column("modified_at", width=px(160), minwidth=px(150), stretch=False, anchor="center")
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
         configure_module_list_scrollbar(tree, scrollbar, autohide=False)
         tree.pack(side="left", fill="both", expand=True)
@@ -1941,11 +1943,14 @@ class TemplateRegionManagerDialog(ModalDialog):
         }[tab_key]
 
     def _apply_sort_heading(self, tab_key: str, tree):
-        arrow = "↑" if getattr(self, "sort_direction", "asc") == "asc" else "↓"
+        arrow = "↑" if getattr(self, "sort_direction", "desc") == "asc" else "↓"
+        by_time = getattr(self, "sort_column", "modified_at") == "modified_at"
         tree.heading(
-            "#0", text=f"{self._sort_heading_label(tab_key)} {arrow}",
+            "#0", text=self._sort_heading_label(tab_key) + ("" if by_time else f" {arrow}"),
             command=self._toggle_sort_direction,
         )
+        tree.heading("modified_at", text="修改时间" + (f" {arrow}" if by_time else ""),
+                     command=self._toggle_time_sort)
 
     def _on_tab_changed(self, _event=None):
         self.current = self.TAB_KEYS[self.notebook.index(self.notebook.select())]
@@ -1968,14 +1973,17 @@ class TemplateRegionManagerDialog(ModalDialog):
 
     def _reload_tree(self, tab_key: str, tree: ttk.Treeview):
         rows = []
+        by_time = getattr(self, "sort_column", "modified_at") == "modified_at"
         items = sorted(
             self.objects.items(),
-            key=lambda item: pinyin_sort_key(
+            key=lambda item: str(item[1].get("modified_at", "")) if by_time else pinyin_sort_key(
                 str(item[1].get("name") or Path(item[0].replace("\\", "/")).stem)
             ),
-            reverse=getattr(self, "sort_direction", "asc") == "desc",
+            reverse=getattr(self, "sort_direction", "desc") == "desc",
         )
         for key, obj in items:
+            modified_at = str(obj.get("modified_at", ""))
+            modified_text = modified_at.replace("T", " ").split(".")[0] if modified_at else "—"
             pure = bool(obj.get("pure_action"))
             region = obj.get("region") or [0, 0, 0, 0]
             text = (
@@ -1987,14 +1995,14 @@ class TemplateRegionManagerDialog(ModalDialog):
                     tag = module_manager_tag(obj)
                     rows.append(VirtualRow(
                         key, module_manager_label(key, obj),
-                        ("—", "固定特殊模块"), ((tag,) if tag else ()), "special",
+                        ("—", "固定特殊模块", modified_text), ((tag,) if tag else ()), "special",
                         self._row_color(tag),
                     ))
                 else:
                     tag = module_manager_tag(obj)
                     rows.append(VirtualRow(
                         key, module_manager_label(key, obj),
-                        (text, module_manager_special_action_summary(obj) or "—"),
+                        (text, module_manager_special_action_summary(obj) or "—", modified_text),
                         ((tag,) if tag else ()), "normal", self._row_color(tag),
                     ))
             elif tab_key in ("switch", "workflow_global", "script_global"):
@@ -2003,7 +2011,7 @@ class TemplateRegionManagerDialog(ModalDialog):
                 tag = module_manager_tag(obj)
                 rows.append(VirtualRow(
                     key, module_manager_label(key, obj),
-                    (text, module_manager_special_action_summary(obj) or "—"),
+                    (text, module_manager_special_action_summary(obj) or "—", modified_text),
                     ((tag,) if tag else ()), "normal", self._row_color(tag),
                 ))
             else:  # special
@@ -2011,7 +2019,7 @@ class TemplateRegionManagerDialog(ModalDialog):
                     continue
                 tag = module_manager_tag(obj)
                 rows.append(VirtualRow(
-                    key, module_manager_label(key, obj), ("特殊",),
+                    key, module_manager_label(key, obj), ("特殊", modified_text),
                     ((tag,) if tag else ()), "special", self._row_color(tag),
                 ))
         self.virtual_trees[tab_key].set_rows(rows)
@@ -2025,7 +2033,18 @@ class TemplateRegionManagerDialog(ModalDialog):
         self._reload_trees()
 
     def _toggle_sort_direction(self):
+        if getattr(self, "sort_column", "modified_at") != "name":
+            self.sort_column = "name"
+            self._set_sort_direction("asc")
+            return
         self._set_sort_direction("desc" if self.sort_direction == "asc" else "asc")
+
+    def _toggle_time_sort(self):
+        if getattr(self, "sort_column", "modified_at") != "modified_at":
+            self.sort_column = "modified_at"
+            self._set_sort_direction("desc")
+            return
+        self._set_sort_direction("asc" if self.sort_direction == "desc" else "desc")
 
     def _open_add(self):
         if self.current == "special":

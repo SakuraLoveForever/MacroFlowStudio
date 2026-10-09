@@ -657,9 +657,20 @@ def load_module_objects() -> dict[str, dict]:
 
 def save_module_objects(objects: dict[str, dict | list]) -> None:
     payload: dict[str, dict] = {}
+    previous = load_module_objects()
+    now = datetime.now().isoformat(timespec="microseconds")
     for key, raw in objects.items():
         normalized = _normalize_object(raw, key)
         if normalized is not None:
+            old = previous.get(key, {})
+            content = {k: v for k, v in normalized.items() if k != "modified_at"}
+            old_content = {k: v for k, v in old.items() if k != "modified_at"}
+            if content != old_content:
+                normalized["modified_at"] = now
+            elif "modified_at" in old:
+                normalized["modified_at"] = old["modified_at"]
+            if isinstance(raw, dict) and "modified_at" in normalized:
+                raw["modified_at"] = normalized["modified_at"]
             payload[key] = normalized
     TEMPLATE_REGIONS_PATH.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",

@@ -15,6 +15,7 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
+    "macroflow.ui.dialogs.module_objects": ["_toggle_time_sort"],
     "macroflow.execution.recovery": ["WorkflowHealth", "WorkflowSupervisor", "CaptureUnavailable",
                                     "watchdog_action", "run_watchdog"],
     "macroflow.ui.app.recovery": ["_arm_workflow_recovery", "_emergency_stop_from_hook",
@@ -260,7 +261,7 @@ for module, expected_literals in {
                 "▶ 测试指定次数…",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],
-    "macroflow.core.storage": ["workflow_global", "script_global", "number", "workflow_templates.migrated.json",
+    "macroflow.core.storage": ["modified_at", "workflow_global", "script_global", "number", "workflow_templates.migrated.json",
                 "wait_text_absent",
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right"],
     "macroflow.execution.player": ["expected_number", "number", "wait_text_absent", "ocr_offset_up", "ocr_offset_down",
