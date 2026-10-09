@@ -105,14 +105,35 @@ class CloseGroupTests(unittest.TestCase):
                 player._execute_close_app(dict(name="demo.exe"))
         self.assertEqual(command.call_count, 1)
 
-    def test_permission_failure_reports_remaining_processes(self):
+    def test_permission_failure_logs_remaining_processes_and_continues(self):
         target = process(10)
         player, clock = self.setup_group([target])
+        player._log_event = Mock()
         with patch("macroflow.execution.player.apps.close_targets", return_value=[target]), \
              patch("macroflow.execution.player.apps.kill_targets", return_value=(1, "拒绝访问")), \
              patch("macroflow.execution.player.apps.time.perf_counter", side_effect=lambda: clock[0]):
-            with self.assertRaisesRegex(RuntimeError, "10.*拒绝访问"):
-                player._execute_close_app(dict(name="demo.exe"))
+            player._execute_close_app(dict(name="demo.exe"))
+        self.assertTrue(any("10" in c.args[0] and "拒绝访问" in c.args[0] and "继续" in c.args[0]
+                            for c in player._log_event.call_args_list))
+
+    def test_partial_close_does_not_prevent_the_following_action(self):
+        closed, survivor = process(11), process(12)
+        player, clock = self.setup_group([closed, survivor])
+        player.on_action_start = Mock()
+        def kill(items, **kwargs):
+            if kwargs.get("force"):
+                closed.alive = False
+            else:
+                clock[0] = 3
+            return 1 if kwargs.get("force") else 0, "拒绝访问"
+        with patch("macroflow.execution.player.apps.close_targets", return_value=[closed, survivor]), \
+             patch("macroflow.execution.player.apps.kill_targets", side_effect=kill), \
+             patch("macroflow.execution.player.apps.time.perf_counter", side_effect=lambda: clock[0]):
+            player._run_action_sequence([dict(type="close_app", name="demo.exe"),
+                                         dict(type="delay", ms=0)], None)
+        self.assertFalse(closed.alive)
+        self.assertTrue(survivor.alive)
+        self.assertEqual([c.args[0]["index"] for c in player.on_action_start.call_args_list], [0, 1])
 
     def test_admin_retry_targets_the_same_remaining_group(self):
         target = process(10)

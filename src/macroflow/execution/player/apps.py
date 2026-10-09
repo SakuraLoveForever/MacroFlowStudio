@@ -72,8 +72,13 @@ class AppsMixin:
                     raise PlaybackStopped()
                 self._wait(50)
             remaining = pending_targets(remaining)
+        remaining = pending_targets(remaining)
         if remaining:
-            raise RuntimeError(f"无法结束进程 PID：{', '.join(str(p.pid) for p in remaining)}；{error}")
+            self._log_event(
+                f"部分进程未结束 PID：{', '.join(str(p.pid) for p in remaining)}"
+                f"（{error or '系统未返回错误详情'}）；继续后续动作"
+            )
+            return
         self._log_event(f"已强制结束 {image_name}、子进程及关联进程")
 
     def _execute_activate_window(self, action: dict) -> None:
