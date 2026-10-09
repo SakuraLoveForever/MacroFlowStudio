@@ -28,10 +28,10 @@
 
 ## 构建与打包规则
 
-- **中间步骤不必每次构建**：定位、重构、局部改动这类过程中的每一步，只跑与改动相关的单元测试即可（例如 `python -m unittest tests.test_workflow` 或单个测试类），不必每步都 `build.ps1` + 全量测试 + `verify_build.py`。
-- **交付点必须构建**：一个功能做完、一个重构阶段收尾、要交给用户验证或打包时，必须执行 `.\build.ps1`，确保 `dist\MacroFlowStudio.exe` 与最新源码一致，并跑一次全量测试（`python -m unittest discover -s tests -t .`）+ `verify_build.py`；不得在交付时留下「改了源码没构建」的状态。
-- zip 只在重大修改时打包：`.\pack.ps1`（将 `dist\MacroFlowStudio.exe` + `dist\rapidocr_ocr\` + README.md + CHANGELOG.md 打包为项目根目录下的 `MacroFlowStudio_latest_win64.zip`），打包内容缺失时脚本会报错。重大修改指功能级大改、需要分发/交付测试的改动，或用户明确要求打包。
-- 普通修改只更新 exe，不重新打包 zip；打包后不得把旧 zip 当作最新包分发。
+- **默认使用 BAT 启动源码**：日常开发、修改和交付均以项目根目录的 `run.bat` 为运行入口，用户重启后即可使用最新源码。
+- **只有用户明确要求才构建或打包**：用户未要求生成或更新 exe、构建发布产物或打包时，不执行 `.\build.ps1`、`.\pack.ps1` 或 `verify_build.py`；功能完成、重构收尾和交付验证本身不触发构建。不得把已有 exe 或 ZIP 当作最新源码产物交付。
+- **后台验证仍需完成**：根据改动范围和风险运行相关单元测试、编译检查；必要时执行全量测试（`python -m unittest discover -s tests -t .`），不以构建 exe 代替源码验证，也不为验证而启动软件界面。
+- 用户明确要求生成或更新 exe 时，执行 `.\build.ps1`，完成全量测试与 `verify_build.py` 静态校验；只有用户明确要求 ZIP 打包时才执行 `.\pack.ps1`。
 - 任何执行 `.\pack.ps1` 的打包流程，必须先执行并成功完成 `.\build.ps1`，确认 dist 中 exe 与外置 OCR 组件来自最新源码后，才能压缩 zip。
 
 ## 模型测试规则
