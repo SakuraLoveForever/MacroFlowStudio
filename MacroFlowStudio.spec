@@ -12,11 +12,21 @@ import sys
 from pathlib import Path
 
 import pefile
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
+from comtypes.client import GetModule
 
 datas = []
 binaries = []
 hiddenimports = []
+
+# pywinauto imports UIA definitions even when using its Win32 backend.
+# Generate and freeze the dynamic wrapper so users need no writable Python cache.
+GetModule('UIAutomationCore.dll')
+hiddenimports += ['comtypes.gen.UIAutomationClient']
+
+# Include package metadata and bundled license notices with the process picker.
+for package in ('pywinauto', 'pywin32', 'comtypes', 'psutil', 'six'):
+    datas += copy_metadata(package)
 tmp_ret = collect_all('ttkbootstrap')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pynput')

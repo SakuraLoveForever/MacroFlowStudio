@@ -7,3 +7,8 @@ numpy==2.5.1
 opencv-python-headless==5.0.0.93
 pyinstaller==6.20.0
 pypinyin==0.55.0
+pywinauto==0.6.9
+pywin32==312
+comtypes==1.4.17
+psutil==7.2.2
+six==1.17.0

@@ -161,6 +161,13 @@ pyz_data = archive.extract("PYZ.pyz")
 if isinstance(pyz_data, tuple):
     pyz_data = pyz_data[0]
 pyz_toc = read_pyz(pyz_data)
+if os.path.basename(EXE).lower() != "macroflowrunner.exe":
+    for module in ("macroflow.input.process_targets", "pywinauto", "pywinauto.win32_element_info", "comtypes.gen.UIAutomationClient", "psutil"):
+        if module not in pyz_toc:
+            ERRORS.append(f"缺少进程选取依赖 {module}")
+    for suffix in ("win32gui.pyd", "pywintypes313.dll", "pythoncom313.dll"):
+        if not any(name.lower().endswith(suffix) for name in archive.toc):
+            ERRORS.append(f"缺少进程选取原生组件 {suffix}")
 if "pypinyin" not in pyz_toc:
     ERRORS.append("缺少拼音排序依赖 pypinyin")
 # OCR 推理栈外置：exe 不应包含旧 Paddle 或 RapidOCR / ONNX Runtime。

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from PIL import Image, ImageEnhance, ImageTk
-from pathlib import Path
+from queue import SimpleQueue
+from pynput import keyboard, mouse
+from macroflow.input.process_targets import ProcessTargetReader
 from macroflow.core.image_match import capture_bgr
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
@@ -364,49 +366,126 @@ class ScreenRegionPicker:
 
 
 class ScreenProcessPicker(ScreenRegionPicker):
-    """Preview the process beneath the pointer and confirm it with one click."""
+    """Live process picker with a click-through tip and scoped input listeners."""
 
     def __init__(self, owner, main, on_result, tip_text: str = "",
                  hidden_windows: list | None = None, full_path: bool = False):
         super().__init__(owner, main, on_result, tip_text, hidden_windows)
         self.full_path = full_path
+        self.events = SimpleQueue()
+        self.mouse_listener = None
+        self.keyboard_listener = None
+        self.poll_id = None
+        self._closed = False
 
     def _show_overlay(self):
-        # Enumerate before the curtain appears, retaining native front-to-back order.
+        if self._closed:
+            return
         try:
-            self.windows = [window for window in enum_windows()
-                            if not is_current_process_window(window.hwnd)]
-        except OSError as exc:
+            self.reader = ProcessTargetReader()
+            overlay = tk.Toplevel(self.main)
+            self.overlay = overlay
+            overlay.withdraw()
+            overlay.overrideredirect(True)
+            overlay.attributes("-alpha", 0.94)
+            self.tip_label = tk.Label(
+                overlay, text=self.tip_text, background="#101820", foreground="#FFFFFF",
+                font=(FONT_FAMILY, FONT_TITLE), wraplength=520, padx=10, pady=8,
+            )
+            self.tip_label.pack()
+            overlay.update_idletasks()
+            if not make_window_no_activate(overlay.winfo_id(), click_through=True):
+                raise OSError("无法创建不抢焦点的选取提示窗口")
+            self._position_tip(*get_cursor_pos())
+            overlay.deiconify()
+            show_window_no_activate(overlay.winfo_id())
+            self.mouse_listener = mouse.Listener(win32_event_filter=self._mouse_filter)
+            self.keyboard_listener = keyboard.Listener(win32_event_filter=self._keyboard_filter)
+            self.mouse_listener.start()
+            self.keyboard_listener.start()
+            self._poll()
+        except Exception as exc:
             self.close()
             show_floating_notice(self.owner, "无法选取进程", str(exc))
+
+    def _mouse_filter(self, message, data):
+        # Consume both halves of the confirmation click, including invalid targets.
+        if not self._closed and message in (0x201, 0x202):  # WM_LBUTTONDOWN / UP
+            if message == 0x202:
+                self.events.put(("click", int(data.pt.x), int(data.pt.y)))
+            self.mouse_listener.suppress_event()
+            return False
+        return True
+
+    def _keyboard_filter(self, message, data):
+        if not self._closed and data.vkCode == 27:
+            if message in (0x101, 0x105):  # WM_KEYUP / WM_SYSKEYUP
+                self.events.put(("cancel", 0, 0))
+            self.keyboard_listener.suppress_event()
+            return False
+        return True
+
+    def _position_tip(self, x, y):
+        area = get_monitor_work_area_for_point(x, y) or get_virtual_screen_rect()
+        width = min(540, area["width"])
+        height = self.tip_label.winfo_reqheight()
+        left = max(area["left"], min(x + 18, area["left"] + area["width"] - width))
+        top = y + 24
+        if top + height > area["top"] + area["height"]:
+            top = y - height - 24
+        top = max(area["top"], top)
+        self.overlay.geometry(f"{width}x{height}{left:+d}{top:+d}")
+
+    def _poll(self):
+        self.poll_id = None
+        if self._closed:
             return
-        super()._show_overlay()
-        if self.canvas is not None:
-            self.canvas.bind("<Motion>", self._drag_move)
+        try:
+            while not self.events.empty():
+                event, x, y = self.events.get_nowait()
+                if event == "cancel":
+                    self.close()
+                    return
+                try:
+                    value = self.reader.at(x, y, full_path=self.full_path)
+                except Exception:
+                    value = ""
+                if value:
+                    self.close()
+                    self.on_result(value)
+                    return
+            if not self.mouse_listener.is_alive() or not self.keyboard_listener.is_alive():
+                raise RuntimeError("选取输入监听已停止，请重新选取")
+            x, y = get_cursor_pos()
+            try:
+                value = self.reader.at(x, y, full_path=self.full_path)
+                text = value or "此处无可选进程，请移动到目标软件窗口"
+            except Exception as exc:
+                text = f"无法读取{'程序路径' if self.full_path else '进程名'}：{exc}"
+            self.tip_label.configure(text=f"{text}\n单击确认，Esc 取消")
+            self._position_tip(x, y)
+            self.poll_id = self.main.after(50, self._poll)
+        except Exception as exc:
+            self.close()
+            show_floating_notice(self.owner, "选取已停止", str(exc))
 
-    def _process_at(self, event):
-        for window in self.windows:
-            left, top, width, height = window.window_rect
-            if left <= event.x_root < left + width and top <= event.y_root < top + height:
-                if not window.process_path:
-                    return ""
-                return window.process_path if self.full_path else Path(window.process_path).name
-        return ""
-
-    def _drag_move(self, event):
-        name = self._process_at(event)
-        self.canvas.itemconfigure(
-            self.tip_id,
-            text=f"{name or '此处无可读取的进程'}　移动到目标软件，单击确认，Esc 取消",
-        )
-
-    def _drag_begin(self, event):
-        name = self._process_at(event)
-        if not name:
-            self._drag_move(event)
+    def close(self):
+        if self._closed:
             return
-        self.close()
-        self.on_result(name)
+        self._closed = True
+        for listener in (self.mouse_listener, self.keyboard_listener):
+            if listener is not None:
+                try:
+                    listener.stop()
+                except (OSError, RuntimeError):
+                    pass
+        if self.poll_id is not None:
+            try:
+                self.main.after_cancel(self.poll_id)
+            except tk.TclError:
+                pass
+            self.poll_id = None
+        super().close()
 
 
 class ScreenOffsetPicker(ScreenRegionPicker):
