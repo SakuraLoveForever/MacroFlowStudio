@@ -24,31 +24,32 @@ from .control import (
 class AppsMixin:
     """打开 / 关闭软件与前置窗口动作。"""
 
-    def _close_process(self, image_name: str, graceful: bool = True,
+    def _close_process(self, image_name: str,
                        graceful_wait_ms: int = 15000, tree: bool = False,
                        elevated_retry: bool = False) -> None:
-        """Normal close never escalates to force; force must be explicitly selected."""
+        """Request normal exit first, then force termination if it fails."""
         if not is_process_running(image_name):
             return
-        if graceful:
-            code, _err = taskkill_process(image_name, force=False, tree=tree)
-            if code != 0:
-                raise RuntimeError(f"{image_name} 关闭请求失败：{_err}；已停止，未强制结束")
-            else:
-                deadline = time.perf_counter() + max(0, int(graceful_wait_ms)) / 1000
-                while is_process_running(image_name):
-                    if self.stop_event.is_set():
-                        raise PlaybackStopped()
-                    if time.perf_counter() >= deadline:
-                        break
-                    self._wait(50)
-                if not is_process_running(image_name):
-                    self._log_event(f"已结束 {image_name}")
-                    return
-                raise RuntimeError(f"{image_name} 未在指定时间内正常退出；已停止，未强制结束")
+        if self.stop_event.is_set():
+            raise PlaybackStopped()
+        code, _err = taskkill_process(image_name, force=False, tree=tree)
+        if code != 0:
+            self._log_event(f"{image_name} 正常关闭请求失败：{_err}；尝试强制结束")
         else:
-            self._log_event(f"强制结束 {image_name}")
+            deadline = time.perf_counter() + max(0, int(graceful_wait_ms)) / 1000
+            while is_process_running(image_name):
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
+                if time.perf_counter() >= deadline:
+                    break
+                self._wait(50)
+            if not is_process_running(image_name):
+                self._log_event(f"已结束 {image_name}")
+                return
+            self._log_event(f"{image_name} 正常关闭超时，尝试强制结束")
         for _ in range(3):
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
             code, _err = taskkill_process(image_name, force=True, tree=tree)
             if code != 0:
                 # taskkill 本身失败（如权限不足），轮询等待没有意义
@@ -87,7 +88,6 @@ class AppsMixin:
         if is_process_running(image_name):
             self._close_process(
                 image_name,
-                graceful=bool(action.get("graceful", True)),
                 graceful_wait_ms=int(action.get("graceful_wait_ms", 15000)),
                 tree=bool(action.get("tree", False)),
                 elevated_retry=bool(action.get("elevated_retry", False)),

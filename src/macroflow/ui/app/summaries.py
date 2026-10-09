@@ -542,7 +542,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return action_kind_label(kind, "打开软件"), detail, delay
     if kind == "close_app":
         name = str(action.get("name", "")).strip() or "未设置"
-        mode = "优雅优先" if action.get("graceful", True) else "强制"
+        mode = "正常关闭，失败后强制结束"
         extras = [flag for flag, on in (
             ("进程树", action.get("tree")), ("管理员重试", action.get("elevated_retry")),
         ) if on]

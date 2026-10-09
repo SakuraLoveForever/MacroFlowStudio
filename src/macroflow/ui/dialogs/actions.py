@@ -391,7 +391,6 @@ class CloseAppDialog(ModalDialog):
         super().__init__(parent, "关闭软件", 560, 400)
         action = action or {}
         self.name = tk.StringVar(value=str(action.get("name", "")))
-        self.graceful = tk.BooleanVar(value=bool(action.get("graceful", True)))
         self.graceful_wait_ms = duration_var(action.get("graceful_wait_ms", 15000))
         self.wait_for_processes = tk.StringVar(value=", ".join(action.get("wait_for_processes", [])))
         self.tree = tk.BooleanVar(value=bool(action.get("tree", False)))
@@ -419,10 +418,10 @@ class CloseAppDialog(ModalDialog):
             foreground=COLOR_MUTED, wraplength=px(480),
         ).grid(row=1, column=1, sticky="w")
 
-        dark_checkbutton(
-            body, "正常关闭（超时则停止；取消勾选才强制结束）", self.graceful,
+        ttk.Label(
+            body, text="先正常关闭，失败或超时后自动强制结束。",
         ).grid(row=2, column=1, sticky="w", pady=pad(10, 0))
-        ttk.Label(body, text="优雅退出等待").grid(row=3, column=0, sticky="w", pady=px(8))
+        ttk.Label(body, text="正常退出等待").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Spinbox(
             body, from_=0, to=60000, increment=100,
             textvariable=self.graceful_wait_ms, width=10,
@@ -532,7 +531,6 @@ class CloseAppDialog(ModalDialog):
         self.result = {
             "type": "close_app",
             "name": name,
-            "graceful": self.graceful.get(),
             "graceful_wait_ms": graceful_wait_ms,
             "wait_for_processes": [part.strip() for part in self.wait_for_processes.get().split(",") if part.strip()],
             "tree": self.tree.get(),

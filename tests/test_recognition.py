@@ -1198,8 +1198,6 @@ class ImageTests(unittest.TestCase):
         dialog = CloseAppDialog.__new__(CloseAppDialog)
         dialog.name = Mock()
         dialog.name.get.return_value = " clash-verge.exe "
-        dialog.graceful = Mock()
-        dialog.graceful.get.return_value = True
         dialog.graceful_wait_ms = Mock()
         dialog.graceful_wait_ms.get.return_value = "3000"
         dialog.wait_for_processes = Mock()
@@ -1216,7 +1214,7 @@ class ImageTests(unittest.TestCase):
         dialog.save()
         self.assertEqual(dialog.result, {
             "type": "close_app", "name": "clash-verge.exe",
-            "graceful": True, "graceful_wait_ms": 3000,
+            "graceful_wait_ms": 3000,
             "wait_for_processes": ["GameMon.des", "GameMon64.des"],
             "tree": False, "elevated_retry": True,
             "delay_ms": 100, "after_delay_ms": 0,

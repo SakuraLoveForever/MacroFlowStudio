@@ -50,14 +50,13 @@ class ModuleSearchAndWaitTests(unittest.TestCase):
             player._execute_image(dict(module_ref=True, module_key='module:target'), None)
         self.assertEqual(events[:2], [('wait', 5000), ('detect', None)])
 
-    def test_graceful_close_never_escalates_to_force(self):
+    def test_graceful_close_escalates_after_timeout(self):
         player = MacroPlayer()
         player._wait = Mock()
-        with package_patch('player', 'is_process_running', return_value=True), \
+        with package_patch('player', 'is_process_running', side_effect=[True, True, True, True, False]), \
              package_patch('player', 'taskkill_process', return_value=(0, '')) as kill:
-            with self.assertRaises(RuntimeError):
-                player._execute_close_app(dict(name='game.exe', graceful=True, graceful_wait_ms=0))
-        kill.assert_called_once_with('game.exe', force=False, tree=False)
+            player._execute_close_app(dict(name='game.exe', graceful_wait_ms=0))
+        self.assertEqual([c.kwargs['force'] for c in kill.call_args_list], [False, True])
 
     def test_related_process_wait_stops_instead_of_relaunching_too_soon(self):
         player = MacroPlayer()
