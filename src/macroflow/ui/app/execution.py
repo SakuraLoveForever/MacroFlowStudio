@@ -40,9 +40,51 @@ from .constants import (
 from macroflow.ui.dialogs.segments import module_action_for_key
 
 from .summaries import action_summary
+from macroflow.input.foreground_guard import minimize_listed_foreground
+from macroflow.input.wininput import activate_window
 
 class ExecutionMixin:
     """执行入口：F9、工作流、单独执行、执行小窗与收尾。"""
+
+    def _run_workflow_worker(self, *args, **kwargs):
+        workflow = getattr(self, "workflow", None)
+        names = list(workflow.foreground_minimize_processes) if workflow is not None else []
+        if names:
+            self._ui(self._start_foreground_minimize_watch, names)
+        try:
+            return super()._run_workflow_worker(*args, **kwargs)
+        finally:
+            if names:
+                self._ui(self._stop_foreground_minimize_watch)
+
+    def _start_foreground_minimize_watch(self, names):
+        self._stop_foreground_minimize_watch()
+        self._foreground_minimize_names = list(names)
+        self._poll_foreground_minimize_watch()
+
+    def _stop_foreground_minimize_watch(self):
+        timer = getattr(self, "_foreground_minimize_timer", None)
+        self._foreground_minimize_timer = None
+        self._foreground_minimize_names = []
+        if timer is not None:
+            self.root.after_cancel(timer)
+
+    def _poll_foreground_minimize_watch(self):
+        self._foreground_minimize_timer = None
+        if not self.worker or not self.worker.is_alive() \
+                or self.workflow_stop.is_set() or self.player.stop_event.is_set():
+            self._foreground_minimize_names = []
+            return
+        if not self.player.paused:
+            hwnd = self._bound_hwnd(update_display=False)
+            name = minimize_listed_foreground(self._foreground_minimize_names, hwnd)
+            if name:
+                self._log(f"防遮挡：已请求最小化 {name} 的前台窗口。")
+                if hwnd:
+                    activate_window(hwnd)
+        self._foreground_minimize_timer = self.root.after(
+            200, self._poll_foreground_minimize_watch,
+        )
 
     def _refresh_execution_pause_controls(self):
         active = bool(self.worker and self.worker.is_alive()

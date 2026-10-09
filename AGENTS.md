@@ -10,6 +10,10 @@
 - Lean on the dependencies already in the project before writing your own implementation or adding packages. Do not assume a library lacks a capability without checking its documentation and types.
 - Make architectural decisions for the long term. Do not accept a stopgap that only works for now and is meant to be replaced later.
 
+## 开源复用规则
+
+- 每次新增功能前先检索 GitHub 上高相关、高 Star 的开源项目，结合近期维护、许可证、技术栈和部署/集成成本筛选；优先直接集成成熟项目或复用已有依赖，确认不适合后再自行实现，并简要说明取舍。
+
 ## 执行授权规则
 
 - 用户提交任务后，默认授予 Codex 在当前任务范围内连续执行的授权，包括自行选择实现路径、修改文件、运行命令和完成必要验证；不应为每个步骤、命令或中间结果单独请求审批。

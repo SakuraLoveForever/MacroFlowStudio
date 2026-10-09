@@ -26,6 +26,7 @@ from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_v
 from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
 from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
 from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
+from macroflow.ui.dialogs.foreground_processes import ForegroundProcessesDialog
 from pathlib import Path
 from macroflow.core.storage import (
     BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
@@ -140,6 +141,15 @@ class WorkflowMixin:
             labels[0],  # 保存的行号不在当前行列表里时按未设置显示（运行时仍会收敛）。
         )
         combo.set(selected)
+
+    def edit_foreground_minimize_processes(self):
+        names = ForegroundProcessesDialog(
+            self.root, self.workflow.foreground_minimize_processes,
+        ).show()
+        if names is not None:
+            self.workflow.foreground_minimize_processes = names
+            self._schedule_workflow_draft_save()
+
     def _apply_workflow_restart_default(self, _event=None):
         """把控件当前选择写入工作流的统一默认跳转行并落盘草稿。"""
         combo = getattr(self, "workflow_restart_default_combo", None)

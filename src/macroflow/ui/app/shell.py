@@ -1433,6 +1433,9 @@ class ShellMixin:
                    style="CompactGhost.TButton").pack(side="left")
         workflow_action_bar = ttk.Frame(header, style="Workspace.TFrame")
         workflow_action_bar.pack(fill="x", pady=pad(8, 0))
+        ttk.Button(workflow_action_bar, text="防遮挡进程…",
+                   command=self.edit_foreground_minimize_processes,
+                   style="CompactGhost.TButton").pack(side="left")
         ttk.Button(
             workflow_action_bar, text="运行工作流    F10", command=self.run_workflow,
             bootstyle="success",
