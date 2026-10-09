@@ -77,15 +77,32 @@ class ActionPaletteTests(unittest.TestCase):
         for command in commands:
             self.assertTrue(callable(getattr(MacroFlowApp, command)))
 
-    def test_expansion_shows_buttons_and_collapse_hides_them(self):
+    def test_width_fills_row_and_only_overflow_is_collapsed(self):
+        from macroflow.ui.app.action_palette import action_button_positions
+        self.assertEqual(action_button_positions(212, [50, 50, 50, 50], 40, False, gap=4),
+                         ([(0, 0), (54, 0), (108, 0), (162, 0)], None))
+        self.assertEqual(action_button_positions(211, [50, 50, 50, 50], 40, False, gap=4),
+                         ([(0, 0), (54, 0), (108, 0), None], (162, 0)))
+        self.assertEqual(action_button_positions(120, [50, 50, 50, 50], 40, True, gap=4),
+                         ([(0, 0), (0, 1), (54, 1), (0, 2)], (54, 0)))
+        self.assertEqual(action_button_positions(40, [50], 40, False), ([None], (0, 0)))
+
+    def test_expansion_and_resize_relayout_buttons(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.action_palette = Mock()
-        frame, button = Mock(), Mock()
-        frame.winfo_manager.return_value = ''
-        app._toggle_action_category(frame, button)
-        frame.pack.assert_called_once()
-        button.configure.assert_called_with(text='收起 ▴')
-        frame.winfo_manager.return_value = 'pack'
-        app._toggle_action_category(frame, button)
-        frame.pack_forget.assert_called_once()
-        button.configure.assert_called_with(text='展开 ▾')
+        tab = Mock(action_expanded=False, action_layout=None)
+        tab.winfo_width.return_value = 200
+        tab.action_buttons = [Mock() for _ in range(4)]
+        for button in (*tab.action_buttons, tab.action_toggle):
+            button.winfo_reqwidth.return_value = 50
+            button.winfo_reqheight.return_value = 25
+        app._layout_action_category(tab)
+        tab.action_buttons[-1].place_forget.assert_called_once()
+        app._toggle_action_category(tab)
+        tab.action_buttons[-1].place.assert_called_once()
+        tab.action_toggle.configure.assert_called_with(text='收起 ▴')
+        tab.winfo_width.return_value = 1000
+        app._layout_action_category(tab)
+        tab.action_toggle.place_forget.assert_called_once()
+        for button in tab.action_buttons:
+            self.assertEqual(button.place.call_args.kwargs['y'], tab.action_buttons[0].place.call_args.kwargs['y'])

@@ -112,7 +112,7 @@ from .startup import (
     main,
 )
 
-from .action_palette import action_category_specs
+from .action_palette import action_button_positions, action_category_specs
 
 class ShellMixin:
     """主窗口壳层：主题、变量、侧栏与各标签页、日志视图。"""
@@ -1103,39 +1103,52 @@ class ShellMixin:
         self.action_palette = ttk.Notebook(parent)
         self.action_palette.pack(fill="x", padx=px(12), pady=pad(0, 6))
         for label, primary, extra in action_category_specs(self._script_action_button_specs()):
-            tab = ttk.Frame(self.action_palette, padding=pad(8, 5))
+            tab = ttk.Frame(self.action_palette)
             self.action_palette.add(tab, text=label)
-            common = ttk.Frame(tab)
-            common.pack(fill="x")
-            for text, command, style in primary:
-                ttk.Button(common, text=text, command=getattr(self, command),
-                           style=style).pack(side="left", padx=px(3))
-            expanded = ttk.Frame(tab)
-            for index, (text, command, style) in enumerate(extra):
-                ttk.Button(expanded, text=text, command=getattr(self, command),
-                           style=style).grid(row=index // 4, column=index % 4,
-                                             sticky="w", padx=px(3), pady=px(3))
-            toggle = ttk.Button(common, text="展开 ▾", style="ScriptTool.TButton")
-            toggle.configure(command=lambda frame=expanded, button=toggle:
-                             self._toggle_action_category(frame, button))
-            toggle.pack(side="left", padx=px(8))
+            tab.action_buttons = [
+                ttk.Button(tab, text=text, command=getattr(self, command), style=style)
+                for text, command, style in (*primary, *extra)
+            ]
+            tab.action_expanded = False
+            tab.action_layout = None
+            tab.action_toggle = ttk.Button(tab, text="展开 ▾", style="ScriptTool.TButton")
+            tab.action_toggle.configure(command=lambda pane=tab: self._toggle_action_category(pane))
+            tab.bind("<Configure>", lambda event, pane=tab: self._layout_action_category(pane))
         self.action_palette.bind("<<NotebookTabChanged>>", self._resize_action_palette)
 
+    def _layout_action_category(self, tab):
+        width = tab.winfo_width() - px(16)
+        if width <= 0:
+            return
+        buttons, toggle = tab.action_buttons, tab.action_toggle
+        widths = tuple(button.winfo_reqwidth() for button in buttons)
+        layout = (width, widths, toggle.winfo_reqwidth(), tab.action_expanded)
+        if tab.action_layout == layout:
+            return
+        tab.action_layout = layout
+        positions, toggle_position = action_button_positions(*layout, gap=px(6))
+        height = max(button.winfo_reqheight() for button in (*buttons, toggle))
+        rows = 1
+        for button, position in zip((*buttons, toggle), (*positions, toggle_position)):
+            if position is None:
+                button.place_forget()
+            else:
+                x, row = position
+                button.place(x=px(8) + x, y=px(5) + row * (height + px(6)))
+                rows = max(rows, row + 1)
+        tab.configure(height=px(10) + rows * height + (rows - 1) * px(6))
+        self.action_palette.after_idle(self._resize_action_palette)
+
     def _resize_action_palette(self, _event=None):
-        self.action_palette.update_idletasks()
         selected = self.action_palette.select()
         if selected:
             tab = self.action_palette.nametowidget(selected)
             self.action_palette.configure(height=tab.winfo_reqheight())
 
-    def _toggle_action_category(self, frame, button):
-        if frame.winfo_manager():
-            frame.pack_forget()
-            button.configure(text="展开 ▾")
-        else:
-            frame.pack(fill="x", pady=pad(5, 0))
-            button.configure(text="收起 ▴")
-        self.action_palette.after_idle(self._resize_action_palette)
+    def _toggle_action_category(self, tab):
+        tab.action_expanded = not tab.action_expanded
+        tab.action_toggle.configure(text="收起 ▴" if tab.action_expanded else "展开 ▾")
+        self._layout_action_category(tab)
 
     def _insert_script_reference(self):
         self._insert_script(False)
