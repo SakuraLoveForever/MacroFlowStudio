@@ -1608,6 +1608,10 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
             updated["text"] = text.strip()
             return updated
         return None
+    if kind == "python_script":
+        from macroflow.execution.python_editor import open_python_editor
+        open_python_editor(resolve_path(action.get("path", "")))
+        return None
     if kind == "script_ref":
         return preserve_identity(ScriptRefDialog(parent, action).show())
     if kind == "open_app":

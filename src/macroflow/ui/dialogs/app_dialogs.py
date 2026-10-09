@@ -604,7 +604,7 @@ class ScriptRefDialog(ModalDialog):
     def choose(self):
         path = filedialog.askopenfilename(
             parent=self, title="选择要引用的脚本",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if path:
             self.script.set(display_path(Path(path)))

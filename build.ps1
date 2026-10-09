@@ -130,3 +130,10 @@ if (-not (Get-ChildItem -LiteralPath (Join-Path $OcrTarget "onnxruntime\capi") `
 }
 
 Write-Host "Build complete: $ProjectDir\dist\MacroFlowStudio.exe (+ rapidocr_ocr/ 外置 OCR 组件)"
+
+foreach ($ClientDir in @((Join-Path $ProjectDir "dist"))) {
+  New-Item -ItemType Directory -Force -Path (Join-Path $ClientDir "docs") | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $ClientDir "examples\python") | Out-Null
+  Copy-Item -LiteralPath (Join-Path $ProjectDir "docs\python-scripts.md") -Destination (Join-Path $ClientDir "docs") -Force
+  Copy-Item -LiteralPath (Join-Path $ProjectDir "examples\python\hello_macro.py") -Destination (Join-Path $ClientDir "examples\python") -Force
+}

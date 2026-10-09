@@ -789,7 +789,7 @@ class ScriptsMixin:
         initial_dir = self._script_category_dir()
         path = filedialog.askopenfilename(
             parent=self.root, initialdir=initial_dir, title="打开脚本",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if path:
             self.load_script_into_editor(Path(path))
@@ -829,8 +829,8 @@ class ScriptsMixin:
             # 否则保存会再次按旧名称写回/移动文件。
             path = Path(path)
             self.script.name = path.stem
-            self.script_path = path
-            self.script_requires_new_file = False
+            self.script_path = None if path.suffix.lower() == ".py" else path
+            self.script_requires_new_file = path.suffix.lower() == ".py"
             self.script_name_var.set(self.script.name)
             self.record_mode_var.set("auto")
             # 类别显示脚本自己的类别：以所在目录为准（保存时按类别进目录），
@@ -1179,6 +1179,18 @@ class ScriptsMixin:
         action = KeyActionDialog(self.root).show()
         if action:
             self._insert_action(action)
+
+    def add_python_script(self):
+        path = filedialog.askopenfilename(
+            parent=self.root, title="选择 Python 逻辑脚本（main(ctx)）",
+            initialdir=self._script_category_dir(), filetypes=[("Python 脚本", "*.py")],
+        )
+        if path:
+            try:
+                self._insert_action(load_script(path).actions[0])
+            except Exception as exc:
+                self._notify("Python 脚本无效", str(exc))
+
     def add_text(self):
         text = simpledialog.askstring("插入文本", "要输入的文本：", parent=self.root)
         if text is not None:
@@ -1600,7 +1612,7 @@ class ScriptsMixin:
             parent=self.root,
             initialdir=self._script_category_dir(),
             title="选择要插入的脚本（可 Ctrl/Shift 多选）",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if not selected:
             return None
@@ -1733,7 +1745,7 @@ class ScriptsMixin:
             parent=self.root,
             initialdir=self._script_category_dir(),
             title="选择要插入指定行的脚本",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if not selected:
             return

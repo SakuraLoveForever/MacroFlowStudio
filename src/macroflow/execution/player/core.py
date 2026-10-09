@@ -1103,6 +1103,10 @@ class CoreMixin:
             if target_id:
                 return "action_id", target_id
             return "row", max(1, int(action.get("jump_row", 1)))
+        elif kind == "python_script":
+            from macroflow.execution.python_script import run_python_script
+            return run_python_script(action.get("path", ""), self, hwnd, script_stack, depth,
+                                     action.get("module_bindings"))
         elif kind == "script_ref":
             script_value = str(action.get("script", "")).strip()
             if not script_value:
@@ -1118,7 +1122,8 @@ class CoreMixin:
             if depth >= MAX_SCRIPT_REF_DEPTH:
                 raise RuntimeError("脚本引用嵌套过深，已停止执行")
             repeat_total = script_ref_repeat_count(action)
-            script_stack.add(resolved)
+            if script_path.suffix.lower() != ".py":
+                script_stack.add(resolved)
             try:
                 for repeat_index in range(repeat_total):
                     referenced = load_script(script_path)

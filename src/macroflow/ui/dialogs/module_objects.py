@@ -97,7 +97,7 @@ def _valid_scripts_in(root: Path) -> list[Path]:
     if not root.is_dir():
         return []
     paths: dict[str, Path] = {}
-    for path in root.rglob("*.json"):
+    for path in (*root.rglob("*.json"), *root.rglob("*.py")):
         resolved = path.resolve()
         try:
             load_script(resolved)

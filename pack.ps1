@@ -23,7 +23,9 @@ $Items = @(
     (Join-Path $Stage "MacroFlowStudio.exe"),
     (Join-Path $Stage "rapidocr_ocr"),
     (Join-Path $Stage "README.md"),
-    (Join-Path $Stage "CHANGELOG.md")
+    (Join-Path $Stage "CHANGELOG.md"),
+    (Join-Path $Stage "docs"),
+    (Join-Path $Stage "examples")
 )
 foreach ($Item in $Items) {
     if (-not (Test-Path -LiteralPath $Item)) {

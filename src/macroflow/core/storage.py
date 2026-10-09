@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -54,6 +55,8 @@ def safe_name(name: str, fallback: str) -> str:
 
 
 def save_script(script: MacroScript, path: Path | None = None) -> Path:
+    if path is not None and Path(path).suffix.lower() == ".py":
+        raise ValueError("Python 源码请在外部编辑器保存；模块脚本请保存为 .json")
     ensure_dirs()
     path = path or SCRIPTS_DIR / f"{safe_name(script.name, 'script')}.json"
     path.write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
@@ -123,6 +126,24 @@ def available_script_path(name: str, folder: Path | None = None) -> Path:
 
 
 def load_script(path: str | Path) -> MacroScript:
+    path = Path(path)
+    if path.suffix.lower() == ".py":
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+        if not any(isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body):
+            raise ValueError("Python 脚本必须定义 main(ctx)")
+        action = {"type": "python_script", "path": str(path.resolve())}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "MACROFLOW" for target in node.targets):
+                metadata = ast.literal_eval(node.value)
+                if not isinstance(metadata, dict) or any(
+                        not isinstance(metadata.get(key, []), list) or any(
+                            not isinstance(item, str) for item in metadata.get(key, []))
+                        for key in ("files", "modules")):
+                    raise ValueError("MACROFLOW 的 files/modules 必须是字符串列表")
+                action["dependencies"] = metadata
+                action["module_bindings"] = {key: key for key in metadata.get("modules", [])}
+        return MacroScript(name=path.stem, actions=[action])
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     return MacroScript.from_dict(data)
 

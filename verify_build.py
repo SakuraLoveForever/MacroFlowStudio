@@ -15,6 +15,7 @@ from PyInstaller.archive.readers import CArchiveReader  # noqa: E402
 EXE = sys.argv[1] if len(sys.argv) > 1 else "dist/MacroFlowStudio.exe"
 EXPECT_VERSION = "1.0.0"
 EXPECT_SYMBOLS = {
+    "macroflow.execution.python_script": ["run_python_script", "ScriptContext", "_worker"],
     "macroflow.ui.dialogs.module_objects": ["_toggle_time_sort"],
     "macroflow.execution.recovery": ["WorkflowHealth", "WorkflowSupervisor", "CaptureUnavailable",
                                     "watchdog_action", "run_watchdog"],

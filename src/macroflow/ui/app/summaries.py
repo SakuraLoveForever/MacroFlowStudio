@@ -216,6 +216,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
     delay = f"{int(action.get('delay_ms', 1000 if kind == 'image_match' else 0))} ms"
     if kind == "delay":
         return action_kind_label(kind, "延时"), f"等待 {action.get('ms', 0)} ms", delay
+    if kind == "python_script":
+        return "Python 逻辑", str(action.get("path", "")), delay
     if kind == "rebind_window":
         return action_kind_label(kind, "重新绑定"), "根据已保存的目标窗口信息重新获取窗口", delay
     if kind == "activate_window":

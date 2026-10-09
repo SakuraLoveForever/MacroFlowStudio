@@ -556,7 +556,7 @@ class WorkflowMixin:
     def add_script_step(self):
         path = filedialog.askopenfilename(
             parent=self.root, initialdir=self._script_category_dir(), title="选择脚本",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if path:
             self._add_or_insert_workflow_step(Path(path))
@@ -683,7 +683,7 @@ class WorkflowMixin:
             return
         path = filedialog.askopenfilename(
             parent=self.root, initialdir=self._script_category_dir(), title="选择要插入的脚本",
-            filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
         )
         if not path:
             return
@@ -799,7 +799,7 @@ class WorkflowMixin:
                 initial_dir = current.parent if current.parent.is_dir() else self._level_scripts_dir()
                 path = filedialog.askopenfilename(
                     parent=self.root, initialdir=initial_dir, title="替换这一行的脚本",
-                    filetypes=[("MacroFlow 脚本", "*.json"), ("所有文件", "*.*")],
+                    filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
                 )
                 if not path:
                     return

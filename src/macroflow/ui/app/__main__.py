@@ -12,6 +12,8 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_SRC_ROOT))
 
 if __name__ == '__main__':
+    import multiprocessing
+    multiprocessing.freeze_support()
     if len(sys.argv) == 4 and sys.argv[1] == "--watchdog":
         from macroflow.execution.recovery import run_watchdog
         run_watchdog(Path(sys.argv[2]), int(sys.argv[3]))

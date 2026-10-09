@@ -143,7 +143,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "ocr_compare": "数字比较", "multi_condition_click": "多条件识图",
         "row_list_condition_click": "列表逐行点击",
         "notice": "浮动提醒", "comment": "注释",
-        "script_ref": "引用脚本", "open_app": "打开软件",
+        "script_ref": "引用脚本", "python_script": "Python 逻辑", "open_app": "打开软件",
         "close_app": "关闭软件", "jump": "跳转",
         "global_detect": "全局检测", "restart_workflow": "重启工作流",
         "end_current_script": "结束脚本", "jump_current_script_last": "跳转脚本尾",
@@ -491,6 +491,8 @@ def segment_row_label(action: dict) -> str:
     if kind == "script_ref":
         repeats = script_ref_repeat_count(action)
         return f"引用脚本 {Path(str(action.get('script', ''))).stem} · 执行 {repeats} 次"
+    if kind == "python_script":
+        return f"Python 逻辑 {Path(str(action.get('path', ''))).name}"
     if kind == "open_app":
         return f"打开软件 {Path(str(action.get('path', ''))).stem or '?'}"
     if kind == "close_app":
