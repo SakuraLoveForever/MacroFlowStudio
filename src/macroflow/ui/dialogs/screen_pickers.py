@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PIL import Image, ImageEnhance, ImageTk
+from pathlib import Path
 from macroflow.core.image_match import capture_bgr
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
@@ -360,6 +361,45 @@ class ScreenRegionPicker:
         """Cancel the selection: remove the overlay and restore the hidden windows."""
         self._destroy_overlay()
         self._restore_windows()
+
+
+class ScreenProcessPicker(ScreenRegionPicker):
+    """Preview the process beneath the pointer and confirm it with one click."""
+
+    def _show_overlay(self):
+        # Enumerate before the curtain appears, retaining native front-to-back order.
+        try:
+            self.windows = [window for window in enum_windows()
+                            if not is_current_process_window(window.hwnd)]
+        except OSError as exc:
+            self.close()
+            show_floating_notice(self.owner, "无法选取进程", str(exc))
+            return
+        super()._show_overlay()
+        if self.canvas is not None:
+            self.canvas.bind("<Motion>", self._drag_move)
+
+    def _process_at(self, event):
+        for window in self.windows:
+            left, top, width, height = window.window_rect
+            if left <= event.x_root < left + width and top <= event.y_root < top + height:
+                return Path(window.process_path).name if window.process_path else ""
+        return ""
+
+    def _drag_move(self, event):
+        name = self._process_at(event)
+        self.canvas.itemconfigure(
+            self.tip_id,
+            text=f"{name or '此处无可读取的进程'}　移动到目标软件，单击确认，Esc 取消",
+        )
+
+    def _drag_begin(self, event):
+        name = self._process_at(event)
+        if not name:
+            self._drag_move(event)
+            return
+        self.close()
+        self.on_result(name)
 
 
 class ScreenOffsetPicker(ScreenRegionPicker):

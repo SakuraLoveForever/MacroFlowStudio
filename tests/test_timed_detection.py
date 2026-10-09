@@ -297,10 +297,12 @@ class ProcessPickerTests(unittest.TestCase):
         form = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
         form.process_name_var = Mock()
         form.process_name_var.get.return_value = "saved.exe"
-        with patch('macroflow.ui.dialogs.module_objects.ttk.Combobox') as combo:
+        with patch('macroflow.ui.dialogs.module_objects.ttk.Combobox') as combo, \
+             patch('macroflow.ui.dialogs.module_objects.ttk.Button') as button:
             form._process_picker_row(Mock())
         self.assertEqual(combo.call_args.kwargs["state"], "readonly")
         self.assertEqual(combo.call_args.kwargs["postcommand"], form._refresh_process_choices)
+        self.assertEqual(button.call_args.kwargs["command"], form._pick_process)
 
     def test_process_choices_refresh_and_keep_saved_stopped_target(self):
         from unittest.mock import Mock, patch

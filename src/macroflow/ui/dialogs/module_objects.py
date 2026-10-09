@@ -81,6 +81,7 @@ from .helpers import (
 from .screen_pickers import (
     ScreenOffsetPicker,
     ScreenPointPicker,
+    ScreenProcessPicker,
     ScreenRegionPicker,
 )
 from .segments import (
@@ -499,7 +500,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.row_process_name = self._labeled_row(
             body, row, "进程名",
             self._process_picker_row,
-            "展开列表选择当前运行的进程，每次展开自动刷新。不区分大小写；同名进程有一个运行即视为检测到。已保存的进程停止后仍保留在选项中。",
+            "可展开列表选择当前运行的进程，或点击“鼠标选取”后移到目标软件预览进程名，单击确认，Esc 取消。"
+            "列表每次展开自动刷新；不区分大小写，同名进程有一个运行即视为检测到。已保存的进程停止后仍保留在选项中。",
         )
         row += 1
         self.row_expected_text = self._labeled_row(
@@ -862,7 +864,18 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             values=[current] if current else [], postcommand=self._refresh_process_choices,
         )
         self.process_name_combo.grid(row=0, column=1, sticky="ew")
+        ttk.Button(frame, text="鼠标选取…", command=self._pick_process).grid(
+            row=0, column=2, padx=pad(8, 0),
+        )
         return self.process_name_combo
+
+    def _pick_process(self):
+        self.picker = ScreenProcessPicker(
+            self, self.master, self.process_name_var.set,
+            hidden_windows=self._ancestors_to_hide(),
+            tip_text="移动到目标软件，预览进程名；单击确认，Esc 取消",
+        )
+        self.picker.start()
 
     def _refresh_process_choices(self):
         try:
