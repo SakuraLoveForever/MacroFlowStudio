@@ -876,8 +876,8 @@ class TemplateRegionTests(unittest.TestCase):
         form.expected_text_var.get.return_value = ""
         form.match_mode_var = Mock()
         form.match_mode_var.get.return_value = "包含"
-        form.wait_text_absent_var = Mock()
-        form.wait_text_absent_var.get.return_value = False
+        form.target_condition_var = Mock()
+        form.target_condition_var.get.return_value = "出现"
         form.ocr_offset_up_var = Mock()
         form.ocr_offset_up_var.get.return_value = "0"
         form.ocr_offset_down_var = Mock()
@@ -902,8 +902,13 @@ class TemplateRegionTests(unittest.TestCase):
         form.fallback_click_var.get.return_value = False
         form.fallback_on_match_var = Mock()
         form.fallback_on_match_var.get.return_value = "继续识别主模块（不点击）"
-        form.blocking_var = Mock()
-        form.blocking_var.get.return_value = False
+        form.advanced_recognition_var = Mock()
+        form.advanced_recognition_var.get.return_value = True
+        form.row_advanced_recognition = Mock()
+        form.confirmation_heading = Mock()
+        form.row_fallback_click_settings = Mock()
+        form.wait_rule_var = Mock()
+        form.wait_rule_var.get.return_value = "限时等待"
         form.hold_enabled_var = Mock()
         form.hold_enabled_var.get.return_value = False  # 持续延时默认不启用
         form.hold_var = Mock()
@@ -1536,7 +1541,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form(region="10,20,300,400", recognize="识别文字")
         form.expected_text_var.get.return_value = "体力不足"
         form.match_mode_var.get.return_value = "等于"
-        form.wait_text_absent_var.get.return_value = True
+        form.target_condition_var.get.return_value = "消失"
         form.ocr_offset_up_var.get.return_value = "8"
         form.ocr_offset_down_var.get.return_value = "2"
         form.ocr_offset_left_var.get.return_value = "4"
@@ -1561,7 +1566,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form(
             image="images/claim.png", region="10,20,300,400", recognize="模板图片",
         )
-        form.wait_text_absent_var.get.return_value = True
+        form.target_condition_var.get.return_value = "消失"
         with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         module = form.result[2]

@@ -322,8 +322,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.match_mode_var = tk.StringVar(
             value="等于" if obj.get("match_mode") == "equals" else "包含",
         )
-        self.wait_text_absent_var = tk.BooleanVar(
-            value=bool(obj.get("wait_text_absent", False)),
+        self.target_condition_var = tk.StringVar(
+            value="消失" if obj.get("wait_text_absent", False) else "出现",
         )
         self.ocr_offset_up_var = tk.StringVar(value=str(obj.get("ocr_offset_up", 0)))
         self.ocr_offset_down_var = tk.StringVar(value=str(obj.get("ocr_offset_down", 0)))
@@ -359,7 +359,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.fallback_click_var = tk.BooleanVar(value=fallback_on_match.startswith("click_"))
         self.fallback_click_count_var = tk.StringVar(value=str(obj.get("fallback_click_count", 1)))
         self.fallback_click_interval_var = duration_var(obj.get("fallback_click_interval_ms", 100))
-        self.blocking_var = tk.BooleanVar(value=bool(obj.get("blocking", False)))
+        self.wait_rule_var = tk.StringVar(value=(
+            "一直等待" if obj.get("blocking", False) else
+            "限时等待" if int(obj.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS)) > 0
+            else "未命中立即跳过"
+        ))
+        self.advanced_recognition_var = tk.BooleanVar(value=bool(
+            obj.get("fallback_module_key") or obj.get("hold_enabled")
+        ))
         self.hold_enabled_var = tk.BooleanVar(value=bool(obj.get("hold_enabled", False)))
         self.hold_var = duration_var(obj.get("hold_ms", 1000))
         self.delay_var = duration_var(obj.get("delay_ms", 0))
@@ -508,18 +515,46 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         row += 1
         self.row_wait_text_absent = self._labeled_row(
-            body, row, "等待目标消失",
-            lambda m: dark_checkbutton(
-                m, "直到区域内检测不到期望文字才完成", self.wait_text_absent_var,
+            body, row, "目标条件",
+            lambda m: self._row_combo(
+                m, self.target_condition_var, ("出现", "消失"), width=12,
+                set_attr="target_condition_combo",
             ),
-            "模板图片和识别文字均可使用。勾选后，每次找到目标都会执行成功动作并重新识别；"
+            "出现：找到目标后完成。消失：每次找到目标都会执行成功动作并重新识别；"
             "直到区域内检测不到目标才完成当前模块。F12 仍可紧急停止。",
         )
         row += 1
+        self.target_condition_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
         self.row_threshold = self._labeled_row(
             body, row, "相似度 (0.1–1.0)",
             lambda m: ttk.Entry(m, textvariable=self.threshold_var, width=14),
             "图像匹配相似度阈值，越高越严格，越低越容易误识别。",
+        )
+        row += 1
+        self.row_blocking = self._labeled_row(
+            body, row, "等待规则",
+            lambda m: self._row_combo(
+                m, self.wait_rule_var, ("未命中立即跳过", "限时等待", "一直等待"),
+                width=22, set_attr="wait_rule_combo",
+            ),
+            "未命中立即跳过：识别一次，未命中则返回失败。限时等待：开始识别后重试到时限。"
+            "一直等待：持续重试直到成功；脚本行仍可单独设置等待超时。"
+            "要先等待再开始识别，请在脚本引用行设置“识别前等待”。",
+        )
+        self.wait_rule_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
+        row += 1
+        self.row_not_found_timeout = self._labeled_row(
+            body, row, "等待时限",
+            lambda m: ttk.Entry(m, textvariable=self.not_found_timeout_var, width=14),
+            "限时等待开始识别后，最多重试这么久；超时返回失败。全局模块用于连续未识别的超时步骤。",
+        )
+        row += 1
+        self.row_advanced_recognition = self._labeled_row(
+            body, row, "高级识别设置",
+            lambda m: dark_checkbutton(
+                m, "展开", self.advanced_recognition_var, command=self._toggle_sections,
+            ),
+            "检测频率、触发冷却、识别确认及备用识别。收起设置不会清除已保存的参数。",
         )
         row += 1
         self.row_interval = self._labeled_row(
@@ -539,6 +574,15 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
             "进入该模块后、开始识别前的等待毫秒数；和下面「延时」（识别成功后才等、执行动作前）不是一回事。"
             "脚本全局模块表示脚本开始执行后先等这段再开始识别。支持 ms / s / min。",
+        )
+        row += 1
+        self.confirmation_heading = self._section_heading(body, row, "识别确认")
+        row += 1
+        self.row_hold = self._labeled_row(
+            body, row, "持续命中确认",
+            self._build_hold_control,
+            "工作流全局和脚本全局模块使用。勾选后，命中状态持续达到设定时长才触发；"
+            "不勾选则第一次识别命中就立即执行。",
         )
         row += 1
         self.row_fallback_module = self._labeled_row(
@@ -569,20 +613,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 "次数", "间隔 ms",
             ),
             "备用模块命中后连续点击的次数，以及两次点击之间的等待毫秒数。",
-        )
-        row += 1
-        self.row_blocking = self._labeled_row(
-            body, row, "阻塞识别",
-            lambda m: dark_checkbutton(m, "启用", self.blocking_var),
-            "开启：识别不到就一直等，直到识别成功才继续；"
-            "关闭：识别不到直接跳过。",
-        )
-        row += 1
-        self.row_hold = self._labeled_row(
-            body, row, "持续超过",
-            self._build_hold_control,
-            "工作流全局和脚本全局模块使用。勾选后，命中状态持续达到设定时长才触发；"
-            "不勾选则第一次识别命中就立即执行。",
         )
         row += 1
         self.row_delay = self._labeled_row(
@@ -648,7 +678,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.row_second_timeout = self._labeled_row(
             body, row, "二次识别超时",
             lambda m: ttk.Entry(m, textvariable=self.second_timeout_var, width=14),
-            "等待二次识别的最大毫秒数；开启阻塞识别时无限等待。",
+            "等待第二个模板的最大时长；等待规则为“一直等待”时无限等待。",
         )
         row += 1
         self.row_second_click_target = self._labeled_row(
@@ -718,13 +748,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 m, "启用", self.run_code_on_timeout_var,
                 command=self._toggle_sections,
             ),
-            "与成功后代码段完全独立。连续未识别达到下方时限后，执行超时代码段。",
-        )
-        row += 1
-        self.row_not_found_timeout = self._labeled_row(
-            body, row, "未识别时限",
-            lambda m: ttk.Entry(m, textvariable=self.not_found_timeout_var, width=14),
-            "切换模块达到该时限后向当前脚本行返回失败；若启用下方代码段，会先执行代码段。",
+            "与成功后代码段完全独立。连续未识别达到上方等待时限后执行；选择“未命中立即跳过”时，首次识别失败即执行。",
         )
         row += 1
         self.timeout_segment_frame = self._build_segment_panel(
@@ -752,7 +776,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
     def _build_hold_control(self, master):
         frame = ttk.Frame(master)
         dark_checkbutton(
-            frame, "启用持续延时", self.hold_enabled_var,
+            frame, "持续命中后触发", self.hold_enabled_var,
             command=self._toggle_hold_control,
         ).pack(side="left")
         self.hold_entry = ttk.Entry(frame, textvariable=self.hold_var, width=14)
@@ -989,7 +1013,12 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 )
             ),
         )
-        self._set_row(self.row_blocking, not pure and not direct_mode)
+        wait_for_disappearance = self.target_condition_var.get() == "消失"
+        self._set_row(
+            self.row_blocking, not pure and not direct_mode and not process_mode
+            and not wait_for_disappearance
+            and (category == "切换模块" or after == "二次识别后点击"),
+        )
         self._set_row(self.row_delay, not pure and not number_mode and not direct_global)
         self._set_row(self.action_section_heading, not pure and not number_mode and not direct_global)
         self._set_row(self.row_after, not pure and not number_mode and not direct_global)
@@ -1026,21 +1055,29 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             not pure and not number_mode and not direct_global
             and bool(self.run_code_after_action_var.get()),
         )
-        self._set_row(self.timeout_section_heading, not pure and (not direct_mode or direct_global))
+        timeout_available = (
+            not pure and (not direct_mode or direct_global)
+            and not (category == "切换模块" and (
+                self.wait_rule_var.get() == "一直等待" or wait_for_disappearance
+            ))
+        )
+        self._set_row(self.timeout_section_heading, timeout_available)
         self._set_row(
             self.row_run_code_on_timeout,
-            not pure and not number_mode and (not direct_mode or direct_global),
+            timeout_available and not number_mode,
         )
         timeout_enabled = (
-            not pure and not number_mode and (not direct_mode or direct_global)
+            timeout_available and not number_mode
             and bool(self.run_code_on_timeout_var.get())
         )
         switch_failure_timeout = (
             category == "切换模块" and not direct_mode
-            and not bool(self.blocking_var.get())
+            and self.wait_rule_var.get() == "限时等待"
+            and not wait_for_disappearance
         )
         self._set_row(
-            self.row_not_found_timeout, timeout_enabled or switch_failure_timeout,
+            self.row_not_found_timeout, switch_failure_timeout
+            or (timeout_enabled and category != "切换模块"),
         )
         self._set_row(self.timeout_segment_frame, timeout_enabled)
         timed_available = not pure and not number_mode and not direct_mode
@@ -1060,8 +1097,23 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                                  self.row_ocr_offset, self.row_click_point, self.row_second_template,
                                  self.row_second_timeout, self.row_second_click_target,
                                  self.row_second_click_region, self.row_fallback_module,
-                                 self.row_fallback_click, self.row_cooldown):
+                                 self.row_fallback_click, self.row_fallback_click_settings, self.row_cooldown):
                 self._set_row(ordinary_row, False)
+        advanced_available = not pure and (not direct_mode or direct_global)
+        self._set_row(self.row_advanced_recognition, advanced_available)
+        self._set_row(
+            self.confirmation_heading, advanced_available and not direct_mode and not number_mode
+            and not process_mode and not timed_enabled
+            and category in ("工作流全局模块", "脚本全局模块")
+            and bool(self.advanced_recognition_var.get()),
+        )
+        if not advanced_available or not self.advanced_recognition_var.get():
+            for advanced_row in (
+                self.row_interval, self.row_cooldown, self.confirmation_heading,
+                self.row_hold, self.row_fallback_module, self.row_fallback_click,
+                self.row_fallback_click_settings,
+            ):
+                self._set_row(advanced_row, False)
         self._resize_for_content()
 
     def _set_row(self, row, visible: bool):
@@ -1398,6 +1450,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         run_code_on_timeout = (
             not timed_enabled and not number_mode and (not direct_mode or direct_global)
             and bool(self.run_code_on_timeout_var.get())
+            and not (self.category_var.get() == "切换模块" and (
+                self.wait_rule_var.get() == "一直等待"
+                or self.target_condition_var.get() == "消失"
+            ))
         )
         try:
             not_found_timeout = max(0, int(self.not_found_timeout_var.get()))
@@ -1406,6 +1462,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 self, "未识别时限格式错误",
                 "未识别时限必须是大于等于 0 的整数（毫秒）。",
             )
+            return
+        if self.wait_rule_var.get() == "未命中立即跳过":
+            not_found_timeout = 0
+        elif (self.category_var.get() == "切换模块"
+              and self.wait_rule_var.get() == "限时等待"
+              and self.target_condition_var.get() != "消失"
+              and not direct_mode and not timed_enabled and not_found_timeout <= 0):
+            show_floating_notice(self, "等待时限无效", "限时等待的时长必须大于 0；只识别一次请选择“未命中立即跳过”。")
             return
         if run_code_on_timeout:
             if not self.timeout_segment:
@@ -1446,7 +1510,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "fallback_click": self._fallback_on_match_value().startswith("click_"),
             "fallback_click_count": fallback_click_count,
             "fallback_click_interval_ms": fallback_click_interval,
-            "blocking": False if direct_mode else bool(self.blocking_var.get()),
+            "blocking": False if direct_mode else self.wait_rule_var.get() == "一直等待",
             "hold_enabled": bool(self.hold_enabled_var.get()),
             "hold_ms": hold,
             "delay_ms": 0 if number_mode else delay,
@@ -1471,7 +1535,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "timed_condition": "present" if self.timed_condition_var.get() == "连续检测到" else "absent",
             "timed_duration_ms": timed_duration if timed_duration > 0 else 30000,
             "timed_actions": self.timed_segment,
-            "wait_text_absent": False if direct_mode or number_mode else bool(self.wait_text_absent_var.get()),
+            "wait_text_absent": False if direct_mode or number_mode else self.target_condition_var.get() == "消失",
         }
         if process_mode:
             module_dict.update({"recognize": "process", "template": "", "region": [],
@@ -2962,8 +3026,8 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
             module_row, text="替换模块…", command=self.replace_reference,
         ).grid(row=0, column=1, padx=pad(8, 0))
         for row, (label, variable) in enumerate((
-            ("进入模块前延时", self.delay),
-            ("模块完成后延时", self.after_delay),
+            ("识别前等待 (ms)", self.delay),
+            ("模块完成后等待 (ms)", self.after_delay),
         ), start=1):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(
@@ -3041,11 +3105,11 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
         ttk.Label(
             body,
             text=(
-                "读取到数字后立即比较；等于走成功分支，不等于走失败分支。未读取到数字会按模块的阻塞和未识别时限重试，超时后先执行失败代码段，再走失败分支。"
+                "识别前等待结束后才开始读取数字；读取后立即比较。等于走成功分支，不等于走失败分支。未读取到数字会按模块的等待规则重试，超时后先执行失败代码段，再走失败分支。"
                 if number_routes else
-                "结果分支与失败代码段只属于当前脚本行；阻塞模块还可在此单独开启“阻塞超时后跳过”。识别方式、区域、相似度、阻塞、未识别时限、点击和模块级代码段仍在“模块管理…”统一设置。"
+                "识别前等待会在首次识别之前等待指定时间，与开始识别后的等待时限独立。结果分支和失败步骤只属于当前脚本行；识别、等待规则及点击在“模块管理…”设置。"
                 if result_routes else
-                "此处只设置当前引用的进入/完成延时；检测和触发行为统一到“模块管理…”修改。"
+                "识别前等待：执行到当前行后先等待，时间到才首次识别；模块完成后等待：识别和动作结束后再等待。检测和触发行为到“模块管理…”修改。"
             ),
             foreground=COLOR_MUTED, wraplength=px(610),
         ).grid(row=next_row, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
@@ -3121,7 +3185,7 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
             delay = max(0, min(86400000, int(self.delay.get())))
             after_delay = max(0, min(86400000, int(self.after_delay.get())))
         except ValueError:
-            show_floating_notice(self, "参数错误", "执行前延时和执行后延时必须是整数。")
+            show_floating_notice(self, "参数错误", "识别前等待和模块完成后等待必须是整数（毫秒）。")
             return
         result = dict(self.action)
         result["delay_ms"] = delay

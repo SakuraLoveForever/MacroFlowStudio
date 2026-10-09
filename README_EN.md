@@ -1,5 +1,7 @@
 <div align="center">
 
+Recognition settings separate the target condition (present / absent) from the wait rule (try once / wait with a deadline / wait indefinitely). To delay the first recognition, edit the module reference in the script and set the pre-recognition wait in milliseconds (5000 = 5 seconds). Polling, cooldown, confirmation and fallback options are under advanced recognition settings; collapsing them preserves their values.
+
 [简体中文](./README.md) | **English**
 
 # 🖱️ MacroFlow Studio
