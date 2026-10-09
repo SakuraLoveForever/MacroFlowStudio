@@ -1,12 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-REM =======================================================
-REM  MacroFlow Studio 源码启动器
-REM  用构建环境（C:\Python313 + .deps + src）启动 macroflow 包。
-REM  默认 Python（3.12）缺少 RapidOCR / ONNX Runtime 依赖，"识别文字"会报错，
-REM  不要直接用 python -m macroflow.ui.app 运行（除非装了 .deps）。
-REM =======================================================
+REM Keep this launcher ASCII with CRLF for Windows cmd code pages.
+REM Run source with the project dependencies and Python 3.13 when installed.
 set "PYTHONPATH=%CD%\.deps;%CD%\src;%PYTHONPATH%"
 if exist "C:\Python313\python.exe" (
   "C:\Python313\python.exe" -m macroflow.ui.app
