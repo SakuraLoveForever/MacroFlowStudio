@@ -4148,35 +4148,40 @@ class PlayerTests(unittest.TestCase):
         # 滚轮动作曾只传 dy：send_scroll(dx, dy) 双参数签名下直接 TypeError，
         # 且纵/横滚轮永远发不出。回归：dx、dy 必须原样传给 send_scroll。
         player = MacroPlayer()
+        player._wait = Mock()
         with package_patch('player', 'send_scroll') as scroll:
             player.play([
                 {"type": "scroll", "dx": 3, "dy": -2, "delay_ms": 0},
             ])
-        scroll.assert_called_once_with(3, -2)
+        self.assertEqual(scroll.call_args_list, [call(1, -1), call(1, -1), call(1, 0)])
+        self.assertEqual(player._wait.call_args_list, [call(0), call(200), call(200)])
 
     def test_scroll_playback_moves_cursor_to_the_action_position_first(self):
         # 「鼠标在指定位置滚轮上下滑动」：滚轮只发给光标下的窗口/控件，
         # 所以必须先移到动作坐标，再滚指定的方向与格数。
         player = MacroPlayer()
+        player._wait = Mock()
         with package_patch('player', 'send_scroll') as scroll, \
              package_patch('player', 'send_move_absolute') as move:
             player.play([
                 {"type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360, "delay_ms": 0},
             ])
         move.assert_called_once_with(640, 360)
-        scroll.assert_called_once_with(0, -3)
+        self.assertEqual(scroll.call_args_list, [call(0, -1)] * 3)
 
     def test_scroll_playback_without_position_keeps_current_cursor(self):
         # 手写的滚轮动作没有坐标时只在光标当前位置滚动，不能把光标甩到 (0, 0)。
         player = MacroPlayer()
+        player._wait = Mock()
         with package_patch('player', 'send_scroll') as scroll, \
              package_patch('player', 'send_move_absolute') as move:
             player.play([{"type": "scroll", "dx": 0, "dy": 3, "delay_ms": 0}])
         move.assert_not_called()
-        scroll.assert_called_once_with(0, 3)
+        self.assertEqual(scroll.call_args_list, [call(0, 1)] * 3)
 
     def test_scroll_sequence_uses_one_position_and_saved_step_order(self):
         player = MacroPlayer()
+        player._wait = Mock()
         with package_patch('player', 'send_scroll') as scroll, \
              package_patch('player', 'send_move_absolute') as move:
             player.play([{
@@ -4184,7 +4189,8 @@ class PlayerTests(unittest.TestCase):
                 "deltas": [3, -2, 1], "delay_ms": 0,
             }])
         move.assert_called_once_with(640, 360)
-        self.assertEqual(scroll.call_args_list, [call(0, 3), call(0, -2), call(0, 1)])
+        self.assertEqual(scroll.call_args_list, [call(0, 1)] * 3 + [call(0, -1)] * 2 + [call(0, 1)])
+        self.assertEqual(player._wait.call_args_list, [call(0)] + [call(200)] * 5)
 
     def test_player_template_scale_from_screens(self):
         player = MacroPlayer()

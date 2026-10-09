@@ -262,7 +262,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         clicks = scroll_clicks(action.get("dy", 0))
         return (
             action_kind_label(kind, "滚轮"),
-            f"{direction} {clicks} 格 @ ({action.get('x', 0)}, {action.get('y', 0)})",
+            f"{direction} {clicks} 格 @ ({action.get('x', 0)}, {action.get('y', 0)}) · 间隔 {action.get('interval_ms', 200)} ms",
             delay,
         )
     if kind == "scroll_sequence":
@@ -272,7 +272,7 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         ]
         return (
             action_kind_label(kind, "组合滚轮"),
-            f"{' → '.join(parts)} @ ({action.get('x', 0)}, {action.get('y', 0)})",
+            f"{' → '.join(parts)} @ ({action.get('x', 0)}, {action.get('y', 0)}) · 间隔 {action.get('interval_ms', 200)} ms",
             delay,
         )
     if kind == RECORDED_INPUT_TYPE:

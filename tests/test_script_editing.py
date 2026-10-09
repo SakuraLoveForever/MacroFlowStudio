@@ -180,7 +180,7 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(
             action_summary({"type": "scroll_sequence", "x": 10, "y": 20,
                             "deltas": [2, -3], "delay_ms": 0})[1],
-            "向上 2 格 → 向下 3 格 @ (10, 20)",
+            "向上 2 格 → 向下 3 格 @ (10, 20) · 间隔 200 ms",
         )
         app.root = Mock()
         app._insert_action = Mock()

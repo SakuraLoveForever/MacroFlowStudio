@@ -837,6 +837,21 @@ class CoreMixin:
             self._log_event(
                 f"单独执行：{reason}跳转到第 {target_value} 行，只记录不执行。"
             )
+    def _execute_scroll_steps(self, deltas, interval_ms):
+        sent = False
+        for dx, dy in deltas:
+            for step in range(max(abs(dx), abs(dy))):
+                self.wait_while_paused()
+                if sent:
+                    self._wait(interval_ms)
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
+                send_scroll(
+                    (dx > 0) - (dx < 0) if step < abs(dx) else 0,
+                    (dy > 0) - (dy < 0) if step < abs(dy) else 0,
+                )
+                sent = True
+
     def _execute_action(self, action: dict, hwnd: int | None,
                         script_stack: set[str] | None = None,
                         depth: int = 0, *,
@@ -1029,16 +1044,15 @@ class CoreMixin:
                 x, y = self._scale_point(int(action["x"]), int(action["y"]))
                 x, y = self._clamp_click_point(x, y, hwnd)
                 send_move_absolute(x, y)
-            send_scroll(dx, dy)
+            self._execute_scroll_steps(((dx, dy),), max(0, int(action.get("interval_ms", 200))))
         elif kind == "scroll_sequence":
             x, y = self._scale_point(int(action["x"]), int(action["y"]))
             x, y = self._clamp_click_point(x, y, hwnd)
             send_move_absolute(x, y)
-            for delta in action.get("deltas", []):
-                self.wait_while_paused()
-                if self.stop_event.is_set():
-                    raise PlaybackStopped()
-                send_scroll(0, int(delta))
+            self._execute_scroll_steps(
+                ((0, int(delta)) for delta in action.get("deltas", [])),
+                max(0, int(action.get("interval_ms", 200))),
+            )
         elif kind == "recorded_input":
             # 折叠的「录制动作」：整段录制内容作为一条动作播放，内部按录制顺序
             # 逐步执行（timeline 负责还原每一步之间的间隔）。

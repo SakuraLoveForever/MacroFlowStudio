@@ -954,13 +954,15 @@ class ImageTests(unittest.TestCase):
         dialog.x.get.return_value = "640"
         dialog.y = Mock()
         dialog.y.get.return_value = "360"
+        dialog.interval = Mock()
+        dialog.interval.get.return_value = "200"
         dialog.delay = Mock()
         dialog.delay.get.return_value = "200"
         dialog.destroy = Mock()
         dialog.save()
         # 向下 = Windows 滚轮 delta 负值，格数即 delta 的绝对值。
         self.assertEqual(dialog.result, {
-            "type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360, "delay_ms": 200,
+            "type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360, "delay_ms": 200, "interval_ms": 200,
         })
         dialog.destroy.assert_called_once()
 
@@ -970,6 +972,7 @@ class ImageTests(unittest.TestCase):
         dialog._source = {}
         dialog.x = FakeVar("640")
         dialog.y = FakeVar("360")
+        dialog.interval = FakeVar("350")
         dialog.delay = FakeVar("200")
         dialog.tree = FakeTree()
         first = dialog.tree.insert("", "end", iid="up", values=(SCROLL_UP_LABEL, "3"))
@@ -982,7 +985,7 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(dialog.tree.get_children(), (second, first))
         self.assertEqual(dialog.result, {
             "type": "scroll_sequence", "x": 640, "y": 360,
-            "deltas": [-2, 3], "delay_ms": 200,
+            "deltas": [-2, 3], "delay_ms": 200, "interval_ms": 350,
         })
         dialog.destroy.assert_called_once()
 
@@ -1010,6 +1013,7 @@ class ImageTests(unittest.TestCase):
         dialog._source = {}
         dialog.x = FakeVar("10")
         dialog.y = FakeVar("20")
+        dialog.interval = FakeVar("350")
         dialog.delay = FakeVar("0")
         dialog.tree = FakeTree()
         dialog.destroy = Mock()
@@ -1053,6 +1057,8 @@ class ImageTests(unittest.TestCase):
         dialog.x.get.return_value = "1"
         dialog.y = Mock()
         dialog.y.get.return_value = "2"
+        dialog.interval = Mock()
+        dialog.interval.get.return_value = "200"
         dialog.delay = Mock()
         dialog.delay.get.return_value = "0"
         dialog.destroy = Mock()
@@ -1071,6 +1077,8 @@ class ImageTests(unittest.TestCase):
         dialog.x.get.return_value = "10"
         dialog.y = Mock()
         dialog.y.get.return_value = "20"
+        dialog.interval = Mock()
+        dialog.interval.get.return_value = "200"
         dialog.delay = Mock()
         dialog.delay.get.return_value = "-1"
         dialog.destroy = Mock()
@@ -1115,11 +1123,11 @@ class ImageTests(unittest.TestCase):
     def test_scroll_summary_shows_direction_position_and_clicks(self):
         self.assertEqual(
             action_summary({"type": "scroll", "dx": 0, "dy": -3, "x": 640, "y": 360})[:2],
-            ("↕  滚轮", "向下 3 格 @ (640, 360)"),
+            ("↕  滚轮", "向下 3 格 @ (640, 360) · 间隔 200 ms"),
         )
         self.assertEqual(
             action_summary({"type": "scroll", "dx": 0, "dy": 2, "x": 1, "y": 2})[1],
-            "向上 2 格 @ (1, 2)",
+            "向上 2 格 @ (1, 2) · 间隔 200 ms",
         )
 
     def test_edit_action_routes_scroll_to_scroll_dialog(self):

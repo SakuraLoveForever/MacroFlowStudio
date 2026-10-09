@@ -841,7 +841,7 @@ class ScrollDialog(ModalDialog):
     """添加 / 编辑滚轮动作：把鼠标移到指定位置后向上或向下滚若干格。"""
 
     def __init__(self, parent, action: dict | None = None):
-        super().__init__(parent, "编辑滚轮" if action else "添加滚轮", 480, 360)
+        super().__init__(parent, "编辑滚轮" if action else "添加滚轮", 480, 410)
         self._source = dict(action or {})
         action = action or {}
         cursor = get_cursor_pos()
@@ -854,6 +854,7 @@ class ScrollDialog(ModalDialog):
         self.x = tk.StringVar(value=str(action.get("x", cursor[0])))
         self.y = tk.StringVar(value=str(action.get("y", cursor[1])))
         self.delay = duration_var(action.get("delay_ms", 0))
+        self.interval = tk.StringVar(value=str(action.get("interval_ms", 200)))
         self.picker = None
         body = ttk.Frame(self, padding=px(14))
         body.pack(fill="both", expand=True)
@@ -863,6 +864,7 @@ class ScrollDialog(ModalDialog):
             ("滚动格数", self.clicks),
             ("屏幕 X", self.x),
             ("屏幕 Y", self.y),
+            ("每格间隔 (ms)", self.interval),
             ("执行前延时", self.delay),
         )
         for row, (label, variable) in enumerate(values):
@@ -903,8 +905,11 @@ class ScrollDialog(ModalDialog):
             x, y = int(self.x.get()), int(self.y.get())
             clicks = max(1, int(self.clicks.get()))
             delay = max(0, int(self.delay.get()))
+            interval = int(self.interval.get())
+            if interval < 0:
+                raise ValueError
         except ValueError:
-            show_floating_notice(self, "参数错误", "坐标、格数和时间必须是整数。")
+            show_floating_notice(self, "参数错误", "坐标、格数和时间必须是整数，间隔不能为负数。")
             return
         updated = dict(getattr(self, "_source", None) or {})
         updated.update({
@@ -913,7 +918,7 @@ class ScrollDialog(ModalDialog):
             "dx": 0,
             "dy": clicks if self.direction.get() == SCROLL_UP_LABEL else -clicks,
             "x": x, "y": y,
-            "delay_ms": delay,
+            "delay_ms": delay, "interval_ms": interval,
         })
         self.result = updated
         self.destroy()
@@ -923,7 +928,7 @@ class ScrollSequenceDialog(ModalDialog):
     """One positioned scroll action with draggable up/down segments."""
 
     def __init__(self, parent, action: dict | None = None):
-        super().__init__(parent, "编辑组合滚轮" if action else "添加组合滚轮", 540, 500)
+        super().__init__(parent, "编辑组合滚轮" if action else "添加组合滚轮", 540, 540)
         self._source = dict(action or {})
         action = action or {}
         cursor = get_cursor_pos()
@@ -932,6 +937,7 @@ class ScrollSequenceDialog(ModalDialog):
         self.direction = tk.StringVar(value=SCROLL_UP_LABEL)
         self.clicks = tk.StringVar(value="1")
         self.delay = duration_var(action.get("delay_ms", 0))
+        self.interval = tk.StringVar(value=str(action.get("interval_ms", 200)))
         self._drag_row = ""
         self._cell_editor = None
 
@@ -986,10 +992,12 @@ class ScrollSequenceDialog(ModalDialog):
         ttk.Label(body, text="双击方向切换，双击格数修改；按住步骤拖动排序。", foreground=COLOR_MUTED).grid(
             row=6, column=0, columnspan=2, sticky="w", pady=pad(8, 0),
         )
-        ttk.Label(body, text="执行前延时").grid(row=7, column=0, sticky="w", pady=px(8))
-        ttk.Entry(body, textvariable=self.delay).grid(row=7, column=1, sticky="ew")
+        ttk.Label(body, text="每格间隔 (ms)").grid(row=7, column=0, sticky="w", pady=px(8))
+        ttk.Entry(body, textvariable=self.interval).grid(row=7, column=1, sticky="ew")
+        ttk.Label(body, text="执行前延时").grid(row=8, column=0, sticky="w", pady=px(8))
+        ttk.Entry(body, textvariable=self.delay).grid(row=8, column=1, sticky="ew")
         buttons = ttk.Frame(body)
-        buttons.grid(row=8, column=0, columnspan=2, sticky="e", pady=pad(14, 0))
+        buttons.grid(row=9, column=0, columnspan=2, sticky="e", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=pad(0, 8))
         self.update_idletasks()
@@ -1129,6 +1137,9 @@ class ScrollSequenceDialog(ModalDialog):
         try:
             x, y = int(self.x.get()), int(self.y.get())
             delay = max(0, int(self.delay.get()))
+            interval = int(self.interval.get())
+            if interval < 0:
+                raise ValueError
             deltas = []
             for row in self.tree.get_children():
                 direction, clicks = self.tree.item(row, "values")
@@ -1137,7 +1148,7 @@ class ScrollSequenceDialog(ModalDialog):
                     raise ValueError
                 deltas.append(count if direction == SCROLL_UP_LABEL else -count)
         except (TypeError, ValueError):
-            show_floating_notice(self, "参数错误", "坐标、格数和时间必须是有效整数。")
+            show_floating_notice(self, "参数错误", "坐标、格数和时间必须是有效整数，间隔不能为负数。")
             return
         if not deltas:
             show_floating_notice(self, "缺少步骤", "请至少添加一个滚动步骤。")
@@ -1145,7 +1156,7 @@ class ScrollSequenceDialog(ModalDialog):
         updated = dict(self._source)
         updated.update({
             "type": "scroll_sequence", "x": x, "y": y,
-            "deltas": deltas, "delay_ms": delay,
+            "deltas": deltas, "delay_ms": delay, "interval_ms": interval,
         })
         self.result = updated
         self.destroy()
