@@ -55,8 +55,12 @@ class CaptureTests(unittest.TestCase):
 
     def test_toolbar_exposes_coordinate_panel(self):
         from macroflow.ui.app.shell import ShellMixin
+        from macroflow.ui.app.action_palette import action_category_specs
         self.assertTrue(any(method == 'open_ssjj_coordinates'
                             for _, method, _ in ShellMixin._script_action_button_specs()))
+        categories = action_category_specs(ShellMixin._script_action_button_specs())
+        recording = next(primary for label, primary, _ in categories if label == '录制/脚本')
+        self.assertIn('open_ssjj_coordinates', [method for _, method, _ in recording])
 
     def test_route_summary_shows_map_and_point_count(self):
         from macroflow.ui.app.summaries import action_summary
