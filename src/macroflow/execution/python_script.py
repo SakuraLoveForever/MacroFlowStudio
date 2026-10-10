@@ -66,6 +66,10 @@ class ScriptContext:
     def checkpoint(self):
         return self._call("checkpoint")
 
+    def ssjj_input(self, map_id: int, *, dx=None, hold_ms=None):
+        """Checked SSJJ input; the parent owns telemetry and key release."""
+        return self._call("ssjj_input", map_id=map_id, dx=dx, hold_ms=hold_ms)
+
 
 class _LogWriter:
     def __init__(self, connection):
@@ -175,6 +179,7 @@ def run_python_script(path, player, hwnd, script_stack, depth, module_bindings=N
     resumed = spawn.Event()
     resumed.set()
     process = spawn.Process(target=_worker, args=(str(script), child, resumed), daemon=True)
+    ssjj_reader = None
     try:
         process.start()
         child.close()
@@ -204,7 +209,14 @@ def run_python_script(path, player, hwnd, script_stack, depth, module_bindings=N
                 player._log_event(data["message"])
                 continue
             try:
-                result = _request(method, data, player, hwnd, stack, depth, module_bindings or {})
+                if method == "ssjj_input":
+                    from .ssjj_state import SSJJReader
+                    from .ssjj_navigation import send_route_input
+                    if ssjj_reader is None:
+                        ssjj_reader = SSJJReader()
+                    result = send_route_input(player, ssjj_reader, **data)
+                else:
+                    result = _request(method, data, player, hwnd, stack, depth, module_bindings or {})
             except (PlaybackStopped, EndCurrentScriptRequest, EndCurrentScriptRepeatRequest,
                     AdvanceToNextWorkflowStep, GuardJumpRequest, JumpToCurrentScriptLastAction):
                 raise
@@ -215,6 +227,8 @@ def run_python_script(path, player, hwnd, script_stack, depth, module_bindings=N
                 return result
             parent.send((True, result))
     finally:
+        if ssjj_reader is not None:
+            ssjj_reader.close()
         resumed.set()
         parent.close()
         child.close()
