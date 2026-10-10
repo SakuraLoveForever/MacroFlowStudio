@@ -1123,6 +1123,9 @@ class CoreMixin:
             if target_id:
                 return "action_id", target_id
             return "row", max(1, int(action.get("jump_row", 1)))
+        elif kind == "ssjj_route":
+            from macroflow.execution.ssjj_navigation import run_route_action
+            return run_route_action(self, action)
         elif kind == "python_script":
             from macroflow.execution.python_script import run_python_script
             return run_python_script(action.get("path", ""), self, hwnd, script_stack, depth,
