@@ -906,6 +906,16 @@ class ShellMixin:
             sidebar, textvariable=self.resolution_styles_summary_var,
             wraplength=px(250), style="SidebarMuted.TLabel",
         ).pack(anchor="w", pady=pad(0, 8))
+        self.switch_english_input_var = tk.BooleanVar(
+            master=self.root, value=self.switch_english_input_enabled,
+        )
+        tk.Checkbutton(
+            sidebar, text="执行前切换英文输入法",
+            variable=self.switch_english_input_var,
+            command=lambda: setattr(self, "switch_english_input_enabled",
+                                    bool(self.switch_english_input_var.get())),
+            **check_style,
+        ).pack(anchor="w", pady=pad(0, 6))
         focus_row = ttk.Frame(sidebar, style="Sidebar.TFrame")
         focus_row.pack(fill="x", pady=pad(0, 6))
         tk.Checkbutton(

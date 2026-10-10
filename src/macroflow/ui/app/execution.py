@@ -46,6 +46,8 @@ from macroflow.input.wininput import activate_window
 class ExecutionMixin:
     """执行入口：F9、工作流、单独执行、执行小窗与收尾。"""
 
+    switch_english_input_enabled = False
+
     def _run_workflow_worker(self, *args, **kwargs):
         workflow = getattr(self, "workflow", None)
         names = list(workflow.foreground_minimize_processes) if workflow is not None else []
@@ -133,10 +135,12 @@ class ExecutionMixin:
 
     def _enter_focus_mode(self, hwnd: int | None, enabled: bool = True) -> bool:
         with self._focus_state_lock:
-            if not force_english_input(hwnd):
-                raise RuntimeError("无法切换到英语输入法，已取消执行。")
+            if self.switch_english_input_enabled:
+                if not force_english_input(hwnd):
+                    raise RuntimeError("无法切换到英语输入法，已取消执行。")
+                self._ui(self._log, "已按勾选设置切换英语输入法。")
             if not enabled:
-                self._ui(self._log, "已切换英语输入法；强制专注模式未开启，实体键鼠不会被锁定。")
+                self._ui(self._log, "强制专注模式未开启，实体键鼠不会被锁定。")
                 return False
             # 每次进入专注模式前重新同步守卫的快捷键集合。
             self._apply_hotkey_bindings()
@@ -156,7 +160,7 @@ class ExecutionMixin:
             if self.player.paused and not self.input_guard.set_paused(True):
                 self._leave_focus_mode()
                 raise RuntimeError("暂停时无法解除强制专注输入锁，已取消执行。")
-            self._ui(self._log, "已切换英语输入法并进入强制专注模式；桌面及游戏原始键鼠输入均已锁定，F8 暂停/继续，F12 紧急停止。")
+            self._ui(self._log, "已进入强制专注模式；桌面及游戏原始键鼠输入均已锁定，F8 暂停/继续，F12 紧急停止。")
             return True
     def _restore_input_focus(self) -> None:
         """专注重放期间：目标窗口不在前台就先抢回来，再发这次输入。
