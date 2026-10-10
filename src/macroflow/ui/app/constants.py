@@ -52,6 +52,7 @@ ACTION_TREE_COLUMNS = (
 )
 RECORD_TOOLBAR_BUTTON_LABEL = "⏺ 录制"
 ACTION_ICONS = {
+    "ssjj_route": "⌖",
     "delay": "◷",
     "rebind_window": "◎",
     "activate_window": "▣",

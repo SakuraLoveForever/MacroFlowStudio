@@ -1182,6 +1182,20 @@ class ScriptsMixin:
         if action:
             self._insert_action(action)
 
+    def open_ssjj_coordinates(self):
+        from macroflow.ui.dialogs.ssjj_coordinates import SSJJCoordinatePanel
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.window.winfo_exists():
+            return
+        self._ssjj_coordinates = SSJJCoordinatePanel(self)
+
+    def _quit_app(self):
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.window.winfo_exists() and not panel.prepare_exit():
+            self._notify('路线尚未保存', '请先在游戏坐标浮窗中插入路线，或取消无效录制。')
+            return
+        return super()._quit_app()
+
     def add_python_script(self):
         path = filedialog.askopenfilename(
             parent=self.root, title="选择 Python 逻辑脚本（main(ctx)）",

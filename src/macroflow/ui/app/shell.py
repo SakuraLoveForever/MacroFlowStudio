@@ -1197,6 +1197,7 @@ class ShellMixin:
             ("▣ 前置窗口", "add_activate_window", "ScriptTool.TButton"),
             ("⌨ 键盘", "add_key", "ScriptTool.TButton"),
             ("Py 逻辑", "add_python_script", "AccentScriptTool.TButton"),
+            ("⌖ 游戏坐标", "open_ssjj_coordinates", "AccentScriptTool.TButton"),
             ("T 文本", "add_text", "ScriptTool.TButton"),
             ("i 提醒", "add_notice", "ScriptTool.TButton"),
             ("↖ 移动", "add_mouse_move", "ScriptTool.TButton"),

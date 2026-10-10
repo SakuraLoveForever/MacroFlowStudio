@@ -205,6 +205,34 @@ def record_route(reader, seconds, *, spacing=100):
     return Route(initial.map_id, points)
 
 
+def run_route_action(player, action):
+    """Execute an embedded route through the normal script player."""
+    from .player.control import PlaybackStopped
+
+    route = Route(action['map_id'], action['points'])
+    with SSJJReader() as reader:
+        class Context:
+            def checkpoint(self):
+                player.wait_while_paused()
+                if player.stop_event.is_set():
+                    raise PlaybackStopped()
+                player._poll_guards()
+                player._settle_after_guard()
+
+            def wait(self, ms=0):
+                self.checkpoint()
+                player._wait(ms)
+
+            def log(self, message):
+                player._log_event(message)
+
+            def ssjj_input(self, map_id, *, dx=None, hold_ms=None):
+                self.checkpoint()
+                return send_route_input(player, reader, map_id, dx=dx, hold_ms=hold_ms)
+
+        follow_route(Context(), route, reader=reader)
+
+
 def main():
     parser = argparse.ArgumentParser(description='SSJJ 只读路线录制；手动走路线')
     parser.add_argument('--output', type=Path, required=True)
