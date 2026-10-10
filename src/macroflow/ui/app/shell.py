@@ -869,6 +869,8 @@ class ShellMixin:
         ).pack(anchor="w", pady=pad(8, 0))
 
         ttk.Label(sidebar, text="执行设置", style="SidebarSection.TLabel").pack(anchor="w", pady=pad(18, 7))
+        from .disconnect_monitor import add_disconnect_monitor
+        add_disconnect_monitor(sidebar, self)
         playback_speed_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         playback_speed_title.pack(fill="x", pady=pad(0, 2))
         ttk.Label(playback_speed_title, text="Playback speed", style="Sidebar.TLabel").pack(side="left")
