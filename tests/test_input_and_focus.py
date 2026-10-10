@@ -752,8 +752,9 @@ class FocusModeTests(unittest.TestCase):
         app._apply_hotkey_bindings()
         app.input_guard.set_hotkeys.assert_called_once_with({VK_F8})
 
-    def test_disabled_focus_only_switches_english(self):
+    def test_disabled_focus_switches_english_when_checked(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app.switch_english_input_enabled = True
         app._focus_state_lock = threading.RLock()
         app.input_guard = Mock()
         app._ui = lambda callback, *args: callback(*args)
@@ -761,7 +762,7 @@ class FocusModeTests(unittest.TestCase):
         with package_patch('app', 'force_english_input', return_value=True):
             self.assertFalse(app._enter_focus_mode(123, enabled=False))
         app.input_guard.start.assert_not_called()
-        app._log.assert_called_once()
+        self.assertEqual(app._log.call_count, 2)
 
     def test_focus_guard_blocks_game_input_and_releases_on_owner_thread(self):
         release = threading.Event()
@@ -859,6 +860,7 @@ class FocusModeTests(unittest.TestCase):
 
     def test_focus_mode_switches_english_before_locking_input(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app.switch_english_input_enabled = True
         app._focus_state_lock = threading.RLock()
         app.player = Mock(paused=False)
         order = []
