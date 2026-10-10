@@ -9,7 +9,7 @@ ACTION_CATEGORIES = (
      ('add_block', 'add_python_script', 'add_notice')),
     ('窗口/软件', ('add_open_app', 'add_close_app', 'add_activate_window'),
      ('add_rebind_window', 'add_set_resolution')),
-    ('录制/脚本', ('_toggle_record_from_toolbar', '_insert_script_reference'),
+    ('录制/脚本', ('open_ssjj_coordinates', '_toggle_record_from_toolbar', '_insert_script_reference'),
      ('_insert_script_inline', '_insert_script_range')),
 )
 
