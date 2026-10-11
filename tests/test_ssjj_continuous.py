@@ -1,5 +1,6 @@
 import math
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 from tests.helpers.core import add_src_to_path
@@ -117,6 +118,42 @@ class ContinuousRouteTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, '快照未更新|校准失败'):
                     sim.run([(0, 0, 0), (600, 0, 0)])
                 self.assertEqual(sim.downs, 0)
+
+    def test_calibration_waits_for_delayed_yaw_after_fresh_ticks(self):
+        for delay in (.15, .45, .9):
+            for sensitivity in (-.2, .2):
+                with self.subTest(delay=delay, sensitivity=sensitivity):
+                    sim = Simulation(yaw=179, sensitivity=sensitivity)
+                    snapshot, move = sim.snapshot, sim.move
+                    calibration_moves = []
+
+                    def delayed_snapshot():
+                        value = snapshot()
+                        if sim.now < delay:
+                            return replace(value, yaw=179)
+                        return value
+
+                    def tracked_move(*, forward=False, dx=0):
+                        if sim.now < delay:
+                            self.assertFalse(forward)
+                            if dx:
+                                calibration_moves.append(dx)
+                        move(forward=forward, dx=dx)
+
+                    sim.snapshot, sim.move = delayed_snapshot, tracked_move
+                    sim.run([(0, 0, 0), (600, 0, 0)])
+                    self.assertEqual(calibration_moves, [16])
+                    self.assertLessEqual(math.dist(sim.position, (600, 0, 0)), 20)
+                    self.assertFalse(sim.forward)
+
+    def test_calibration_without_yaw_response_waits_then_reports_reading_failure(self):
+        sim = Simulation(sensitivity=0)
+        with self.assertRaisesRegex(RuntimeError, '校准失败.*未读到朝向变化'):
+            sim.run([(0, 0, 0), (600, 0, 0)])
+        self.assertGreaterEqual(sim.now, 1)
+        self.assertLessEqual(sim.now, 1.02)
+        self.assertEqual(sim.downs, 0)
+        self.assertFalse(sim.forward)
 
     def test_stuck_character_stops_and_releases_forward(self):
         sim = Simulation(speed=0)

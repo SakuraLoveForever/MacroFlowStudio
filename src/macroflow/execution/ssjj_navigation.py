@@ -229,10 +229,20 @@ def follow_route(ctx, route, *, reader=None, progress_timeout=3.0):
             raise RuntimeError('请落地后开始跑图')
         # Calibrate while stationary; steering updates then use each fresh game tick.
         ctx.move(dx=16)
-        measured = fresh(current)
-        sensitivity = ((measured.yaw - current.yaw + 180) % 360 - 180) / 16
-        if not .01 <= abs(sensitivity) <= 5:
-            raise RuntimeError('鼠标朝向校准失败，请关闭菜单并保持游戏前台')
+        deadline = clock() + 1
+        while True:
+            measured = sample()
+            sensitivity = ((measured.yaw - current.yaw + 180) % 360 - 180) / 16
+            # A new game tick can arrive before the mouse response is published.
+            if measured.client_time != current.client_time and abs(sensitivity) >= .01:
+                break
+            if clock() >= deadline:
+                if measured.client_time == current.client_time:
+                    raise RuntimeError('角色状态快照未更新，停止跑图')
+                raise RuntimeError('鼠标朝向校准失败：1 秒内未读到朝向变化，请确认游戏内可正常转动视角')
+            ctx.wait(ms=10)
+        if abs(sensitivity) > 5:
+            raise RuntimeError(f'鼠标朝向校准失败：测得灵敏度 {sensitivity:.3f} 度/单位，超出有效范围')
         current = measured
         updated = clock()
         speed = 600.0
