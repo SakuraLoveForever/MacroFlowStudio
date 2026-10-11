@@ -23,7 +23,7 @@ class SidebarPersistenceTests(unittest.TestCase):
         ):
             setattr(app, name + '_var', FakeVar(False))
         for name, value in {
-            'repeat': 1, 'backup_interval': '1h', 'playback_speed': 1.0,
+            'repeat': 1, 'backup_interval': '1h',
             'floating_notice_position': '顶部居中', 'close_action': 'exit',
             'startup_workflow_path': '', 'level_scripts_dir': '',
             'level_pack_scripts_dir': '', 'switch_scripts_dir': '', 'direction_scripts_dir': '',

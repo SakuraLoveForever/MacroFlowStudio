@@ -644,27 +644,23 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(player._held_keys, set())
         self.assertEqual(player._held_buttons, set())
 
-    def test_playback_speed_scales_waits_without_changing_hold_time(self):
+    def test_action_waits_keep_original_durations(self):
         player = MacroPlayer()
-        player.set_playback_speed(1.2)
         player._wait = Mock()
         player._execute_action = Mock(return_value=None)
 
         player._run_action_sequence([
-            {"type": "key_press", "delay_ms": 120, "hold_ms": 300},
+            {"type": "key_press", "delay_ms": 120, "hold_ms": 300, "after_delay_ms": 200},
             {"type": "delay", "delay_ms": 240},
         ], None)
 
         self.assertEqual(
             [call.args[0] for call in player._wait.call_args_list],
-            [100, 200],
+            [120, 200, 240],
         )
 
-    def test_playback_speed_scales_recorded_timeline(self):
-        # 录制脚本的节奏由 recorded_at_ms 的绝对时间轴决定：倍速必须作用在
-        # 时间轴上，否则侧栏「Playback speed」对真实录制脚本毫无影响。
+    def test_recorded_timeline_keeps_original_timestamps(self):
         player = MacroPlayer()
-        player.set_playback_speed(2.0)
         waits = []
         player._wait = waits.append
         player._execute_action = Mock(return_value=None)
@@ -675,7 +671,7 @@ class PlayerTests(unittest.TestCase):
         ])
 
         self.assertEqual(len(waits), 1)
-        self.assertAlmostEqual(waits[0], 500, delta=5)
+        self.assertAlmostEqual(waits[0], 1000, delta=5)
 
     def test_clone_actions_remaps_ocr_compare_jump_targets(self):
         # 数字比较动作的跳转字段名与识图不同，复制时漏映射会让目标脚本

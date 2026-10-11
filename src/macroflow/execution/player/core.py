@@ -95,10 +95,6 @@ class CoreMixin:
         self.on_timing = on_timing
         # 全局模块处理完之后的停顿（毫秒）：先执行完模块步骤、停一下、再继续原任务。
         self.guard_settle_ms = max(0, int(guard_settle_ms))
-        self.playback_speed = 1.0
-        # 本次播放定格的倍速：录制时间轴是绝对时间，运行中改倍速会让已排好的
-        # 时刻突然变短、动作成串爆发，因此只在 play() 开始时取一次快照。
-        self._timeline_speed = 1.0
         self.stop_event = threading.Event()
         self._resume_event = threading.Event()
         self._resume_event.set()
@@ -181,27 +177,13 @@ class CoreMixin:
         if self.stop_event.is_set():
             raise PlaybackStopped()
         return time.perf_counter() - started
-    def set_playback_speed(self, speed: float) -> None:
-        """Set the global delay multiplier; key/button hold durations stay unchanged."""
-        try:
-            value = float(speed)
-        except (TypeError, ValueError):
-            value = 1.0
-        self.playback_speed = max(0.5, min(2.0, round(value, 1)))
-        self._timeline_speed = self.playback_speed
-    def _scaled_delay(self, milliseconds: int) -> int:
-        if milliseconds <= 0:
-            return 0
-        speed = self._timeline_speed if self._timeline_speed > 0 else 1.0
-        return max(1, round(milliseconds / speed))
     def _timeline_offset_ms(self, action: dict) -> float:
-        """录制时间轴上的动作时刻 → 本次播放的目标时刻（按倍速缩放）。"""
+        """读取录制时间轴上的原始动作时刻。"""
         try:
             offset = float(action.get("recorded_at_ms", 0.0) or 0.0)
         except (TypeError, ValueError):
             return 0.0
-        speed = self._timeline_speed if self._timeline_speed > 0 else 1.0
-        return offset / speed
+        return offset
     def _wait_on_timeline(self, seconds: float) -> None:
         self._timeline_waiting = True
         try:
@@ -329,7 +311,6 @@ class CoreMixin:
         self.running = True
         self._timeline_waiting = False
         self._stop_requested_at = None
-        self._timeline_speed = max(0.5, min(2.0, float(self.playback_speed)))
         self._timeline = PlaybackTimeline(
             now=time.perf_counter,
             wait=self._wait_on_timeline,
@@ -719,7 +700,7 @@ class CoreMixin:
                 if "recorded_at_ms" in action:
                     self._timeline.wait_until(self._timeline_offset_ms(action))
                 else:
-                    self._wait(self._scaled_delay(int(action.get("delay_ms", default_delay))))
+                    self._wait(int(action.get("delay_ms", default_delay)))
                 waited_ms = (time.perf_counter() - wait_started) * 1000
                 action_started = time.perf_counter()
                 jump_target = self._execute_action(action, hwnd, script_stack, depth)
@@ -781,7 +762,7 @@ class CoreMixin:
                 on_action(index + 1, len(actions))
             after_delay = max(0, int(action.get("after_delay_ms", 0)))
             if after_delay:
-                self._wait(self._scaled_delay(after_delay))
+                self._wait(after_delay)
             if single_action:
                 # 单独执行：这一行跑完就结束。跳转/结束/推进这类控制结果只记录，
                 # 不顺着目标行继续执行，否则就不再是“单独执行这一个动作”。
@@ -878,9 +859,7 @@ class CoreMixin:
                 self._target_screen = get_playback_screen_rect(hwnd)
             self._log_event(f"已重新绑定目标窗口，HWND={hwnd}。")
         elif kind == "delay":
-            # 手工延时同样跟随倍速，否则同一份脚本里“录制间隔加速、手工延时
-            # 不加速”两种口径混在一起。
-            self._wait(self._scaled_delay(int(action.get("ms", 100))))
+            self._wait(int(action.get("ms", 100)))
         elif kind == "key":
             vk = int(action.get("vk", 0))
             down = bool(action.get("down", True))
