@@ -134,6 +134,7 @@ class DisconnectMonitorControlTests(unittest.TestCase):
     def test_switch_is_opt_in_and_root_destruction_stops_worker(self):
         from macroflow.ui.app import disconnect_monitor as ui
         app, parent = Mock(), Mock()
+        app.app_settings = {}
         variable = Mock()
         variable.get.return_value = False
         with patch.object(ui.tk, "BooleanVar", return_value=variable) as var, \
