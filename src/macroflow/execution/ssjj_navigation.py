@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,123 +63,252 @@ def _valid(sample, map_id):
         raise RuntimeError('角色坐标无效，停止跑图')
 
 
-def send_route_input(player, reader, map_id, *, dx=None, hold_ms=None):
-    """Parent-process boundary: recheck after RPC waits/guards; never hold across pause."""
-    from macroflow.input.wininput import send_key, send_move_relative
-    from .player.control import PlaybackStopped
+class RouteContext:
+    """Parent-owned continuous input, released before pauses and guard handlers."""
+    def __init__(self, player, reader, map_id):
+        self.player, self.reader, self.map_id = player, reader, map_id
+        self.forward = False
+        self._lock = threading.RLock()
+        self._closed = threading.Event()
+        self._deadline = 0.0
+        self._error = None
+        self._watchdog = threading.Thread(target=self._watch, name='ssjj-input-watchdog', daemon=True)
+        self._watchdog.start()
 
-    if (dx is None) == (hold_ms is None):
-        raise ValueError('需要且只能指定转向或前进')
-    if dx is not None and (type(dx) is not int or not -200 <= dx <= 200):
-        raise ValueError('转向超出范围')
-    if hold_ms is not None and (type(hold_ms) is not int or not 1 <= hold_ms <= 150):
-        raise ValueError('按键时长超出范围')
-    _valid(reader.snapshot(), map_id)
-    reader.require_foreground()
-    if player.stop_event.is_set():
-        raise PlaybackStopped()
-    if player.paused:
-        return  # The script loop pauses before accepting another request.
-    if dx is not None:
-        send_move_relative(dx, 0)
-        return
-    player._held_keys.add(87)
-    try:
-        send_key(87, True)
-        deadline = time.monotonic() + hold_ms / 1000
-        while time.monotonic() < deadline:
-            if player.stop_event.wait(min(0.01, max(0, deadline - time.monotonic()))):
+    def release(self):
+        from macroflow.input.wininput import send_key
+        with self._lock:
+            if self.forward:
+                send_key(87, False)
+                self.forward = False
+                self.player._held_keys.discard(87)
+
+    def _watch(self):
+        # A stalled guard/reader must not keep W down while the controller is blocked.
+        while not self._closed.wait(.01):
+            try:
+                with self._lock:
+                    if not self.forward:
+                        continue
+                    self.reader.require_foreground()
+                    if (self.player.paused or self.player.stop_event.is_set() or
+                            time.monotonic() >= self._deadline):
+                        self.release()
+            except Exception as exc:
+                self._error = exc
+                try:
+                    self.release()
+                finally:
+                    return
+
+    def close(self):
+        self._closed.set()
+        self._watchdog.join()
+        self.release()
+
+    def move(self, *, forward=False, dx=0):
+        from macroflow.input.wininput import send_key, send_move_relative
+        from .player.control import PlaybackStopped
+        if type(forward) is not bool or type(dx) is not int or not -200 <= dx <= 200:
+            raise ValueError('无效的路线输入')
+        if not forward:
+            self.release()
+        if not forward and not dx:
+            return  # Release must work even when telemetry or focus is unavailable.
+        try:
+            if self._error is not None:
+                raise self._error
+            _valid(self.reader.snapshot(), self.map_id)
+            self.reader.require_foreground()
+            if self.player.stop_event.is_set():
                 raise PlaybackStopped()
-            if player.paused:
-                break
-            reader.require_foreground()
-    finally:
-        send_key(87, False)
-        player._held_keys.discard(87)
+            if self.player.paused:
+                self.release()
+                return
+            with self._lock:
+                if self._error is not None:
+                    raise self._error
+                self.reader.require_foreground()
+                if self.player.paused or self.player.stop_event.is_set():
+                    self.release()
+                    return
+                if forward:
+                    self._deadline = time.monotonic() + .12
+                    if not self.forward:
+                        self.player._held_keys.add(87)
+                        self.forward = True
+                        send_key(87, True)
+                if dx:
+                    send_move_relative(dx, 0)
+                if self.player.paused or self.player.stop_event.is_set():
+                    self.release()
+        except BaseException:
+            self.release()
+            raise
+
+    def checkpoint(self):
+        from .player.control import PlaybackStopped
+        if self._error is not None:
+            raise self._error
+        if self.player.paused or self.player.stop_event.is_set():
+            self.release()
+        self.player.wait_while_paused()
+        if self.player.stop_event.is_set():
+            raise PlaybackStopped()
+        self.player._poll_guards(before_handle=self.release)
+        self.player._settle_after_guard()
+
+    def wait(self, ms=0):
+        from .player.control import PlaybackStopped
+        if self.player.stop_event.wait(ms / 1000):
+            self.release()
+            raise PlaybackStopped()
+
+    def log(self, message):
+        self.player._log_event(message)
+
+
+def _corner(points, index):
+    if index == 0 or index == len(points) - 1:
+        return True
+    before, point, after = points[index - 1:index + 2]
+    incoming = math.atan2(point[1] - before[1], point[0] - before[0])
+    outgoing = math.atan2(after[1] - point[1], after[0] - point[0])
+    angle = (outgoing - incoming + math.pi) % (2 * math.pi) - math.pi
+    return abs(angle) > math.radians(25)
+
+
+def _passed(position, before, target):
+    """Only pass the current segment, never pick a nearby later leg of a route."""
+    dx, dy = target[0] - before[0], target[1] - before[1]
+    length = math.hypot(dx, dy)
+    if length == 0 or abs(position[2] - target[2]) > 25:
+        return False
+    x, y = position[0] - target[0], position[1] - target[1]
+    return (x * dx + y * dy >= 0 and abs(x * dy - y * dx) / length <= 40)
 
 
 def follow_route(ctx, route, *, reader=None, progress_timeout=3.0):
-    """Follow once using input checked in Macro's parent process."""
+    """Track fresh state continuously; Python scripts delegate the entire action."""
     if not math.isfinite(progress_timeout) or progress_timeout <= 0:
         raise ValueError('进展超时必须大于零')
-    owned = reader is None
-    reader = reader or SSJJReader()
+    if reader is None:
+        return ctx.action({'type': 'ssjj_route', 'map_id': route.map_id,
+                           'points': route.points})
+    suspended = 0.0
+
+    def clock():
+        return time.monotonic() - suspended
+
+    def sample():
+        nonlocal suspended
+        start = time.monotonic()
+        ctx.checkpoint()
+        suspended += max(0, time.monotonic() - start)
+        reader.require_foreground()
+        value = reader.snapshot()
+        _valid(value, route.map_id)
+        return value
+
+    def fresh(previous):
+        deadline = clock() + 1
+        while True:
+            value = sample()
+            if value.client_time != previous.client_time:
+                return value
+            if clock() >= deadline:
+                raise RuntimeError('角色状态快照未更新，停止跑图')
+            ctx.wait(ms=10)
+
+    moving = False
     try:
-        suspended = 0.0
-
-        def rpc(call, active_seconds=0):
-            nonlocal suspended
-            start = time.monotonic()
-            result = call()
-            # Parent may pause or run guards before accepting the request.
-            suspended += max(0, time.monotonic() - start - active_seconds)
-            return result
-
-        def clock():
-            return time.monotonic() - suspended
-
-        def wait(ms):
-            rpc(lambda: ctx.wait(ms=ms), ms / 1000)
-
-        def sample():
-            rpc(ctx.checkpoint)
-            reader.require_foreground()
-            value = reader.snapshot()
-            _valid(value, route.map_id)
-            return value
-
-        def route_input(*, dx=None, hold_ms=None):
-            before = sample()
-            rpc(lambda: ctx.ssjj_input(route.map_id, dx=dx, hold_ms=hold_ms),
-                (hold_ms or 0) / 1000)
-            deadline = clock() + 1
-            wait(150)
-            after = sample()
-            while after.client_time == before.client_time:
-                if clock() >= deadline:
-                    raise RuntimeError('角色状态快照未更新，停止跑图')
-                wait(20)
-                after = sample()
-            return after
-
         current = sample()
         if math.dist(current.position, route.points[0]) > 250:
             raise RuntimeError('距离路线起点超过 250，请先回到起点')
         if not current.on_ground:
             raise RuntimeError('请落地后开始跑图')
-        # Measure signed sensitivity rather than assume game settings or OS pointer speed.
-        measured = route_input(dx=16)
-        delta = (measured.yaw - current.yaw + 180) % 360 - 180
-        sensitivity = delta / 16
-        if not 0.01 <= abs(sensitivity) <= 5:
+        # Calibrate while stationary; steering updates then use each fresh game tick.
+        ctx.move(dx=16)
+        measured = fresh(current)
+        sensitivity = ((measured.yaw - current.yaw + 180) % 360 - 180) / 16
+        if not .01 <= abs(sensitivity) <= 5:
             raise RuntimeError('鼠标朝向校准失败，请关闭菜单并保持游戏前台')
+        current = measured
+        updated = clock()
+        speed = 600.0
+        index = 0
+        best = best_angle = math.inf
+        progressed = started = updated
+        move_deadline = updated
         ctx.log(f'SSJJ 路线：地图 {route.map_id}，{len(route.points)} 个点')
-        for index, target in enumerate(route.points):
-            best = math.inf
-            progressed = started = clock()
-            while True:
-                current = sample()
-                distance, error = steering(current, target)
-                if distance <= 80:
-                    break
-                now = clock()
-                if distance < best - 5:
-                    best, progressed = distance, now
-                if now - started > 30:
-                    raise RuntimeError(f'路线点 {index + 1} 超时，已停止')
-                if abs(error) > 8:
-                    route_input(dx=max(-200, min(200, round(error / sensitivity))))
-                    progressed = clock()
+        while index < len(route.points):
+            target = route.points[index]
+            terminal = index == len(route.points) - 1
+            corner = _corner(route.points, index)
+            tolerance = 20 if terminal else (25 if corner else 80)
+            distance, error = steering(current, target)
+            passed = (not terminal and not corner and index > 0 and
+                      _passed(current.position, route.points[index - 1], target))
+            reached = distance <= tolerance and abs(current.position[2] - target[2]) <= 25
+            if reached or passed:
+                # Verify the endpoint after releasing, using a newer state snapshot.
+                if terminal and moving:
+                    ctx.move()
+                    moving = False
+                    current = fresh(current)
+                    updated = clock()
                     continue
-                if now - progressed > progress_timeout:
-                    raise RuntimeError(f'路线点 {index + 1} 无进展，可能卡住，已停止')
-                sample()
-                route_input(hold_ms=max(20, min(150, round(distance / 2))))
-            ctx.log(f'到达路线点 {index + 1}/{len(route.points)}')
+                ctx.log(f'到达路线点 {index + 1}/{len(route.points)}')
+                index += 1
+                best = best_angle = math.inf
+                progressed = started = clock()
+                continue
+            now = clock()
+            if distance < best - 2:
+                best, progressed = distance, now
+            if not moving and abs(error) < best_angle - 1:
+                best_angle, progressed = abs(error), now
+            if now - started > 30:
+                raise RuntimeError(f'路线点 {index + 1} 超时，已停止')
+            if now - progressed > progress_timeout:
+                raise RuntimeError(f'路线点 {index + 1} 无进展，可能卡住，已停止')
+            # Small turns happen while walking; large turns and wrong-height arrivals stop.
+            forward = abs(error) <= (35 if moving else 20) and math.dist(
+                current.position[:2], target[:2]) > 10
+            dx = max(-200, min(200, round(error / sensitivity))) if abs(error) > 1 else 0
+            ctx.move(forward=forward, dx=dx)
+            moving = forward
+            # A short renewable movement lease stops on missing updates. Near a corner
+            # or the goal, measured speed limits travel before the next telemetry tick.
+            budget = min(.12, max(.005, (distance - tolerance / 2) / speed)) if (
+                terminal or corner) else .12
+            move_deadline = now + budget
+            previous = current
+            travel_time = 0.0
+            while True:
+                before_wait = clock()
+                was_moving = moving
+                ctx.wait(ms=10)
+                current = sample()
+                now = clock()
+                if was_moving:
+                    travel_time += now - before_wait
+                if current.client_time != previous.client_time:
+                    displacement = math.dist(current.position, previous.position)
+                    if displacement > 1000:
+                        raise RuntimeError('跑图中发生传送或坐标跳变，已停止')
+                    if travel_time > 0 and displacement > 1:
+                        speed = max(100., displacement / travel_time)
+                    updated = now
+                    break
+                if moving and now >= move_deadline:
+                    ctx.move()
+                    moving = False
+                if now - updated >= 1:
+                    raise RuntimeError('角色状态快照未更新，停止跑图')
         ctx.log('SSJJ 路线完成')
     finally:
-        if owned:
-            reader.close()
+        ctx.move()
 
 
 def record_route(reader, seconds, *, spacing=100):
@@ -207,30 +337,13 @@ def record_route(reader, seconds, *, spacing=100):
 
 def run_route_action(player, action):
     """Execute an embedded route through the normal script player."""
-    from .player.control import PlaybackStopped
-
     route = Route(action['map_id'], action['points'])
     with SSJJReader() as reader:
-        class Context:
-            def checkpoint(self):
-                player.wait_while_paused()
-                if player.stop_event.is_set():
-                    raise PlaybackStopped()
-                player._poll_guards()
-                player._settle_after_guard()
-
-            def wait(self, ms=0):
-                self.checkpoint()
-                player._wait(ms)
-
-            def log(self, message):
-                player._log_event(message)
-
-            def ssjj_input(self, map_id, *, dx=None, hold_ms=None):
-                self.checkpoint()
-                return send_route_input(player, reader, map_id, dx=dx, hold_ms=hold_ms)
-
-        follow_route(Context(), route, reader=reader)
+        context = RouteContext(player, reader, route.map_id)
+        try:
+            follow_route(context, route, reader=reader)
+        finally:
+            context.close()
 
 
 def main():

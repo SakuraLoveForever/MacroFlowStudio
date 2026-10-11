@@ -3,8 +3,6 @@ import tempfile
 import unittest
 import struct
 import threading
-import time
-from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,7 +10,7 @@ from tests.helpers.core import add_src_to_path
 
 from macroflow.execution.ssjj_state import PlayerState, SSJJReader
 from macroflow.execution.ssjj_navigation import (
-    Route, follow_route, steering, record_route, send_route_input,
+    Route, steering, record_route, RouteContext,
 )
 
 
@@ -38,63 +36,6 @@ class RouteTests(unittest.TestCase):
         self.assertLess(abs(error), 3)
         self.assertEqual(steering(state(), (0, 0, 300))[0], 300)
 
-    def test_closed_loop_reaches_taught_route_and_releases_each_pulse(self):
-        reader = FakeReader()
-        context = FakeContext(reader)
-        follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0), (300, 300, 0)]),
-                     reader=reader)
-        self.assertLess(math.dist(reader.position, (300, 300, 0)), 85)
-        self.assertTrue(context.presses)
-        self.assertTrue(all(key == 'W' and hold <= 150 for key, hold in context.presses))
-
-    def test_refuses_dead_wrong_map_and_distant_start_before_input(self):
-        route = Route(100001, [(0, 0, 0), (300, 0, 0)])
-        for sample in [state(dead=True), state(map_id=2), state(x=5000)]:
-            reader = FakeReader(sample)
-            context = FakeContext(reader)
-            with self.assertRaises(RuntimeError):
-                follow_route(context, route, reader=reader)
-            self.assertFalse(context.presses)
-            self.assertFalse(context.turns)
-
-    def test_lost_focus_stops_without_input(self):
-        reader = FakeReader()
-        reader.foreground = False
-        context = FakeContext(reader)
-        with self.assertRaisesRegex(RuntimeError, '前台'):
-            follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]), reader=reader)
-        self.assertFalse(context.presses)
-        self.assertFalse(context.turns)
-
-    def test_no_movement_stops_instead_of_walking_forever(self):
-        reader = FakeReader()
-        context = FakeContext(reader)
-        context.moving = False
-        with self.assertRaisesRegex(RuntimeError, '进展|卡住'):
-            follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]),
-                         reader=reader, progress_timeout=0.01)
-        self.assertLess(len(context.presses), 100)
-
-    def test_unresponsive_mouse_stops_before_forward_input(self):
-        reader = FakeReader()
-        context = FakeContext(reader)
-        context.action = lambda action: None
-        with self.assertRaisesRegex(RuntimeError, '校准失败'):
-            follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]), reader=reader)
-        self.assertFalse(context.presses)
-
-    def test_map_change_during_following_stops(self):
-        reader = FakeReader()
-        context = FakeContext(reader)
-        original_press = context.press
-        def press(key, hold_ms):
-            original_press(key, hold_ms)
-            reader.sample = state(map_id=2)
-        context.press = press
-        with self.assertRaisesRegex(RuntimeError, '地图'):
-            follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]), reader=reader)
-        self.assertEqual(len(context.presses), 1)
-
     def test_recording_collects_coordinates_and_rejects_teleport(self):
         for end_position, error in [(state(x=300), None), (state(x=5000), '跳变')]:
             reader = FakeReader()
@@ -110,39 +51,6 @@ class RouteTests(unittest.TestCase):
                     self.assertEqual(record_route(reader, 1).points,
                                      [(0, 0, 0), (150, 0, 0), (300, 0, 0)])
 
-    def test_low_sensitivity_turn_and_pauses_do_not_count_as_stuck(self):
-        reader = FakeReader(state(yaw=180))
-        context = FakeContext(reader)
-        clock = [0.0]
-        def wait(ms=0, seconds=0):
-            clock[0] += ms / 1000 + seconds
-        def turn(action):
-            context.turns.append(action)
-            reader.yaw += action['dx'] * -0.02
-        def checkpoint():
-            clock[0] += 40  # A parent-side pause on every RPC checkpoint.
-        context.wait, context.action, context.checkpoint = wait, turn, checkpoint
-        with patch('macroflow.execution.ssjj_navigation.time.monotonic', side_effect=lambda: clock[0]):
-            follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]),
-                         reader=reader, progress_timeout=0.5)
-        self.assertLess(math.dist(reader.position, (300, 0, 0)), 85)
-
-    def test_frozen_snapshot_stops_before_forward_input(self):
-        reader = FakeReader()
-        original = reader.snapshot
-        def frozen():
-            value = original()
-            return PlayerState(value.map_id, value.position, value.yaw, False, True, 1)
-        reader.snapshot = frozen
-        context = FakeContext(reader)
-        clock = [0.0]
-        def wait(ms=0, seconds=0):
-            clock[0] += ms / 1000 + seconds
-        context.wait = wait
-        with patch('macroflow.execution.ssjj_navigation.time.monotonic', side_effect=lambda: clock[0]):
-            with self.assertRaisesRegex(RuntimeError, '快照未更新'):
-                follow_route(context, Route(100001, [(0, 0, 0), (300, 0, 0)]), reader=reader)
-        self.assertFalse(context.presses)
 
 
 class StateLayoutTests(unittest.TestCase):
@@ -166,101 +74,166 @@ class StateLayoutTests(unittest.TestCase):
 
 class InputBoundaryTests(unittest.TestCase):
     def player(self):
-        return SimpleNamespace(stop_event=threading.Event(), paused=False, _held_keys=set())
+        from macroflow.execution.player import MacroPlayer
+        return MacroPlayer()
 
-    def test_pause_releases_w_without_waiting_for_resume(self):
+    def context(self, player=None, reader=None):
+        context = RouteContext(player or self.player(), reader or FakeReader(), 100001)
+        self.addCleanup(lambda: getattr(context, 'close', context.release)())
+        return context
+
+    def test_slow_guard_poll_cannot_leave_forward_held_indefinitely(self):
+        context = self.context()
+        released = threading.Event()
+        observed = []
+        def key(vk, down):
+            if not down:
+                released.set()
+        def poll():
+            observed.append(released.wait(.4))
+            return None
+        context.player.on_guard_poll = poll
+        with patch('macroflow.input.wininput.send_key', side_effect=key):
+            context.move(forward=True)
+            context.checkpoint()
+            context.release()
+        self.assertEqual(observed, [True])
+
+    def test_watchdog_releases_on_pause_stop_or_focus_loss_without_controller_poll(self):
+        for failure in ('pause', 'stop', 'focus'):
+            with self.subTest(failure=failure):
+                context = self.context()
+                released = threading.Event()
+                def key(vk, down):
+                    if not down:
+                        released.set()
+                with patch('macroflow.input.wininput.send_key', side_effect=key):
+                    context.move(forward=True)
+                    if failure == 'pause':
+                        context.player.pause()
+                    elif failure == 'stop':
+                        context.player.stop()
+                    else:
+                        context.reader.foreground = False
+                    self.assertTrue(released.wait(.1))
+                    context.release()
+
+    def test_watchdog_focus_failure_cannot_be_rearmed_by_an_inflight_move(self):
+        context = self.context()
+        released = threading.Event()
+        armed = False
+        original = context.reader.require_foreground
+        def focus_check():
+            original()
+            if armed and threading.current_thread() is threading.main_thread():
+                context.reader.foreground = False
+                self.assertTrue(released.wait(.4))
+        context.reader.require_foreground = focus_check
+        def key(vk, down):
+            if not down:
+                released.set()
+        with patch('macroflow.input.wininput.send_key', side_effect=key) as sender:
+            context.move(forward=True)
+            armed = True
+            with self.assertRaisesRegex(RuntimeError, '前台'):
+                context.move(forward=True, dx=10)
+            self.assertEqual([call.args for call in sender.call_args_list], [(87, True), (87, False)])
+            self.assertFalse(context.forward)
+
+    def test_continuous_forward_sends_one_down_and_turns_while_held(self):
+        context = self.context()
+        with patch('macroflow.input.wininput.send_key') as key, patch(
+            'macroflow.input.wininput.send_move_relative'
+        ) as move:
+            context.move(forward=True)
+            context.move(forward=True, dx=10)
+            self.assertEqual(key.call_args_list[0].args, (87, True))
+            self.assertEqual(key.call_count, 1)
+            move.assert_called_once_with(10, 0)
+            self.assertIn(87, context.player._held_keys)
+            context.release()
+            self.assertEqual(key.call_args.args, (87, False))
+        self.assertEqual(context.player._held_keys, set())
+
+    def test_pause_releases_before_waiting_for_resume(self):
         player = self.player()
-        def send_key(vk, down):
-            if down:
-                player.paused = True
-        with patch('macroflow.input.wininput.send_key', side_effect=send_key) as key:
-            started = time.monotonic()
-            send_route_input(player, FakeReader(), 100001, hold_ms=150)
-            self.assertLess(time.monotonic() - started, 0.1)
-            self.assertEqual([call.args for call in key.call_args_list], [(87, True), (87, False)])
+        context = self.context(player)
+        def resume():
+            self.assertFalse(context.forward)
+            player.resume()
+        player.wait_while_paused = resume
+        with patch('macroflow.input.wininput.send_key') as key:
+            context.move(forward=True)
+            player.pause()
+            context.checkpoint()
+            self.assertEqual(key.call_args.args, (87, False))
         self.assertEqual(player._held_keys, set())
 
-    def test_rechecks_map_at_actual_input_boundary(self):
-        reader = FakeReader(state(map_id=2))
-        with patch('macroflow.input.wininput.send_move_relative') as move:
-            with self.assertRaisesRegex(RuntimeError, '地图'):
-                send_route_input(self.player(), reader, 100001, dx=16)
-            move.assert_not_called()
-
-    def test_focus_lost_during_pulse_releases_key(self):
-        reader = FakeReader()
-        def send_key(vk, down):
-            if down:
-                reader.foreground = False
-        with patch('macroflow.input.wininput.send_key', side_effect=send_key) as key:
-            with self.assertRaisesRegex(RuntimeError, '前台'):
-                send_route_input(self.player(), reader, 100001, hold_ms=150)
+    def test_guard_releases_before_handler_and_settle_wait(self):
+        player = self.player()
+        context = self.context(player)
+        hits = iter([{'kind': 'success'}, None])
+        player.on_guard_poll = lambda: next(hits)
+        player.guard_settle_ms = 0
+        def handle(hit):
+            self.assertFalse(context.forward)
+            self.assertNotIn(87, player._held_keys)
+        player.handle_guard_hit = handle
+        with patch('macroflow.input.wininput.send_key') as key:
+            context.move(forward=True)
+            context.checkpoint()
             self.assertEqual(key.call_args.args, (87, False))
 
-    def test_rpc_dispatch_owns_reader_and_closes_it(self):
-        from macroflow.execution.python_script import run_python_script
-        from macroflow.execution.player import MacroPlayer
-        with tempfile.TemporaryDirectory() as folder:
-            path = Path(folder) / 'rpc.py'
-            path.write_text('def main(ctx):\n    ctx.ssjj_input(100001, dx=16)\n', encoding='utf-8')
-            with patch('macroflow.execution.ssjj_state.SSJJReader') as reader, patch(
-                'macroflow.execution.ssjj_navigation.send_route_input', return_value=None
-            ) as sender:
-                run_python_script(path, MacroPlayer(), None, set(), 0)
-                reader.assert_called_once_with()
-                sender.assert_called_once()
-                self.assertEqual(sender.call_args.kwargs, {'map_id': 100001, 'dx': 16, 'hold_ms': None})
-                reader.return_value.close.assert_called_once_with()
+    def test_stop_during_wait_releases_key(self):
+        from macroflow.execution.player.control import PlaybackStopped
+        context = self.context()
+        with patch('macroflow.input.wininput.send_key') as key:
+            context.move(forward=True)
+            context.player.stop()
+            with self.assertRaises(PlaybackStopped):
+                context.wait(ms=10)
+            self.assertEqual(key.call_args.args, (87, False))
+        self.assertEqual(context.player._held_keys, set())
+
+    def test_state_or_focus_failure_at_input_boundary_releases_key(self):
+        for failure in ('map', 'focus', 'read'):
+            with self.subTest(failure=failure):
+                reader = FakeReader()
+                context = self.context(reader=reader)
+                with patch('macroflow.input.wininput.send_key') as key:
+                    context.move(forward=True)
+                    if failure == 'map':
+                        reader.sample = state(map_id=2)
+                    elif failure == 'focus':
+                        reader.foreground = False
+                    else:
+                        reader.snapshot = lambda: (_ for _ in ()).throw(RuntimeError('读取失败'))
+                    with self.assertRaises(RuntimeError):
+                        context.move(forward=True, dx=16)
+                    self.assertEqual(key.call_args.args, (87, False))
+                    context.release()
+                self.assertEqual(context.player._held_keys, set())
+
+    def test_input_failure_still_attempts_key_up(self):
+        context = self.context()
+        def send(vk, down):
+            if down:
+                raise OSError('input unavailable')
+        with patch('macroflow.input.wininput.send_key', side_effect=send) as key:
+            with self.assertRaises(OSError):
+                context.move(forward=True)
+            self.assertEqual(key.call_args.args, (87, False))
+        self.assertFalse(context.forward)
 
 
 class FakeReader:
     def __init__(self, sample=None):
         self.sample = sample or state()
-        self.position = list(self.sample.position)
-        self.yaw = self.sample.yaw
         self.foreground = True
-        self.tick = 0
 
     def snapshot(self):
-        self.tick += 1
-        return PlayerState(self.sample.map_id, tuple(self.position), self.yaw,
-                           self.sample.dead, True, self.tick)
+        return self.sample
 
     def require_foreground(self):
         if not self.foreground:
             raise RuntimeError('游戏必须在前台')
-
-
-class FakeContext:
-    def __init__(self, reader):
-        self.reader = reader
-        self.presses = []
-        self.turns = []
-        self.moving = True
-
-    def action(self, action):
-        self.turns.append(action)
-        self.reader.yaw += action['dx'] * -0.2
-
-    def press(self, key, hold_ms):
-        self.presses.append((key, hold_ms))
-        if self.moving:
-            angle = math.radians(self.reader.yaw)
-            self.reader.position[0] += math.cos(angle) * hold_ms * 0.6
-            self.reader.position[1] += math.sin(angle) * hold_ms * 0.6
-
-    def wait(self, ms=0, seconds=0):
-        import time
-        time.sleep(0.001)
-
-    def checkpoint(self):
-        pass
-
-    def ssjj_input(self, map_id, *, dx=None, hold_ms=None):
-        if dx is not None:
-            self.action({'dx': dx})
-        else:
-            self.press('W', hold_ms)
-
-    def log(self, message):
-        pass

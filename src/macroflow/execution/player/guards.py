@@ -34,7 +34,7 @@ from .control import (
 class GuardsMixin:
     """全局守卫：轮询、命中处理段与命中后的稳定等待。"""
 
-    def _poll_guards(self) -> bool:
+    def _poll_guards(self, *, before_handle=None) -> bool:
         """动作边界/等待片上的守卫评估：依次内联执行当前轮全部命中。
 
         返回这一轮是否真的执行过处理段（单独执行全局检测时据此判断“已触发”）。
@@ -56,6 +56,8 @@ class GuardsMixin:
                 ) * 1000
             if not hit:
                 return handled
+            if before_handle is not None:
+                before_handle()
             self.handle_guard_hit(hit)
             handled = True
             self._timeline.mark_boundary()

@@ -86,20 +86,50 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(action['type'], 'ssjj_route')
         self.assertEqual(action['points'], [[0, 0, 519], [300, 0, 519]])
 
-    def test_native_adapter_uses_checked_input_and_closes_handle(self):
+    def test_native_adapter_owns_continuous_input_and_closes_handle(self):
         from macroflow.execution.ssjj_navigation import run_route_action
         from macroflow.execution.player import MacroPlayer
+        from tests.test_ssjj_navigation import FakeReader
         player = MacroPlayer()
         with patch('macroflow.execution.ssjj_navigation.SSJJReader') as factory, patch(
-            'macroflow.execution.ssjj_navigation.send_route_input'
+            'macroflow.input.wininput.send_key'
         ) as sender, patch('macroflow.execution.ssjj_navigation.follow_route') as follower:
             reader = factory.return_value.__enter__.return_value
+            reader.snapshot.side_effect = FakeReader().snapshot
             def follow(context, route, *, reader):
-                context.ssjj_input(100001, dx=16)
+                context.move(forward=True)
+                raise RuntimeError('controller failed')
             follower.side_effect = follow
-            run_route_action(player, {'map_id': 100001, 'points': [(0, 0, 0), (300, 0, 0)]})
-            sender.assert_called_once_with(player, reader, 100001, dx=16, hold_ms=None)
+            with self.assertRaisesRegex(RuntimeError, 'controller failed'):
+                run_route_action(player, {'map_id': 100001, 'points': [(0, 0, 0), (300, 0, 0)]})
+            self.assertEqual([call.args for call in sender.call_args_list], [(87, True), (87, False)])
             factory.return_value.__exit__.assert_called_once()
+        self.assertEqual(player._held_keys, set())
+
+    def test_python_route_uses_parent_controller_and_releases_input(self):
+        import tempfile
+        from pathlib import Path
+        from macroflow.execution.python_script import run_python_script
+        from macroflow.execution.player import MacroPlayer
+        player = MacroPlayer()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'route.py'
+            path.write_text(
+                'from macroflow.execution.ssjj_navigation import Route, follow_route\n'
+                'def main(ctx):\n'
+                '    follow_route(ctx, Route(100001, [(0,0,519),(300,0,519)]))\n',
+                encoding='utf-8')
+            with patch('macroflow.execution.ssjj_navigation.SSJJReader') as factory, patch(
+                'macroflow.execution.ssjj_navigation.follow_route'
+            ) as follow, patch('macroflow.input.wininput.send_key') as key:
+                reader = factory.return_value.__enter__.return_value
+                reader.snapshot.return_value = sample()
+                follow.side_effect = lambda context, route, **kwargs: context.move(forward=True)
+                run_python_script(path, player, None, set(), 0)
+                follow.assert_called_once()
+                self.assertEqual([call.args for call in key.call_args_list], [(87, True), (87, False)])
+                factory.return_value.__exit__.assert_called_once()
+        self.assertEqual(player._held_keys, set())
 
     def test_quit_does_not_discard_an_unsaved_route(self):
         from macroflow.ui.app.scripts import ScriptsMixin
