@@ -50,6 +50,10 @@ class RecordingMixin:
         on_recorded 在录制结束时被调用：``on_recorded(steps)``，steps 是录到的
         动作列表（已补好 id）。
         """
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.monitor.status()[2]:
+            self._notify('正在录制路线', '请先按 F8 停止路线录制。')
+            return False
         if self.recorder.running:
             self._notify("正在录制", "已经在录制中，请先按 F8 停止。")
             return False
@@ -73,11 +77,19 @@ class RecordingMixin:
         })
         self._set_status(f"已插入录制动作：{len(steps)} 步", "success")
     def toggle_record(self, from_ui: bool = False):
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.monitor.status()[2]:
+            panel.save()
+            return
         if self.recorder.running:
             self.stop_recording(discard_recent=from_ui)
         else:
             self.start_recording(from_ui=from_ui)
     def start_recording(self, from_ui: bool = False):
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.monitor.status()[2]:
+            self._notify('正在录制路线', '请先按 F8 停止路线录制。')
+            return
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "请先停止当前脚本或工作流。")
             return

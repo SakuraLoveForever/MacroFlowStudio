@@ -99,6 +99,9 @@ class SSJJCoordinatePanel:
             raise RuntimeError('请先停止普通键鼠录制，避免与坐标路线重复')
         if self.app.player.running:
             raise RuntimeError('请先停止脚本执行，再录制或插入路线')
+        worker = getattr(self.app, 'worker', None)
+        if worker is not None and worker.is_alive():
+            raise RuntimeError('请先停止脚本或工作流')
         thread = getattr(self.app, 'workflow_thread', None)
         if thread is not None and thread.is_alive():
             raise RuntimeError('请先停止工作流')
@@ -111,8 +114,8 @@ class SSJJCoordinatePanel:
             self._editor_ready()
             if self.pending_action is not None:
                 raise RuntimeError('请先插入或取消已录路线')
-            self.monitor.start_recording()
-            self.state.set('正在录制：切回游戏手动走路，结束时点击“停止并插入脚本”')
+            self.monitor.start_recording(filter_vks=getattr(self.app, '_hotkey_recorder_filter_vks', set()))
+            self.state.set('正在录制键鼠与坐标：切回游戏操作，F8 停止并插入脚本。')
         except Exception as exc:
             self.state.set(str(exc))
 
@@ -122,9 +125,9 @@ class SSJJCoordinatePanel:
             if self.pending_action is None:
                 self.pending_action = self.monitor.stop_recording()
             self.app._insert_action(self.pending_action)
-            count = len(self.pending_action['points'])
+            count = len(self.pending_action['inputs'])
             self.pending_action = None
-            self.state.set(f'已插入坐标跑图动作（{count} 点），请保存脚本。')
+            self.state.set(f'已插入键鼠路线回放（{count} 个输入），请保存脚本。')
         except Exception as exc:
             self.state.set(str(exc))
 
@@ -169,6 +172,8 @@ class SSJJCoordinatePanel:
         if self.closed:
             return
         value, error, recording, count = self.monitor.status()
+        self.monitor.exclude_rect = (self.window.winfo_rootx(), self.window.winfo_rooty(),
+            self.window.winfo_rootx() + self.window.winfo_width(), self.window.winfo_rooty() + self.window.winfo_height())
         if value is None:
             text = error or '等待新的有效坐标…'
         else:
@@ -177,7 +182,7 @@ class SSJJCoordinatePanel:
                     f'X {x:10.2f}\nY {y:10.2f}\nZ {z:10.2f}\n'
                     f'{"死亡" if value.dead else "存活"} / {"落地" if value.on_ground else "空中"}')
         if recording:
-            text += f'\n录制中：{count} 点'
+            text += f'\n录制中：{count} 个状态样本 · F8 停止'
         self.coordinates.set(text)
         self.details.set(format_player_details(value))
         self.start_button.configure(state='disabled' if recording or self.pending_action else 'normal')
