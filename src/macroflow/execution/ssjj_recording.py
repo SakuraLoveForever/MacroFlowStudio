@@ -188,7 +188,9 @@ def run_recording_action(player, action):
         next_check, index = 0.0, 0
         previous_tick = current.client_time
         try:
-            player._log_event(f'键鼠路线回放：{len(inputs)} 个输入，{action["duration_ms"] / 1000:g} 秒')
+            key_count = sum(event['type'] == 'key' for event in inputs)
+            player._log_event(f'键鼠路线回放：{len(inputs)} 个输入（键盘 {key_count}，'
+                              f'鼠标 {len(inputs) - key_count}），{action["duration_ms"] / 1000:g} 秒')
             while True:
                 pause_started = time.perf_counter()
                 was_paused = player.paused
@@ -221,8 +223,11 @@ def run_recording_action(player, action):
                         previous_tick, progressed = current.client_time, elapsed
                     elif elapsed - progressed >= 1000:
                         raise RuntimeError('角色状态快照未更新，停止键鼠路线回放')
-                    error = math.dist(current.position, _expected_position(samples, times, elapsed))
+                    expected = _expected_position(samples, times, elapsed)
+                    error = math.dist(current.position, expected)
                     if error > POSITION_TOLERANCE:
+                        player._log_event(f'路线偏差检查：{elapsed / 1000:.3f} 秒，已发送 {index}/{len(inputs)} 个输入；'
+                                          f'实际坐标 {current.position}，录制坐标 {expected}')
                         raise RuntimeError(f'偏离录制路线 {error:.1f}，超过 {POSITION_TOLERANCE}，已停止')
                     session.renew()
                     session.restore()
