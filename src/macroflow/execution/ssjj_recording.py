@@ -1,4 +1,4 @@
-"""Replay captured game input on its original timeline; telemetry only checks it."""
+"""Return to the captured start, then replay original input with telemetry checks."""
 from __future__ import annotations
 
 import bisect
@@ -6,11 +6,12 @@ import math
 import threading
 import time
 
-from .ssjj_navigation import _valid
+from .ssjj_navigation import Route, RouteContext, _valid, follow_route
 from .ssjj_state import SSJJReader
 from .player.control import PlaybackStopped
 
 POSITION_TOLERANCE = 150
+START_POSITION_TOLERANCE = 20
 START_YAW_TOLERANCE = 15
 
 
@@ -169,6 +170,24 @@ def _expected_position(samples, times, elapsed_ms):
     return tuple(a + (b - a) * fraction for a, b in zip(before['position'], after['position']))
 
 
+def _prepare_start(player, reader, action, current):
+    target = action['samples'][0]
+    distance = math.dist(current.position, target['position'])
+    player._log_event(f'自动返回录制起点：距离 {distance:.1f}，到达后对齐朝向')
+    # Route samples have a 1000-unit gap limit. Subdivide the direct approach
+    # without inventing a traversable path through unknown map geometry.
+    steps = math.ceil(distance / 500) or 1
+    if steps >= 100000:
+        raise RuntimeError('当前位置距离录制起点异常，已停止')
+    points = [tuple(a + (b - a) * i / steps for a, b in zip(current.position, target['position']))
+              for i in range(steps + 1)]
+    context = RouteContext(player, reader, action['map_id'])
+    try:
+        follow_route(context, Route(action['map_id'], points), reader=reader, final_yaw=target['yaw'])
+    finally:
+        context.close()
+
+
 def run_recording_action(player, action):
     validate_recording(action)
     samples, inputs = action['samples'], action['inputs']
@@ -177,10 +196,16 @@ def run_recording_action(player, action):
         reader.require_foreground()
         current = reader.snapshot()
         _valid(current, action['map_id'])
-        if math.dist(current.position, samples[0]['position']) > POSITION_TOLERANCE:
-            raise RuntimeError('距离录制起点过远，请先回到起点')
+        if (math.dist(current.position, samples[0]['position']) > START_POSITION_TOLERANCE or
+                abs((current.yaw - samples[0]['yaw'] + 180) % 360 - 180) > 1):
+            _prepare_start(player, reader, action, current)
+            reader.require_foreground()
+            current = reader.snapshot()
+            _valid(current, action['map_id'])
+        if math.dist(current.position, samples[0]['position']) > START_POSITION_TOLERANCE:
+            raise RuntimeError('自动返回后仍未到达录制起点，已停止')
         if abs((current.yaw - samples[0]['yaw'] + 180) % 360 - 180) > START_YAW_TOLERANCE:
-            raise RuntimeError('起始朝向与录制不一致，请先对齐录制时的朝向')
+            raise RuntimeError('自动返回后朝向仍未对齐，已停止')
         session = ReplayInputs(player, reader)
         started = time.perf_counter()
         progressed = 0.0

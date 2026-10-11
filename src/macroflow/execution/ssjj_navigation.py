@@ -188,13 +188,17 @@ def _passed(position, before, target):
     return (x * dx + y * dy >= 0 and abs(x * dy - y * dx) / length <= 40)
 
 
-def follow_route(ctx, route, *, reader=None, progress_timeout=3.0):
+def follow_route(ctx, route, *, reader=None, progress_timeout=3.0, final_yaw=None):
     """Track fresh state continuously; Python scripts delegate the entire action."""
     if not math.isfinite(progress_timeout) or progress_timeout <= 0:
         raise ValueError('进展超时必须大于零')
+    if final_yaw is not None and (type(final_yaw) not in (int, float) or not math.isfinite(final_yaw)):
+        raise ValueError('终点朝向必须是有限数值')
     if reader is None:
-        return ctx.action({'type': 'ssjj_route', 'map_id': route.map_id,
-                           'points': route.points})
+        action = {'type': 'ssjj_route', 'map_id': route.map_id, 'points': route.points}
+        if final_yaw is not None:
+            action['final_yaw'] = final_yaw
+        return ctx.action(action)
     suspended = 0.0
 
     def clock():
@@ -316,7 +320,30 @@ def follow_route(ctx, route, *, reader=None, progress_timeout=3.0):
                     moving = False
                 if now - updated >= 1:
                     raise RuntimeError('角色状态快照未更新，停止跑图')
+        if final_yaw is not None:
+            # Finish stationary, using the same calibrated shortest-angle control.
+            ctx.move()
+            heading_started = clock()
+            while True:
+                error = (final_yaw - current.yaw + 180) % 360 - 180
+                dx = max(-200, min(200, round(error / sensitivity)))
+                if abs(error) <= 1 or dx == 0:
+                    break
+                if clock() - heading_started > 30:
+                    raise RuntimeError('目标朝向对齐超时，已停止')
+                previous = current
+                ctx.move(dx=dx)
+                deadline = clock() + 1
+                while True:
+                    current = fresh(previous)
+                    if abs((current.yaw - previous.yaw + 180) % 360 - 180) >= .001:
+                        break
+                    if clock() >= deadline:
+                        raise RuntimeError('目标朝向未响应，已停止')
+                    previous = current
+                    ctx.wait(ms=10)
         ctx.log('SSJJ 路线完成')
+        return current
     finally:
         ctx.move()
 
@@ -351,7 +378,7 @@ def run_route_action(player, action):
     with SSJJReader() as reader:
         context = RouteContext(player, reader, route.map_id)
         try:
-            follow_route(context, route, reader=reader)
+            follow_route(context, route, reader=reader, final_yaw=action.get('final_yaw'))
         finally:
             context.close()
 
