@@ -117,6 +117,11 @@ from .action_palette import action_button_positions, action_category_specs
 class ShellMixin:
     """主窗口壳层：主题、变量、侧栏与各标签页、日志视图。"""
 
+    def _restore_execution_settings(self):
+        self.switch_english_input_enabled = bool(
+            self.app_settings.get("switch_english_input_enabled", False)
+        )
+
     LOG_VIEW_LIMIT = 200_000
     @staticmethod
     def _actions_need_bound_window(actions: list[dict]) -> bool:
@@ -170,6 +175,7 @@ class ShellMixin:
         self.root.after(120, lambda: set_dark_titlebar(self.root.winfo_id()))
 
         self.app_settings = load_app_settings()
+        self._restore_execution_settings()
         self._restore_main_window_geometry()
         self._apply_startup_window_state()
         self._sync_ui_scale_to_monitor()

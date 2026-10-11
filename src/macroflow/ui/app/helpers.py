@@ -630,6 +630,8 @@ class HelpersMixin:
             "execution_mini_position": list(getattr(self, "execution_mini_position", [])),
             "main_window_geometry": self._current_main_window_geometry(),
             "record_mode": "auto",
+            "switch_english_input_enabled": bool(self.switch_english_input_enabled),
+            "disconnect_monitor_enabled": bool(getattr(self, "disconnect_monitor_enabled", False)),
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
             "activate_target_enabled": bool(self.activate_target_enabled_var.get()),
             "partial_script_globals": bool(self.partial_script_globals_var.get()),
