@@ -160,7 +160,12 @@ class StatusPanelTests(unittest.TestCase):
         panel.start_button = panel.save_button = Mock()
         panel.pending_action = None
         panel.window = Mock()
+        panel.window.winfo_rootx.return_value = 30
+        panel.window.winfo_rooty.return_value = 80
+        panel.window.winfo_width.return_value = 360
+        panel.window.winfo_height.return_value = 300
         panel.poll()
+        self.assertEqual(panel.monitor.exclude_rect, (30, 80, 390, 380))
         self.assertIn('退出', panel.coordinates.get())
         self.assertNotIn('100', panel.details.get())
         self.assertIn('未知', panel.details.get())

@@ -234,6 +234,10 @@ class ExecutionMixin:
             worker.close()
             self._detection_worker = None
     def _run_detection_entrypoint(self, callback, *args, **kwargs):
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.monitor.status()[2]:
+            self._notify('正在录制路线', '请先按 F8 停止并保存路线，再执行脚本或工作流。')
+            return
         try:
             return callback(*args, **kwargs)
         except BaseException:
@@ -679,6 +683,9 @@ class ExecutionMixin:
         self._notify(title, str(exc), 6000)
     def stop_all(self, from_ui: bool = False):
         self._cancel_workflow_recovery()
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.monitor.status()[2]:
+            panel.save()
         if self.recorder.running:
             self.stop_recording(discard_recent=from_ui, sound=False)
         self.workflow_stop.set()

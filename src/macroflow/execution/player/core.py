@@ -1105,6 +1105,9 @@ class CoreMixin:
         elif kind == "ssjj_route":
             from macroflow.execution.ssjj_navigation import run_route_action
             return run_route_action(self, action)
+        elif kind == "ssjj_recording":
+            from macroflow.execution.ssjj_recording import run_recording_action
+            return run_recording_action(self, action)
         elif kind == "python_script":
             from macroflow.execution.python_script import run_python_script
             return run_python_script(action.get("path", ""), self, hwnd, script_stack, depth,

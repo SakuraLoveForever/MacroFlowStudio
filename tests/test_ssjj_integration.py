@@ -12,14 +12,17 @@ def sample(x=0, *, map_id=100001, dead=False):
 
 
 class CaptureTests(unittest.TestCase):
-    def test_records_spacing_endpoint_and_builds_native_action(self):
+    def test_records_input_and_state_samples_and_builds_native_action(self):
         capture = RouteCapture(sample())
         for x in [50, 110, 180, 240]:
             capture.feed(sample(x))
+        capture.record_input({'type': 'key', 'vk': 87, 'down': True})
         action = capture.finish()
-        self.assertEqual(action['type'], 'ssjj_route')
+        self.assertEqual(action['type'], 'ssjj_recording')
         self.assertEqual(action['map_id'], 100001)
-        self.assertEqual(action['points'], [(0, 0, 519), (110, 0, 519), (240, 0, 519)])
+        self.assertEqual([s['position'] for s in action['samples']],
+                         [[0, 0, 519], [50, 0, 519], [110, 0, 519], [180, 0, 519], [240, 0, 519], [240, 0, 519]])
+        self.assertEqual(action['inputs'][0]['vk'], 87)
 
     def test_invalid_capture_cannot_be_used(self):
         for changed in [sample(map_id=2), sample(dead=True), sample(5000)]:
@@ -77,14 +80,16 @@ class CaptureTests(unittest.TestCase):
         from macroflow.core.storage import load_script, save_script
         capture = RouteCapture(sample())
         capture.feed(sample(300))
+        capture.record_input({'type': 'key', 'vk': 87, 'down': True})
         script = MacroScript(name='坐标路线', actions=[capture.finish()])
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'route.json'
             save_script(script, path)
             loaded = load_script(path)
         action = loaded.actions[0]
-        self.assertEqual(action['type'], 'ssjj_route')
-        self.assertEqual(action['points'], [[0, 0, 519], [300, 0, 519]])
+        self.assertEqual(action['type'], 'ssjj_recording')
+        self.assertEqual(action['samples'][-1]['position'], [300, 0, 519])
+        self.assertEqual(action['inputs'][0]['vk'], 87)
 
     def test_native_adapter_owns_continuous_input_and_closes_handle(self):
         from macroflow.execution.ssjj_navigation import run_route_action

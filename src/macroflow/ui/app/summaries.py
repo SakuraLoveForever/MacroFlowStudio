@@ -220,6 +220,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return "Python 逻辑", str(action.get("path", "")), delay
     if kind == "ssjj_route":
         return "坐标跑图", f"地图 {action.get('map_id', '?')} · {len(action.get('points', []))} 点 · 需游戏前台", delay
+    if kind == "ssjj_recording":
+        return "键鼠路线回放", f"地图 {action.get('map_id', '?')} · {len(action.get('inputs', []))} 个键鼠输入 · {action.get('duration_ms', 0) / 1000:g} 秒 · 坐标检查", delay
     if kind == "rebind_window":
         return action_kind_label(kind, "重新绑定"), "根据已保存的目标窗口信息重新获取窗口", delay
     if kind == "activate_window":
