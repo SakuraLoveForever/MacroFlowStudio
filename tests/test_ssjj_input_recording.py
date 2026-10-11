@@ -39,6 +39,12 @@ def recording():
 
 
 class InputCaptureTests(unittest.TestCase):
+    def setUp(self):
+        self.centered = self.enterContext(patch(
+            'macroflow.input.wininput.is_cursor_near_window_center', return_value=True))
+        self.enterContext(patch('macroflow.input.wininput.get_foreground_window_info',
+            return_value=SimpleNamespace(hwnd=123)))
+
     def monitor(self):
         monitor = SSJJMonitor.__new__(SSJJMonitor)
         monitor.lock = threading.Lock()
@@ -87,6 +93,42 @@ class InputCaptureTests(unittest.TestCase):
             monitor._record_input({'type': 'key', 'vk': 65, 'down': True})
             with self.assertRaisesRegex(RuntimeError, '前台'):
                 monitor.stop_recording()
+
+    def test_desktop_mouse_travel_after_panel_start_does_not_become_game_turning(self):
+        from macroflow.input import recorder as recorder_module
+        monitor = self.monitor()
+        with patch.object(recorder_module.keyboard, 'Listener'), patch.object(
+            recorder_module.mouse, 'Listener'), patch.object(recorder_module, 'RawMouseListener'):
+            monitor.start_recording()
+            recorder = monitor.input_recorder
+            self.centered.return_value = False
+            recorder._on_raw_move(1198, -400)
+            self.centered.return_value = True
+            recorder._on_raw_move(-7, 0)
+            recorder._on_press(SimpleNamespace(vk=87, char='w'))
+            self.centered.return_value = False
+            recorder._on_raw_move(300, 0)
+            recorder._on_release(SimpleNamespace(vk=87, char='w'))
+            action = monitor.stop_recording()
+        self.assertEqual([event['type'] for event in action['inputs']], ['mouse_move', 'key', 'key'])
+        self.assertEqual(action['inputs'][0]['dx'], -7)
+        self.assertEqual([(event['vk'], event['down']) for event in action['inputs'][1:]],
+                         [(87, True), (87, False)])
+
+    def test_injected_turn_keeps_capture_time_when_flushed_after_cursor_unlock(self):
+        from macroflow.input import recorder as recorder_module
+        monitor = self.monitor()
+        with patch.object(recorder_module.keyboard, 'Listener'), patch.object(
+            recorder_module.mouse, 'Listener'), patch.object(recorder_module, 'RawMouseListener'):
+            monitor.start_recording()
+            recorder = monitor.input_recorder
+            recorder._on_press(SimpleNamespace(vk=87, char='w'))
+            recorder._on_raw_move(80, 0, injected=True)
+            self.centered.return_value = False
+            recorder._on_click(150, 150, recorder_module.mouse.Button.left, True)
+            action = monitor.stop_recording()
+        self.assertEqual(sum(e.get('dx', 0) for e in action['inputs']), 80)
+        self.assertEqual(action['inputs'][0]['type'], 'key')
 
     def test_f8_saves_route_and_prevents_starting_a_second_recorder(self):
         from macroflow.ui.app.recording import RecordingMixin
@@ -157,6 +199,8 @@ class ReplayTests(unittest.TestCase):
         from macroflow.execution.player import MacroPlayer
         player = MacroPlayer()
         self.player = player
+        self.logs = []
+        player.on_log = self.logs.append
         clock = [clock_offset]
         self.clock = clock
         events = []
@@ -192,6 +236,17 @@ class ReplayTests(unittest.TestCase):
             self.assertAlmostEqual(event[2], expected_ms / 1000, delta=.002)
         self.assertAlmostEqual(elapsed, .5, delta=.002)
         self.assertFalse(self.player._held_keys)
+
+    def test_logs_recorded_input_counts_and_where_deviation_stopped_replay(self):
+        with self.assertRaisesRegex(RuntimeError, '偏离录制路线'):
+            self.run_recording(snapshot=lambda: state(500 if self.clock[0] >= .2 else 0,
+                tick=int(self.clock[0] * 1000)))
+        text = '\n'.join(self.logs)
+        self.assertIn('键盘 4', text)
+        self.assertIn('鼠标 4', text)
+        self.assertIn('已发送', text)
+        self.assertIn('实际坐标', text)
+        self.assertIn('录制坐标', text)
 
     def test_deviation_or_read_failure_releases_held_keys(self):
         for failure in ('deviation', 'read', 'frozen', 'map', 'dead'):

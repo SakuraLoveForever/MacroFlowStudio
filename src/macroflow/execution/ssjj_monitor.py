@@ -129,6 +129,7 @@ class SSJJMonitor:
             return latest, self.error, self.capture is not None, count
 
     def _record_input(self, action):
+        from macroflow.input.wininput import get_foreground_window_info, is_cursor_near_window_center
         with self.lock:
             if self.capture is None or self.reader is None or self.input_recorder is None:
                 return
@@ -143,6 +144,15 @@ class SSJJMonitor:
                 left, top, right, bottom = self.exclude_rect
                 if left <= action.get('x', -1) < right and top <= action.get('y', -1) < bottom:
                     return
+            if action['type'] == 'mouse_move':
+                # A non-activating panel leaves the game foreground even while
+                # the cursor travels across the desktop. Those deltas did not
+                # turn the camera and must not become turning during replay.
+                foreground = get_foreground_window_info()
+                if foreground is None or not is_cursor_near_window_center(foreground.hwnd):
+                    return
+            # Buffered injected turns may flush after the cursor unlocks;
+            # their original game input must retain its capture-time meaning.
             when = self.input_recorder._recording_started_at + action.get('recorded_at_ms', 0) / 1000
             self.capture.record_input(action, when=when)
 
