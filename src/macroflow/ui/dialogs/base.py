@@ -343,17 +343,22 @@ def app_windows(start=None) -> list:
         seen.add(key)
         windows.append(window)
 
-    for candidate in (root, start):
-        add(candidate)
-    try:
-        # 先确认拿到的是真的子窗口序列：测试替身返回不可迭代对象时不应炸掉。
-        children = root.winfo_children()
+    def visit(widget) -> None:
+        # 顶层窗口也可以挂在另一个对话框或普通控件下；按父窗口在前的顺序
+        # 遍历完整控件树，恢复时才能先映射父窗口，再显示其 transient 子窗口。
+        if isinstance(widget, (tk.Tk, tk.Toplevel)):
+            add(widget)
+        try:
+            children = widget.winfo_children()
+        except (AttributeError, tk.TclError):
+            return
         if isinstance(children, (list, tuple)):
             for child in children:
-                if isinstance(child, tk.Toplevel):
-                    add(child)
-    except (AttributeError, tk.TclError):
-        pass
+                visit(child)
+
+    add(root)
+    visit(root)
+    add(start)
     return windows
 
 
