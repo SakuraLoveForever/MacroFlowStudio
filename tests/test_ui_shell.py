@@ -427,7 +427,7 @@ class CloseActionTests(unittest.TestCase):
         ):
             setattr(app, name, FakeSettingVar(False))
         for name, value in (
-            ("playback_speed_var", 1.0), ("script_category_var", "关卡"),
+            ("script_category_var", "关卡"),
             ("floating_notice_position_var", "顶部居中"),
             ("startup_workflow_path_var", ""), ("level_scripts_dir_var", "scripts/关卡"),
             ("level_pack_scripts_dir_var", "scripts/关卡封装"),

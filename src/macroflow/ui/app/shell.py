@@ -366,8 +366,6 @@ class ShellMixin:
 
         self._create_variables()
         self._refresh_resolution_styles_summary()
-        self.player.set_playback_speed(self.playback_speed_var.get())
-        self.hotkey_player.set_playback_speed(self.playback_speed_var.get())
         self._build_ui()
         self.ui_queue.start()
         self._restore_saved_window_binding()
@@ -611,13 +609,6 @@ class ShellMixin:
         self.execution_mini_enabled_var = tk.BooleanVar(
             value=bool(self.app_settings.get("execution_mini_enabled", True)),
         )
-        try:
-            playback_speed = round(float(self.app_settings.get("playback_speed", 1.0)), 1)
-        except (TypeError, ValueError):
-            playback_speed = 1.0
-        playback_speed = max(0.5, min(2.0, playback_speed))
-        self.playback_speed_var = tk.DoubleVar(value=playback_speed)
-        self.playback_speed_label_var = tk.StringVar(value=f"{playback_speed:.1f}×")
         self.focus_mode_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("focus_mode_enabled", False)))
         self.activate_target_enabled_var = tk.BooleanVar(value=bool(self.app_settings.get("activate_target_enabled", True)))
         self.partial_script_globals_var = tk.BooleanVar(value=bool(self.app_settings.get("partial_script_globals", True)))
@@ -877,23 +868,6 @@ class ShellMixin:
         ttk.Label(sidebar, text="执行设置", style="SidebarSection.TLabel").pack(anchor="w", pady=pad(18, 7))
         from .disconnect_monitor import add_disconnect_monitor
         add_disconnect_monitor(sidebar, self)
-        playback_speed_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
-        playback_speed_title.pack(fill="x", pady=pad(0, 2))
-        ttk.Label(playback_speed_title, text="Playback speed", style="Sidebar.TLabel").pack(side="left")
-        ttk.Label(
-            playback_speed_title, textvariable=self.playback_speed_label_var,
-            style="SidebarMuted.TLabel",
-        ).pack(side="right")
-        playback_speed_scale = ttk.Scale(
-            sidebar, from_=0.5, to=2.0, variable=self.playback_speed_var,
-            command=self._on_playback_speed_changed,
-        )
-        playback_speed_scale.pack(fill="x", pady=pad(0, 2))
-        playback_speed_scale.bind("<ButtonRelease-1>", self._settings_changed, add="+")
-        ttk.Label(
-            sidebar, text="0.5x slow  |  1.0x normal  |  2.0x fast (waits only)",
-            style="SidebarMuted.TLabel",
-        ).pack(anchor="w", pady=pad(0, 8))
         resolution_title = ttk.Frame(sidebar, style="Sidebar.TFrame")
         resolution_title.pack(fill="x", pady=pad(4, 2))
         ttk.Label(resolution_title, text="分辨率样式", style="Sidebar.TLabel").pack(side="left")

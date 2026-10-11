@@ -37,9 +37,8 @@ class ModuleSearchAndWaitTests(unittest.TestCase):
         value.set('5')
         self.assertEqual(value.get(), '5000')
 
-    def test_module_wait_precedes_first_detection_and_ignores_playback_speed(self):
+    def test_module_wait_precedes_first_detection(self):
         player = MacroPlayer()
-        player.speed = 10
         events = []
         player._wait = Mock(side_effect=lambda ms: events.append(('wait', ms)))
         obj = dict(template='images/target.png', start_delay_ms=5000,

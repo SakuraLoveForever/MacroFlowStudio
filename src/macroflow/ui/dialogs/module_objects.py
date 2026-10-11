@@ -576,7 +576,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             body, row, "识别前强制等待",
             lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
             "进入模块后先完整等待，再首次识别；等待时限从识别开始计算。"
-            "不受播放速度影响，F12 可停止。全局模块从启用时开始等待，期间不识别。",
+            "F12 可停止。全局模块从启用时开始等待，期间不识别。",
         )
         row += 1
         self.confirmation_heading = self._section_heading(body, row, "识别确认")

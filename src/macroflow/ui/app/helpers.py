@@ -626,7 +626,6 @@ class HelpersMixin:
             "sound_enabled": bool(self.sound_enabled_var.get()),
             "mini_window_enabled": bool(self.mini_window_enabled_var.get()),
             "execution_mini_enabled": bool(self.execution_mini_enabled_var.get()),
-            "playback_speed": round(float(self.playback_speed_var.get()), 1),
             "execution_mini_position": list(getattr(self, "execution_mini_position", [])),
             "main_window_geometry": self._current_main_window_geometry(),
             "record_mode": "auto",
@@ -749,16 +748,6 @@ class HelpersMixin:
                 self._show_operation_mini("recording")
             else:
                 self._hide_recording_mini()
-    def _on_playback_speed_changed(self, value: str):
-        try:
-            speed = max(0.5, min(2.0, round(float(value), 1)))
-        except (TypeError, ValueError):
-            speed = 1.0
-        if abs(float(self.playback_speed_var.get()) - speed) > 0.001:
-            self.playback_speed_var.set(speed)
-        self.playback_speed_label_var.set(f"{speed:.1f}×")
-        self.player.set_playback_speed(speed)
-        self.hotkey_player.set_playback_speed(speed)
     def _startup_backup_settings_changed(self):
         self._persist_sidebar_settings()
         self._sync_windows_startup(log_errors=True)

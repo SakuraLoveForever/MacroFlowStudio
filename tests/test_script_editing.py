@@ -2865,7 +2865,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.mini_window_enabled_var = FakeSettingVar(True)
         app.execution_mini_enabled_var = FakeSettingVar(True)
         app.execution_mini_position = []
-        app.playback_speed_var = FakeSettingVar(1.0)
         app.close_action_var = FakeSettingVar("exit")
         app.focus_mode_enabled_var = FakeSettingVar(False)
         app.activate_target_enabled_var = FakeSettingVar(True)
@@ -2907,7 +2906,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.mini_window_enabled_var = FakeSettingVar(True)
         app.execution_mini_enabled_var = FakeSettingVar(True)
         app.execution_mini_position = []
-        app.playback_speed_var = FakeSettingVar(1.0)
         app.close_action_var = FakeSettingVar("exit")
         app.focus_mode_enabled_var = FakeSettingVar(False)
         app.activate_target_enabled_var = FakeSettingVar(True)
