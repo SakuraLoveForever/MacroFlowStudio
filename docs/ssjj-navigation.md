@@ -6,6 +6,10 @@
 
 通过 `run.bat` 重启源码，在脚本编辑区选择 **录制/脚本 → 游戏坐标**。浮窗每约 100ms 更新地图 ID、XYZ、朝向、存活/落地状态，不主动抢焦点；读取在独立线程进行。游戏断开后显示原因并尝试重连，失效坐标不能用于录制。窗口或无边框模式便于看到浮窗；独占全屏下的覆盖显示未验证。
 
+浮窗内新增 **展开状态** 按钮，默认收起，点击后显示血量/最大血量与比例、体力、水平速度、移动状态、俯仰角、移动朝向、当前武器标识、蹲姿状态、复活时间、冻结标志和游戏状态时间；再次点击 **收起状态** 隐藏这些信息。未赋值的字段显示“未知”，失效快照会清除旧状态。速度、武器、蹲姿和复活时间按原始值标注，不猜测单位或枚举含义。
+
+扩展数据由现有监控线程读取，路线录制和按钮仍可使用。跑图控制器默认只读取基础快照，不额外采集显示字段；状态栏不增加路线控制每次采样的字段数量。仅静态确认的弹药、装填和场景目标点暂未接入显示。
+
 1. 新建或打开普通脚本，在列表中选中要插入路线的位置。
 2. 浮窗点击 **开始录制路线**，切回游戏，手动走到目标位置。
 3. 点击 **停止并插入脚本**，生成一条 **坐标跑图** 动作，然后保存脚本。路线点直接存入脚本 JSON，不依赖外部 Python 文件。
@@ -66,3 +70,15 @@ $env:PYTHONPATH="$PWD/.deps;$PWD/src"
 2026-10-11，用户明确要求开始后，通过后台执行器实际完成这条路线，未启动软件界面或进行截图、点击、目视检查。开始时距起点 199.35；坐标反馈显示 39/39 点全部到达；执行器正常退出。结束后独立只读快照：位置 `(5155.77, 917.37, 519.79)`，距录制终点 66.79，角色存活。该结果证明本次地图版本和路线能完成自动跟随，不代表其他路线、障碍或地图也已验证。
 
 检索并比较了 [MaaFramework](https://github.com/MaaXYZ/MaaFramework)（LGPL-3.0）、[Airtest](https://github.com/AirtestProject/Airtest)（Apache-2.0）、[pywinauto](https://github.com/pywinauto/pywinauto)（BSD-3-Clause）与 [Recast Navigation](https://github.com/recastnavigation/recastnavigation)（Zlib）。这些项目分别提供视觉自动化、桌面控制或导航网格，不能直接提供当前游戏的本人实时状态；引入新运行时也不能解决这一步。首版复用项目已有的 `psutil`、Python 脚本执行器和键鼠动作，配合标准库 `ctypes`，没有新增依赖，也没有复制参考工具的注入或授权代码。
+
+### 可展开状态栏的复用与验证
+
+2026-10-11 核验以下三个 GUI 候选。全部为 Python/Tk，GitHub API 显示均未归档；Star 只作为关注度参考。未取得正式 Release 的项目注明本次查询结果，不据此断言没有版本。许可证以仓库许可证文件为准。
+
+| 项目 | Star | 代码维护 / 正式 Release | 许可证 | 接入成本与取舍 |
+|---|---:|---|---|---|
+| [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) | 2660 | 最近实质代码日期未核实 / [v2.2.3，2026-09-12](https://github.com/israel-dryer/ttkbootstrap/releases/tag/v2.2.3) | [MIT](https://github.com/israel-dryer/ttkbootstrap/blob/master/LICENSE) | 已有依赖，成本低；直接复用现有 Button/Frame 与 Tk 布局，无需升级依赖 |
+| [ttkwidgets](https://github.com/TkinterEP/ttkwidgets) | 148 | [2022-10-29 代码整理](https://github.com/TkinterEP/ttkwidgets/commit/21857ed131ffb4b6a22dde68257be9c78db05902) / latest Release 查询返回 404 | [GPL-3.0](https://github.com/TkinterEP/ttkwidgets/blob/master/LICENSE) | 有折叠控件，但需新增组件与许可评估；现有布局已满足需求，未集成 |
+| [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) | 13587 | [2026-06-24 Label 主题处理](https://github.com/TomSchimansky/CustomTkinter/commit/b43099760b280ad96d0b12e5baa81e06fd064740) / latest Release 查询返回 404 | [MIT](https://github.com/TomSchimansky/CustomTkinter/blob/master/LICENSE) | 新增控件主题体系，改造成本中等；对当前浮窗无必要，未集成 |
+
+成本按现有 Tk 浮窗的局部扩展估算；本次不复制候选代码、不新增组件或升级运行时。状态模型区分基础快照与可选扩展字段，未赋值显示未知；实际内存读取失败仍触发原有断线处理。51 项相关后台测试通过，包含扩展字段解码、基础快照不读扩展字段、后台监控发布状态、展开/收起、状态失效清除和路线回归。没有启动界面或做可见检查，没有构建或打包。

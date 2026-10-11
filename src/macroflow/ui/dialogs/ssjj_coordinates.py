@@ -10,6 +10,28 @@ from macroflow.input.wininput import make_window_no_activate, show_window_no_act
 from .base import COLOR_SURFACE
 
 
+def format_player_details(value):
+    if value is None or value.details is None:
+        return '状态未知：等待有效游戏数据…'
+    data = value.details
+
+    def number(item):
+        return '未知' if item is None else f'{item:,.2f}'.rstrip('0').rstrip('.')
+
+    health = f'{number(data.hp)} / {number(data.max_hp)}'
+    if data.hp is not None and data.max_hp is not None and data.max_hp > 0:
+        health += f'（{data.hp / data.max_hp:.1%}）'
+    moving = '未知' if data.moving is None else ('移动中' if data.moving else '静止')
+    frozen = '未知' if data.is_frozen is None else ('是' if data.is_frozen else '否')
+    return (f'血量 {health}\n'
+            f'体力 {number(data.stamina)}    水平速度（原始值） {number(data.velocity_2d)}\n'
+            f'移动 {moving}    蹲姿（原始值） {number(data.duck_state)}\n'
+            f'俯仰角 {number(data.view_pitch)}°    移动朝向 {number(data.move_yaw)}°\n'
+            f'当前武器（原始值） {number(data.current_weapon)}\n'
+            f'复活时间（原始值） {number(data.can_relive_time)}    冻结 {frozen}\n'
+            f'状态时间 {value.client_time}')
+
+
 class SSJJCoordinatePanel:
     def __init__(self, app):
         self.app = app
@@ -32,6 +54,15 @@ class SSJJCoordinatePanel:
         self.coordinates = tk.StringVar(master=window, value='正在连接游戏…')
         ttk.Label(body, textvariable=self.coordinates, font=('Consolas', 11), justify='left').pack(
             fill='x', pady=8)
+        status = ttk.Frame(body)
+        status.pack(fill='x')
+        self.status_expanded = False
+        self.status_button = ttk.Button(status, text='展开状态', command=self.toggle_status)
+        self.status_button.pack(anchor='w', pady=(0, 6))
+        self.status_frame = ttk.Frame(status)
+        self.details = tk.StringVar(master=window, value=format_player_details(None))
+        ttk.Label(self.status_frame, textvariable=self.details, justify='left',
+                  wraplength=350).pack(fill='x', pady=(0, 8))
         self.state = tk.StringVar(master=window, value='')
         ttk.Label(body, textvariable=self.state, wraplength=350).pack(fill='x')
         ttk.Label(body, text='只读显示可在后台工作；自动跑图仍需游戏前台。',
@@ -126,6 +157,14 @@ class SSJJCoordinatePanel:
         self.pending_action = None
         self.state.set('已取消当前路线录制')
 
+    def toggle_status(self):
+        self.status_expanded = not self.status_expanded
+        if self.status_expanded:
+            self.status_frame.pack(fill='x')
+        else:
+            self.status_frame.pack_forget()
+        self.status_button.configure(text='收起状态' if self.status_expanded else '展开状态')
+
     def poll(self):
         if self.closed:
             return
@@ -140,6 +179,7 @@ class SSJJCoordinatePanel:
         if recording:
             text += f'\n录制中：{count} 点'
         self.coordinates.set(text)
+        self.details.set(format_player_details(value))
         self.start_button.configure(state='disabled' if recording or self.pending_action else 'normal')
         self.save_button.configure(state='normal' if recording or self.pending_action else 'disabled')
         self.after_id = self.window.after(100, self.poll)

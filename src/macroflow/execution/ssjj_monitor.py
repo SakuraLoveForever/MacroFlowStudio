@@ -64,7 +64,7 @@ class SSJJMonitor:
                 try:
                     if reader is None:
                         reader = SSJJReader()
-                    sample = reader.snapshot()
+                    sample = reader.snapshot(include_details=True)
                     if sample.client_time != client_time:
                         client_time, progressed = sample.client_time, time.monotonic()
                     elif time.monotonic() - progressed > 1.5:

@@ -17,6 +17,21 @@ MONO_SHA256 = '7cf37b3415c2a168c724163be78109323ca6f75112eb549f2197a528eaebb4c9'
 
 
 @dataclass(frozen=True)
+class PlayerDetails:
+    hp: float | None
+    max_hp: float | None
+    stamina: float | None
+    velocity_2d: int | None
+    moving: bool | None
+    view_pitch: float | None
+    move_yaw: float | None
+    duck_state: int | None
+    current_weapon: int | None
+    can_relive_time: int | None
+    is_frozen: bool | None
+
+
+@dataclass(frozen=True)
 class PlayerState:
     map_id: int
     position: tuple[float, float, float]
@@ -24,6 +39,7 @@ class PlayerState:
     dead: bool
     on_ground: bool
     client_time: int
+    details: PlayerDetails | None = None
 
 
 class SSJJReader:
@@ -190,15 +206,35 @@ class SSJJReader:
                     return self.u32(self.field(info, '_id'))
         raise RuntimeError('当前未进入地图')
 
-    def nullable(self, obj, name, fmt):
+    def nullable(self, obj, name, fmt, *, required=True):
         address = self.field(obj, name)
         size = struct.calcsize(fmt)
         data = self.read(address, size + 1)
+        if not required and data[size] == 0:
+            return None
         if data[size] != 1:
             raise RuntimeError(f'角色字段尚无有效值：{name}')
-        return struct.unpack(fmt, data[:size])[0]
+        value = struct.unpack(fmt, data[:size])[0]
+        if not required and isinstance(value, float) and not math.isfinite(value):
+            return None
+        return value
 
-    def snapshot(self):
+    def read_details(self, current):
+        return PlayerDetails(
+            hp=self.nullable(current, '_hp', '<f', required=False),
+            max_hp=self.nullable(current, '_maxHp', '<f', required=False),
+            stamina=self.nullable(current, '_stamina', '<f', required=False),
+            velocity_2d=self.nullable(current, '_velocity2D', '<i', required=False),
+            moving=self.nullable(current, '_moving', '<?', required=False),
+            view_pitch=self.nullable(current, '_viewPitch', '<f', required=False),
+            move_yaw=self.nullable(current, '_moveYaw', '<f', required=False),
+            duck_state=self.nullable(current, '_duckState', '<i', required=False),
+            current_weapon=self.nullable(current, '_currentWeapon', '<i', required=False),
+            can_relive_time=self.nullable(current, '_canReliveTime', '<i', required=False),
+            is_frozen=self.nullable(current, '_isFreeze', '<?', required=False),
+        )
+
+    def snapshot(self, *, include_details=False):
         player = self.ptr(self.static(self.ui) + self.fields(self.ui)['MyPlayerEntity'])
         for component in self.components(player):
             if self.classname(self.classof(component)) == 'BasicInfoComponent':
@@ -210,7 +246,8 @@ class SSJJReader:
                 return PlayerState(self.map_id(), position, yaw,
                     self.nullable(current, '_isDead', '<?'),
                     self.nullable(current, '_onGround', '<?'),
-                    self.nullable(current, '_clientTime', '<i'))
+                    self.nullable(current, '_clientTime', '<i'),
+                    self.read_details(current) if include_details else None)
         raise RuntimeError('本人角色状态尚未就绪')
 
     def require_foreground(self):
