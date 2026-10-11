@@ -101,7 +101,7 @@ class CaptureTests(unittest.TestCase):
         ) as sender, patch('macroflow.execution.ssjj_navigation.follow_route') as follower:
             reader = factory.return_value.__enter__.return_value
             reader.snapshot.side_effect = FakeReader().snapshot
-            def follow(context, route, *, reader):
+            def follow(context, route, *, reader, final_yaw=None):
                 context.move(forward=True)
                 raise RuntimeError('controller failed')
             follower.side_effect = follow

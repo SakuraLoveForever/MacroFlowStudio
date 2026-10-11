@@ -194,7 +194,8 @@ class InputCaptureTests(unittest.TestCase):
 
 
 class ReplayTests(unittest.TestCase):
-    def run_recording(self, action=None, snapshot=None, wait_hook=None, focus_hook=None, clock_offset=0):
+    def run_recording(self, action=None, snapshot=None, wait_hook=None, focus_hook=None, clock_offset=0,
+                      prepare_hook=None):
         from macroflow.execution.ssjj_recording import run_recording_action
         from macroflow.execution.player import MacroPlayer
         player = MacroPlayer()
@@ -216,6 +217,9 @@ class ReplayTests(unittest.TestCase):
             return player.stop_event.is_set()
 
         with ExitStack() as stack:
+            if prepare_hook:
+                stack.enter_context(patch('macroflow.execution.ssjj_recording._prepare_start',
+                    side_effect=prepare_hook))
             stack.enter_context(patch('macroflow.execution.ssjj_recording.SSJJReader')).return_value.__enter__.return_value = reader
             stack.enter_context(patch('macroflow.execution.ssjj_recording.time.perf_counter', side_effect=lambda: clock[0]))
             stack.enter_context(patch.object(player.stop_event, 'wait', side_effect=wait))
@@ -273,10 +277,49 @@ class ReplayTests(unittest.TestCase):
                 self.assertFalse(self.player._held_buttons)
                 self.assertIn(('send_key', (87, False)), [(n, a) for n, a, _ in self.events])
 
-    def test_wrong_initial_heading_sends_no_input(self):
-        with self.assertRaisesRegex(RuntimeError, '朝向'):
-            self.run_recording(snapshot=lambda: state(yaw=90))
+    def test_auto_return_and_alignment_finish_before_recording_clock_starts(self):
+        prepared = False
+        def prepare(player, reader, action, current):
+            nonlocal prepared
+            self.assertEqual(current.position[0], 400)
+            self.assertEqual(current.yaw, 90)
+            self.clock[0] += 3
+            prepared = True
+        def snapshot():
+            return state((self.clock[0] - 3) * 100 if prepared else 400,
+                         yaw=0 if prepared else 90, tick=int(self.clock[0] * 1000))
+        events, elapsed = self.run_recording(snapshot=snapshot, prepare_hook=prepare)
+        self.assertTrue(prepared)
+        self.assertAlmostEqual(events[0][2], 3, delta=.002)
+        self.assertAlmostEqual(events[-1][2], 3.4, delta=.002)
+        self.assertAlmostEqual(elapsed, 3.5, delta=.002)
+
+    def test_failed_return_does_not_begin_recorded_input(self):
+        def failed(*args):
+            raise RuntimeError('返回起点卡住')
+        with self.assertRaisesRegex(RuntimeError, '卡住'):
+            self.run_recording(snapshot=lambda: state(400), prepare_hook=failed)
         self.assertEqual(self.events, [])
+
+    def test_real_coordinate_controller_returns_from_far_away_and_aligns(self):
+        from macroflow.execution.ssjj_recording import _prepare_start
+        from tests.test_ssjj_continuous import Simulation
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked):
+                sim = Simulation(yaw=90, speed=0 if blocked else 600)
+                sim.position = [1600., 0., 519.]
+                sim.close = lambda: sim.move()
+                player = SimpleNamespace(_log_event=Mock())
+                with patch('macroflow.execution.ssjj_recording.RouteContext', return_value=sim), patch(
+                    'macroflow.execution.ssjj_navigation.time.monotonic', side_effect=lambda: sim.now):
+                    if blocked:
+                        with self.assertRaisesRegex(RuntimeError, '卡住|无进展'):
+                            _prepare_start(player, sim, recording(), sim.snapshot())
+                    else:
+                        _prepare_start(player, sim, recording(), sim.snapshot())
+                        self.assertLessEqual(abs(sim.position[0]), 20)
+                        self.assertLessEqual(abs(sim.yaw), 1)
+                self.assertFalse(sim.forward)
 
     def test_focus_loss_between_events_releases_inputs(self):
         def foreground():

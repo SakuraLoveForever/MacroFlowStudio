@@ -76,6 +76,20 @@ class Simulation:
 
 
 class ContinuousRouteTests(unittest.TestCase):
+    def test_route_can_align_final_heading_after_releasing_forward(self):
+        sim = Simulation()
+        sim.run([(0, 0, 0), (600, 0, 0)], final_yaw=90)
+        self.assertLessEqual(math.dist(sim.position, (600, 0, 0)), 20)
+        self.assertLessEqual(abs((sim.yaw - 90 + 180) % 360 - 180), 1)
+        self.assertFalse(sim.forward)
+
+    def test_final_heading_uses_shortest_turn_across_wrap(self):
+        sim = Simulation(yaw=179)
+        sim.run([(0, 0, 0), (0, 0, 0)], final_yaw=-179)
+        self.assertLessEqual(abs((sim.yaw + 179 + 180) % 360 - 180), 1)
+        self.assertLess(sim.now, .5)
+        self.assertEqual(sim.downs, 0)
+
     def test_speed_and_telemetry_period_matrix_preserves_route_and_endpoint(self):
         routes = (
             [(0, 0, 0), (600, 0, 0), (1200, 0, 0)],
