@@ -202,8 +202,11 @@ class ScreenRegionPicker:
         self.rectangle_id = None
         self.drag_start = None
         self.main_previous_state = "normal"
-        # 框选期间需要一并隐藏的上层窗口（从 main 的父窗口一直数到应用主窗口）。
-        self.hidden_windows = list(hidden_windows or [])
+        # app_windows 按父窗口在前返回；owner / main 由专用恢复逻辑最后显示。
+        self.hidden_windows = [
+            window for window in (hidden_windows or [])
+            if window is not owner and window is not main
+        ]
         self.hidden_states: list[str] = []
 
     def start(self):
@@ -211,18 +214,19 @@ class ScreenRegionPicker:
             return
         try:
             self.main_previous_state = str(self.main.state())
-            # 整条窗口链全部隐藏：否则主窗口 / 上级对话框遮挡屏幕，无法框选和截图。
+            # 先保存所有状态：隐藏父窗口会连带改变 transient 子窗口的状态。
             self.hidden_states = []
             for window in self.hidden_windows:
                 try:
                     self.hidden_states.append(str(window.state()))
                 except tk.TclError:
                     self.hidden_states.append("normal")
-                window.withdraw()
             if self.owner is not None:
                 self.owner.grab_release()
                 self.owner.withdraw()
             self.main.withdraw()
+            for window in reversed(self.hidden_windows):
+                window.withdraw()
             self.main.update_idletasks()
             self.main.after(100, self._show_overlay)
         except Exception as exc:
@@ -331,9 +335,14 @@ class ScreenRegionPicker:
     def _restore_windows(self):
         """Restore the windows hidden while selecting (top-most one last)."""
         for window, previous_state in zip(
-            reversed(self.hidden_windows), reversed(self.hidden_states),
+            self.hidden_windows, self.hidden_states,
         ):
+            if previous_state == "withdrawn":
+                continue
             try:
+                if previous_state == "iconic":
+                    window.state("iconic")
+                    continue
                 window.deiconify()
                 if previous_state == "zoomed":
                     window.state("zoomed")
