@@ -1655,26 +1655,7 @@ class ScriptsMixin:
     @staticmethod
     def _expanded_script_actions(path: Path) -> list[dict]:
         """逐行复制一个脚本，重建行 ID 并同步映射跳转引用。"""
-        script = load_script(path)
-        actions = [dict(action) for action in (script.actions or [])]
-        # 与 clone_actions_with_new_ids（向下复制）一致：先补全动作 ID 并把
-        # 旧版 jump_row 迁移为 jump_action_id，再统一重映射，否则旧式跳转
-        # 会带着源脚本的相对行号插入，指向错误位置。
-        ensure_action_ids(actions)
-        id_map = {}
-        for action in actions:
-            old_id = str(action.get(ACTION_ID_KEY, "")).strip()
-            if old_id:
-                id_map[old_id] = new_action_id()
-        for action in actions:
-            old_id = str(action.get(ACTION_ID_KEY, "")).strip()
-            if old_id:
-                action[ACTION_ID_KEY] = id_map[old_id]
-            for field in JUMP_TARGET_KEYS:
-                target = str(action.get(field, "")).strip()
-                if target in id_map:
-                    action[field] = id_map[target]
-        return actions
+        return clone_actions_with_new_ids(load_script(path).actions)
     def _insert_script_actions(self, insert_at: int, actions: list[dict]):
         old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()

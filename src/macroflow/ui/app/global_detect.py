@@ -406,7 +406,6 @@ class GlobalDetectMixin:
             f"触发后{tail}",
         )
     @staticmethod
-    @staticmethod
     def _global_monitor_subject(guard: dict, subject: str) -> str:
         """给全局检测日志补上实际触发的模块名，避免同图多模块时无法追溯。"""
         module_name = str(guard.get("module_display_name", "")).strip() or "脚本全局模块"

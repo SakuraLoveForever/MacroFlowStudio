@@ -42,7 +42,7 @@ class UIUpdateQueue:
                     self._updates.append(_Update(callback, args, key, batch_key, urgent))
             elif batch_key is not None and self._updates:
                 previous = self._updates[-1]
-                if previous.batch_key == batch_key and self._same_callback(previous.callback, callback):
+                if previous.batch_key == batch_key and previous.callback == callback:
                     self._updates[-1] = _Update(
                         callback, previous.args + args, None, batch_key,
                         previous.urgent or urgent,
@@ -91,29 +91,26 @@ class UIUpdateQueue:
             raise RuntimeError("UIUpdateQueue.flush() must run on the Tk thread")
         with self._lock:
             updates = self._take_locked()
-        self._run([update for update in updates if update.urgent])
-        self._run([update for update in updates if not update.urgent])
-        with self._lock:
-            self._schedule_locked()
+        try:
+            self._run([update for update in updates if update.urgent])
+            self._run([update for update in updates if not update.urgent])
+        finally:
+            with self._lock:
+                self._schedule_locked()
         return len(updates)
 
     def pump(self) -> int:
         return self.flush()
 
-    @staticmethod
-    def _same_callback(left: Callable, right: Callable) -> bool:
-        return left is right or (
-            getattr(left, "__self__", None) is getattr(right, "__self__", None)
-            and getattr(left, "__func__", None) is getattr(right, "__func__", None)
-        )
-
-    @staticmethod
-    def _run(updates: list[_Update]) -> None:
+    def _run(self, updates: list[_Update]) -> None:
         for update in updates:
-            if update.batch_key is None:
-                update.callback(*update.args)
-            else:
-                update.callback(list(update.args))
+            try:
+                if update.batch_key is None:
+                    update.callback(*update.args)
+                else:
+                    update.callback(list(update.args))
+            except Exception as exc:
+                self.root.report_callback_exception(type(exc), exc, exc.__traceback__)
 
     def close(self) -> None:
         if threading.get_ident() != self._owner_thread_id:

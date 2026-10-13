@@ -142,12 +142,11 @@ def ensure_action_ids(actions: list[dict[str, Any]]) -> bool:
 
 def clone_actions_with_new_ids(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Clone actions as new objects and keep jumps within the clone connected."""
-    prepared = copy.deepcopy(actions)
-    ensure_action_ids(prepared)
-    clones = copy.deepcopy(prepared)
+    clones = copy.deepcopy(actions)
+    ensure_action_ids(clones)
     id_map: dict[str, str] = {}
-    for source, clone in zip(prepared, clones):
-        source_id = str(source.get(ACTION_ID_KEY, "")).strip()
+    for clone in clones:
+        source_id = str(clone.get(ACTION_ID_KEY, "")).strip()
         replacement = new_action_id()
         clone[ACTION_ID_KEY] = replacement
         if source_id:

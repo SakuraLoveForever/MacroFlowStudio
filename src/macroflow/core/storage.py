@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from datetime import datetime
 from hashlib import sha1
 from pathlib import Path
@@ -54,12 +55,23 @@ def safe_name(name: str, fallback: str) -> str:
     return text or fallback
 
 
+def _write_json(path: Path, value) -> None:
+    """Replace a JSON file only after the entire new document has been written."""
+    handle, temporary = tempfile.mkstemp(dir=path.parent, suffix=".json")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as output:
+            json.dump(value, output, ensure_ascii=False, indent=2)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 def save_script(script: MacroScript, path: Path | None = None) -> Path:
     if path is not None and Path(path).suffix.lower() == ".py":
         raise ValueError("Python 源码请在外部编辑器保存；模块脚本请保存为 .json")
     ensure_dirs()
     path = path or SCRIPTS_DIR / f"{safe_name(script.name, 'script')}.json"
-    path.write_text(json.dumps(script.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(path, script.to_dict())
     return path
 
 
@@ -80,9 +92,15 @@ def backup_script(source: str | Path, snapshot: dict | None = None) -> Path:
     target = script_backup_path(source_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     if snapshot is None:
-        shutil.copy2(source_path, target)
+        handle, temporary = tempfile.mkstemp(dir=target.parent, suffix=".json")
+        os.close(handle)
+        try:
+            shutil.copy2(source_path, temporary)
+            os.replace(temporary, target)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
     else:
-        target.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_json(target, snapshot)
     return target
 
 
@@ -104,9 +122,15 @@ def archive_overwritten_script(source: str | Path) -> Path | None:
             digest = sha1(str(source_path).casefold().encode("utf-8")).hexdigest()[:12]
             folder = OVERWRITTEN_BACKUPS_DIR / "external" / digest
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target = folder / f"{stamp}_{source_path.name}"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source_path, target)
+        folder.mkdir(parents=True, exist_ok=True)
+        handle, temporary = tempfile.mkstemp(dir=folder, prefix=f"{stamp}_", suffix=f"_{source_path.name}")
+        os.close(handle)
+        target = Path(temporary)
+        try:
+            shutil.copy2(source_path, target)
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
         return target
     except OSError:
         return None
@@ -151,7 +175,7 @@ def load_script(path: str | Path) -> MacroScript:
 def save_workflow(workflow: Workflow, path: Path | None = None) -> Path:
     ensure_dirs()
     path = path or WORKFLOWS_DIR / f"{safe_name(workflow.name, 'workflow')}.json"
-    path.write_text(json.dumps(workflow.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(path, workflow.to_dict())
     return path
 
 
@@ -345,7 +369,7 @@ def load_app_settings() -> dict:
 
 
 def save_app_settings(settings: dict) -> None:
-    SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json(SETTINGS_PATH, settings)
 
 
 def load_module_settings() -> dict:
@@ -360,10 +384,7 @@ def load_module_settings() -> dict:
 
 
 def save_module_settings(settings: dict) -> None:
-    MODULE_SETTINGS_PATH.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    _write_json(MODULE_SETTINGS_PATH, settings)
 
 
 def load_module_images_dir() -> Path:
@@ -693,9 +714,7 @@ def save_module_objects(objects: dict[str, dict | list]) -> None:
             if isinstance(raw, dict) and "modified_at" in normalized:
                 raw["modified_at"] = normalized["modified_at"]
             payload[key] = normalized
-    TEMPLATE_REGIONS_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
+    _write_json(TEMPLATE_REGIONS_PATH, payload)
 
 
 def registered_module_object(module_key: str | Path) -> dict | None:

@@ -76,10 +76,12 @@ class GuardsMixin:
             return None, None
         if region:
             left, top, width, height = (int(part) for part in region)
-            x1 = max(0, left - int(origin[0]))
-            y1 = max(0, top - int(origin[1]))
-            x2 = min(screen.shape[1], x1 + max(1, width))
-            y2 = min(screen.shape[0], y1 + max(1, height))
+            raw_x1 = left - int(origin[0])
+            raw_y1 = top - int(origin[1])
+            x1 = max(0, raw_x1)
+            y1 = max(0, raw_y1)
+            x2 = min(screen.shape[1], raw_x1 + max(1, width))
+            y2 = min(screen.shape[0], raw_y1 + max(1, height))
             if x2 <= x1 or y2 <= y1:
                 return None, None
             return screen[y1:y2, x1:x2], (int(origin[0]) + x1, int(origin[1]) + y1)

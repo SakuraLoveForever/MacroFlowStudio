@@ -308,6 +308,9 @@ class CoreMixin:
              enable_script_globals: bool = True) -> bool | str:
         if self.running:
             raise RuntimeError("已有脚本正在执行")
+        source_screen = dict(source_screen) if source_screen else None
+        target_screen = get_playback_screen_rect(hwnd) if source_screen else None
+        activation_hwnd = int(activation_hwnd) if activation_hwnd else None
         self.running = True
         self._timeline_waiting = False
         self._stop_requested_at = None
@@ -323,11 +326,11 @@ class CoreMixin:
         self._runtime_target_hwnd = None
         self.rebound_target_hwnd = None
         self._legacy_relative_started = False
-        self._source_screen = dict(source_screen) if source_screen else None
-        self._target_screen = get_playback_screen_rect(hwnd) if self._source_screen else None
+        self._source_screen = source_screen
+        self._target_screen = target_screen
         self._active_script_name = str(script_name).strip()
         self._activate_target = bool(activate_target)
-        self._activation_hwnd = int(activation_hwnd) if activation_hwnd else None
+        self._activation_hwnd = activation_hwnd
         self._activation_prepared = bool(activation_prepared and self._activation_hwnd)
         self._workflow_context = bool(workflow_context)
         self._enable_script_globals = bool(enable_script_globals)
@@ -343,8 +346,8 @@ class CoreMixin:
         def exit_script_scope() -> None:
             nonlocal script_scope
             if self.on_script_scope_exit and script_scope is not None:
-                self.on_script_scope_exit(script_scope)
-                script_scope = None
+                scope, script_scope = script_scope, None
+                self.on_script_scope_exit(scope)
 
         try:
             if hwnd and not is_window(hwnd):
@@ -577,28 +580,30 @@ class CoreMixin:
             self._last_stop_referenced_actions = stopped.referenced_actions
             self._last_stop_referenced_source_screen = stopped.referenced_source_screen
         finally:
-            exit_script_scope()
-            self._release_all(hwnd)
-            cleanup_finished = time.perf_counter()
-            if self._stop_requested_at is not None:
-                self._timeline.metrics.stop_cleanup_ms += (
-                    cleanup_finished - self._stop_requested_at
-                ) * 1000
+            try:
+                exit_script_scope()
+            finally:
+                self._release_all(hwnd)
+                cleanup_finished = time.perf_counter()
+                if self._stop_requested_at is not None:
+                    self._timeline.metrics.stop_cleanup_ms += (
+                        cleanup_finished - self._stop_requested_at
+                    ) * 1000
+                self._relative_target_hwnd = None
+                self._runtime_target_hwnd = None
+                self._source_screen = None
+                self._target_screen = None
+                self._activate_target = True
+                self._activation_hwnd = None
+                self._activation_prepared = False
+                self._workflow_context = False
+                self._workflow_repeat_number = 0
+                self._active_script_name = ""
+                self._script_scope_managed = False
+                self._single_action = False
+                self.running = False
             if self.on_timing:
                 self.on_timing(self._timeline.metrics.snapshot())
-            self._relative_target_hwnd = None
-            self._runtime_target_hwnd = None
-            self._source_screen = None
-            self._target_screen = None
-            self._activate_target = True
-            self._activation_hwnd = None
-            self._activation_prepared = False
-            self._workflow_context = False
-            self._workflow_repeat_number = 0
-            self._active_script_name = ""
-            self._script_scope_managed = False
-            self._single_action = False
-            self.running = False
         if jump_current_script_last:
             return JUMP_CURRENT_SCRIPT_LAST_RESULT
         return advanced_to_next_workflow_step
@@ -885,6 +890,9 @@ class CoreMixin:
             # 逐字符发送、间隔用 _wait（检查停止信号）：长文本发送期间
             # F12 也能立即中断，不会整段发完才响应停止。
             for char in text:
+                self.wait_while_paused()
+                if self.stop_event.is_set():
+                    raise PlaybackStopped()
                 send_text(char, 0)
                 if char_delay:
                     self._wait(char_delay)

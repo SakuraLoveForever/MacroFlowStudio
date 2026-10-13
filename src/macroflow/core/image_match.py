@@ -11,18 +11,7 @@ from mss.exception import ScreenShotError
 # 截图失败的异常集合：锁屏 / 屏保 / 独占全屏 / 切换显示模式时 GDI 的 BitBlt
 # 会对普通进程返回「拒绝访问」（WinError 5）。调用方据此把「截图暂时不可用」
 # 与「这一轮没识别到」区分开，不再让一次瞬时失败打断整个工作流。
-# 截图失败的异常集合。mss 只在截图时才需要，所以这里按需导入，
-# 让导入本模块本身不拉起截图 / 图像依赖。
-def _capture_errors():
-    import mss  # noqa: PLC0415 - 按需导入
-    try:
-        from mss.exception import ScreenShotError
-    except ImportError:  # 没装截图依赖时只保留 OSError
-        return (OSError,)
-    return (ScreenShotError, OSError)
-
-
-CAPTURE_ERRORS = _capture_errors()
+CAPTURE_ERRORS = (ScreenShotError, OSError)
 
 # 单次抓屏的瞬时失败重试：显示模式切换、独占全屏进出时的一两帧失败应当
 # 由截图层自己吸收，不升级成动作失败。

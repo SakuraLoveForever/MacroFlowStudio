@@ -43,7 +43,7 @@ class WindowMixin:
             return True
         # 个别驱动对"设置成当前值"返回失败：只要最终状态正确就算成功。
         current = get_display_resolution_for_window(hwnd)
-        if current is not None and current[0] == width and current[1] == height:
+        if self._resolution_matches(current, width, height, refresh_rate):
             self._log_event(f"{label}已经是 {width}×{height}，无需切换分辨率。")
             return True
         return False
