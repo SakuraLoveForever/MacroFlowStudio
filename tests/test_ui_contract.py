@@ -7,6 +7,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import ModuleType
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -19,16 +20,13 @@ class PackageEntryTests(unittest.TestCase):
     def test_app_package_entry_only_exports_the_app_class(self):
         import macroflow.ui.app as package
 
-        exported = {name for name in dir(package) if not name.startswith("_")}
-        # 只允许主窗口类与子模块名（导入子模块时会挂上）。
-        allowed_extra = {
-            "action_palette",
-            "main", "base", "constants", "summaries", "startup", "shell",
-            "helpers", "global_detect", "guards", "tray", "window_binding",
-            "recording", "recovery", "scripts", "execution", "workflow", "hotkeys",
-            "script_edit", "annotations",
+        exported = {
+            name for name, value in vars(package).items()
+            if not name.startswith("_")
+            and not (isinstance(value, ModuleType)
+                     and value.__name__.startswith(package.__name__ + "."))
         }
-        leaked = sorted(exported - {"MacroFlowApp"} - allowed_extra)
+        leaked = sorted(exported - {"MacroFlowApp", "annotations"})
         self.assertEqual(
             leaked, [],
             f"macroflow.ui.app 又聚合了这些名字：{leaked}；"
