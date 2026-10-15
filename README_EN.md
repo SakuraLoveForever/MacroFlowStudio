@@ -1,261 +1,66 @@
 <div align="center">
 
-Module management and selection support keyword filtering within category tabs. The module's fixed pre-recognition wait runs before detection. Time inputs default to seconds while stored values remain milliseconds. Normal application close stops on timeout instead of escalating to a forced kill; optional related process names must exit before the workflow continues.
+# MacroFlow Studio
 
-Recognition settings separate the target condition (present / absent) from the wait rule (try once / wait with a deadline / wait indefinitely). To delay the first recognition, edit the module reference in the script and set the pre-recognition wait in milliseconds (5000 = 5 seconds). Polling, cooldown, confirmation and fallback options are under advanced recognition settings; collapsing them preserves their values.
+**Let scripts handle the repetition.**
 
-[简体中文](./README.md) | **English**
+Record keyboard and mouse actions on Windows, make decisions with image matching and offline OCR, and connect tasks with workflows.
 
-# 🖱️ MacroFlow Studio
+[Quick start](#quick-start) · [User guide](docs/user-guide.en.md) · [Releases](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases) · [简体中文](README.md)
 
-**Keyboard & Mouse Macro Recording and Automation Tool**
-
-Record or edit keyboard/mouse actions into scripts, use **image matching / text recognition (OCR)** as decision conditions, and organize multiple scripts into **workflows** that run automatically for a set number of times.
-
-![Version](https://img.shields.io/badge/Version-v1.0.0-4B8BBE?style=flat-square)
-![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square)
-![Language](https://img.shields.io/badge/Language-English-0078D6?style=flat-square)
-![OCR](https://img.shields.io/badge/OCR-RapidOCR%20Offline-FF6F00?style=flat-square)
-![Build](https://img.shields.io/badge/Build-PyInstaller%206.20-8A2BE2?style=flat-square)
+![Windows 10 / 11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?style=flat-square)
+![Offline OCR](https://img.shields.io/badge/OCR-Offline-4B8BBE?style=flat-square)
 
 </div>
 
----
+![MacroFlow Studio workflow interface](docs/screenshots/macroflow-studio-preview.png)
 
-## ✨ Highlights
+## From recording to automation
 
-| | |
-|---|---|
-| 🎮 **Smart track recording** | Records raw relative mouse movement while the cursor is locked at the window center (first-person view turning, sampled at ≤16 ms); automatically falls back to desktop coordinates when the cursor leaves the window |
-| 🧩 **Rich action set** | 14+ action types: keyboard / mouse / wheel / image match / OCR / jump / script reference / app launch & close / special modules |
-| 🔍 **Image match + OCR dual engines** | Template matching for fixed patterns; RapidOCR reads changing text locally with the CPU ONNX Runtime |
-| 🗂️ **Module object repository** | Reusable recognition settings: switch / global / special modules, code segments, fallback recognition, number reading |
-| ⚙️ **Workflow orchestration** | Run multiple scripts by repeat count, global modules keep scanning, breakpoint resume, test mode |
-| 🛡️ **Focus lock mode** | System-level input lock + automatic English input method; releases held keys on abnormal exit |
+**Record actions → Edit a script → Add conditions → Build a workflow**
 
----
+| Capability | What you can do |
+| --- | --- |
+| Recording & playback | Capture keyboard, mouse and relative game camera movement; repeat by count |
+| Script editing | Combine clicks, typing, delays and jumps; reference scripts or Python logic |
+| Image matching & OCR | Choose the next action based on images, text or numbers, entirely offline |
+| Reusable modules | Share recognition conditions and response actions across scripts |
+| Workflows | Run scripts in sequence with counts, waits and global detection |
 
-## 📦 Installation & Usage
+## Quick start
 
-1. Download the latest release: **[MacroFlowStudio_v1.0.0_win64.zip](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)** (~126 MiB)
-2. Extract — **copy the whole folder** (`rapidocr_ocr` must stay in the same directory as the exe)
-3. Run `MacroFlowStudio.exe`; settings are stored in `app_settings.json` next to the exe
+**Running the source?** Install dependencies, then double-click `run.bat` in the project root to use the current source. First-time setup is below.
 
-> ⚠️ `rapidocr_ocr` (offline OCR engine & models) is loaded on demand the first time you use "Recognize Text". **OCR will not work without it**; it contains RapidOCR, CPU ONNX Runtime, local models, runtime dependencies, and licenses — do not remove anything.
+**Using a release?** Download from [Releases](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases), extract the whole folder and run `MacroFlowStudio.exe`. Keep all supplied runtime files and `rapidocr_ocr/`; copy the entire folder when moving the app.
 
-## 🚀 Quick Start
+1. **Select a window**: bind the application you want to automate.
+2. **Record actions**: press `F8` to start / stop recording, then save your script.
+3. **Run the script**: press `F9` to play it back; during execution, `F8` pauses / resumes.
+4. **Connect tasks**: add scripts to a workflow, set repeat counts, then press `F10`.
 
-| Step | Action |
-|---|---|
-| 1️⃣ Bind window | If the target app is a game, click "Select Window" first (relative tracks are then treated as in-game view turning) |
-| 2️⃣ Start recording | Press `F8`; the main window hides automatically during recording (configurable) |
-| 3️⃣ Run script | Press `F9`; the target window is brought to the foreground automatically |
-| 4️⃣ Emergency stop | Press `F12` at any time |
+> **Stop at any time with `F12`.** Hiding to the tray keeps tasks running; closing the window exits the app.
 
-## 🎮 Recording & Playback
+## Explore as needed
 
-- **Smart track recording**: records raw relative movement while the cursor is locked at the window center (game view turning, sampled at ≤16 ms); desktop coordinates resume when the cursor leaves the target window (default interval 20 ms, configurable 10–500 ms)
-- Automatically switches the target window to English (US) input method before recording; `F8` re-records directly over the current document (a confirmation appears first when there are unsaved changes); saving over an existing script file asks for confirmation and archives the old version to `backups/overwritten/` (timestamped history) before overwriting
-- **Playback**: start from a specific line, repeat counts, breakpoint resume, multi-click, click at current cursor position
+| Learn about | Documentation |
+| --- | --- |
+| Actions, recognition, modules and workflows | [User guide](docs/user-guide.en.md) |
+| Writing Python logic with `main(ctx)` | [Python API & examples (中文)](docs/python-scripts.md) |
+| Dependencies, tests and build entry points | [Development guide](docs/development.md) |
+| Source and runtime data locations | [Project layout (中文)](docs/project-layout.md) |
+| Version changes | [Changelog](CHANGELOG.md) |
 
-## 🧩 Script Editor
+<details>
+<summary><strong>First-time source setup</strong> · Windows / Python 3.13</summary>
 
-Insert the following actions on the Script Editor page; double-click an action to edit, hold Shift/Ctrl to multi-select:
-
-| Action | Description |
-|---|---|
-| ⏱️ Delay | Wait a fixed number of milliseconds |
-| ⌨️ Keyboard / key press | Press / release / tap keys; key can be auto-detected on insert |
-| 📝 Text | Type text |
-| 🖱️ Mouse move / button / click / multi-click | Pick coordinates on screen; left / right / middle button |
-| ↔️ Drag | Press at the start point, drag to the end point and release (screen-pick or manual coordinates); steps / duration / mouse button configurable |
-| 🎡 Wheel | Scroll up / down a chosen number of notches at a given position (toolbar “↕ 滚轮”, coordinates can be picked on screen) |
-| 🖼️ Image match | Template matching (see below) |
-| 🔤 OCR text | Offline region text recognition (see below) |
-| 💬 Floating notice / comment | On-screen reminder / note text |
-| 🔗 Script reference | Load and run another script in place (embedded execution, no jump); right-click the row in the action list → "▶ 执行指定次数…" to run just that referenced script 1–N times (default 1) |
-| 🚀 Open / close app | Launch a program (with args) / gracefully or forcefully terminate a process |
-| 🧭 Jump | Jump to a target action line, script start, or script end |
-| 📌 Foreground window | Bring the bound window to the foreground before execution |
-| ⭐ Special modules | Restart workflow / end the innermost script and continue / jump to the actual last line |
-| 🧰 Module reference | Insert a saved module object (see "Module Objects") |
-
-Editing: undo / redo, move up / move down (a contiguous multi-row selection moves as one block), duplicate down (multi-select supported), run from here (trial run skipping earlier actions), clear undo history after save. Opening or creating another script while the current one has unsaved changes asks first (save / discard / cancel) instead of silently doing nothing.
-
-## 🔍 Image Matching & OCR
-
-**Template matching** (for fixed patterns):
-
-- **Region**: full screen / bound window / custom region (drag-select with the left button)
-- **Threshold**: minimum similarity
-- **Timeout**: wait timeout in ms + polling interval; on timeout: continue / jump to a line / stop
-- **On match**: continue / click (region center or custom coordinates) / jump to a line / end the current script and move to the next workflow step
-- **Secondary match**: optionally confirm with another template after a hit
-- The target must be visible in real time; minimum polling interval 50 ms
-
-**OCR text recognition** (reads changing text, complementary to image matching): powered by RapidOCR 3.9.2 with local PP-OCRv6 small models and CPU ONNX Runtime
-
-- Drag-select a region (empty = full screen), or bind a target window
-- Expected text matched by "contains / equals"; empty = any recognized text hits
-- Polling with timeout, then continue / jump / stop; results shown in the status bar and the execution mini window
-- **Run a code segment on failure** (per script line): image match, OCR text, OCR number compare, multi-condition image click and list row-by-row click can each opt in; on a miss / timeout / blocking timeout the segment runs first (add / edit / remove / move, supporting delay, keys, text, clicks, repeated clicks, moves, module references, script references, open-close app, notice, foreground window, jump to script end, end current script), then the failure branch is taken
-
-## 🗂️ Module Objects
-
-The Module Object Manager stores recognition settings as reusable objects, categorized as **Switch / Workflow Global / Script Global / Special**.
-
-- **Unique identity**: referenced by ID rather than image path; one image can back multiple modules without overwriting
-- **Recognition settings**: template, region, threshold, hold duration, recognition mode (template image, text, read number, or no recognition)
-- **Success action + post-action code segment**: the action executed on a hit, optionally followed by extra actions (jumps, foreground window, etc.)
-- **Timeout code segment**: actions run when "continuous miss" exceeds the configured limit
-- Repository: pinyin sorting, bulk add / bulk remove from scripts, double-click edit, undo removal
-
-### 🔢 Reading Numbers Module
-
-Create a Switch module, set the recognition mode to **Read Number**, and drag-select the region containing the digits. At runtime, OCR digit boxes are concatenated left-to-right into an integer (e.g. `0`, `0`, `7` → `7`).
-
-When inserting the module into a script, configure the **compare number** and two result branches: **equal / not-equal-or-not-read**. Both branches can continue to the next line, jump to a stable line object, or end the innermost script; when no number is read, it retries per the module's blocking / timeout settings, and a non-blocking timeout falls to the failure branch.
-
-After inserting a blocking module into a specific script, double-click that reference row to optionally enable **skip after blocking timeout** and set its duration. It is off by default, applies only to that script row, and leaves other references to the same module blocking as configured.
-
-## ⚙️ Workflows
-
-The Workflow page organizes multiple scripts in order; each step supports:
-
-| Setting | Description |
-|---|---|
-| 📄 Script | Double-click to change |
-| 🔁 Repeat count | Remaining-count system (no decrement on failure or manual stop, shows "done" at 0); 0 or **unlimited** (once per round); optional **start from a specific line from the 2nd run** |
-| ⏳ Wait before run | Milliseconds to wait before executing |
-| ⏱️ Repeat interval | Gap between consecutive runs of the same script, default 1000 ms |
-| ✅ Enable / disable | Disabled rows are greyed out and skipped without decrementing |
-| 🌐 Global modules | Attach workflow-global modules to a step |
-
-Other operations: select a row to **run from the selected line**; **bulk-set parameters** (counts / wait / interval); step deletion is undoable; rows whose script file is missing are highlighted red with a reason at runtime; **scheduled start** accepts a `YYYY-MM-DD HH:MM:SS` time (empty = run immediately; the app must keep running while waiting). At the top of the page you can **✏️ Rename** the current workflow (the file is renamed on save, never overwriting an existing file) or **⧉ Duplicate as a new workflow** (copies the whole workflow into an independent new file and opens the copy right away, so you can derive a new flow without re-inserting steps).
-
-Workflows are plain files (JSON under `workflows/`): New / Open / Save. The UI shows the file content; saving overwrites it directly.
-
-### 🌐 Global Detection
-
-During workflow execution, enabled global modules keep scanning (sharing one screenshot per round, no repeated captures) and trigger when their condition is met:
-
-- **Interrupt & resume**: on trigger, pauses the current script and saves a breakpoint, runs the module's success action, then resumes the original script
-- **Click**: clicks the region center or custom coordinates; ensures the target window is in the foreground first
-- **Restart workflow**: on trigger, restarts the workflow from a configurable row (per-action or per-module, falling back to the global default row; "set as default" in the module form) instead of a single unified jump target
-
-## 🛠️ Execution & Settings
-
-- **Focus lock mode** (off by default): switches to the English input method + system-level mouse/keyboard lock (`BlockInput`) to block misoperation; `F12` remains the emergency stop
-- **Foreground restore**: with "activate before execution" enabled the target window is activated once when playback starts (never when it is already foreground, which would make games show the "click to continue" overlay); after every global-detection screenshot the bound window's foreground is verified once and taken back only if it was lost (zero cost otherwise). Click/move coordinates outside the target window are clamped inside it so clicks cannot steal focus
-- **Foreground window**: independent toggle, brings the target window to the front before execution
-- **Mini windows**: always-on-top mini window for execution / recording (independent toggles) showing progress and the action log
-- **System tray**: with "start to tray" enabled the app stays in the tray on boot and a double-click restores the window; the close button saves the draft and quits (minimize to tray first if it must keep running), and the tray menu can restore the window or quit
-- **Hotkey sounds**: distinct tones for record start/end, run, complete, and emergency stop; testable
-- **Hotkey scripts**: bind a script to a single key (letters, digits, F1–F12, arrows, etc.; F8/F9/F12 and bare modifiers excluded) in the sidebar "Hotkey Scripts → Settings…". During **recording**, pressing the hotkey runs the bound script and its injected keys/mouse get recorded (the hotkey key itself is not); during **execution**, the bound script runs in parallel in its own player without interrupting the current script/workflow; `F12` stops all hotkey scripts too. Bindings persist in `app_settings.json`
-- **Read current coordinates**: shows the live cursor position and the window under it for manual coordinate entry
-- **Resolution scaling**: scripts store the recording machine's virtual screen size; coordinates are scaled automatically on another machine (legacy scripts assumed 1920×1080)
-
-## 💾 Backup & Logs
-
-- **Timed backup**: fixed intervals `1h` / `1 day` / `1 week`; scans the configured script directories into `backups/scripts/`; each script maps to one target file (no history copies)
-- **Auto start on boot**: writes the current Windows user's startup entry; unchecking removes it
-- **Start to tray / auto-run workflow at startup**: can be combined; after an auto workflow finishes it stays in the tray, double-click the tray icon to restore
-- **Run logs**: written to `logs/YYYY-MM-DD/MacroFlow_<start time>_<pid>.log`, one file per launch; "Open log directory" on the log page
-
-## 🗄️ File Layout
-
-Created next to the exe on first launch:
-
-```
-MacroFlowStudio/
-├── MacroFlowStudio.exe   # Main program (~78 MiB)
-├── rapidocr_ocr/          # RapidOCR + CPU ONNX Runtime + local models/dependencies/licenses (loaded on demand)
-├── scripts/              # Scripts
-├── workflows/            # Workflows
-├── images/               # Recommended location for image-match templates
-├── backups/scripts/      # Timed backups
-├── logs/                 # Run logs (by date / session)
-└── app_settings.json     # All sidebar settings and window binding
-```
-
-The "Open" button can load JSON scripts from other directories; put templates under `images` and use relative paths (e.g. `images\start_button.png`) in image-match actions for easy migration.
-
-## 📸 Screenshots
-
-![MacroFlow Studio workflow preview](docs/screenshots/macroflow-studio-preview.png)
-
-## 🏗️ Run from Source & Build
-
-Source code lives in the `src/macroflow/` package, organized by domain (`core/` data & primitives, `input/` keyboard/mouse layer, `execution/` player engine, `ui/` interface, `diag/` diagnostics); tests live in `tests/`:
+Install the base and offline OCR dependencies from the project root:
 
 ```powershell
 python -m pip install -r requirements.txt
 C:\Python313\python.exe -m pip install --target .deps --no-deps -r requirements-ocr.txt
-.\run.bat                 # run from source (= PYTHONPATH=.deps;src + python -m macroflow.ui.app)
-python -m unittest discover -s tests -t .   # run the full unit-test suite
-.\build.ps1               # package: outputs dist\MacroFlowStudio.exe + dist\rapidocr_ocr\
+.\run.bat
 ```
 
-Running from source requires Python 3.13 and the OCR dependencies installed into `.deps` with the command above. RapidOCR ships the local models; first OCR use loads them on demand without downloading. Runtime data (scripts/workflows/settings) is created in the project root when running from source, matching the "next to the exe" layout of packaged builds.
+`run.bat` loads `.deps` and `src`. Scripts, workflows, settings and logs are stored in the project root. OCR loads local models on first use.
 
-## 🛡️ Safety Limits
-
-- Track sampling interval ≥ 10 ms; image-match polling interval ≥ 50 ms; max 200,000 actions per recording
-- Held keys and mouse buttons are released on stop or abnormal exit whenever possible
-- Respect the target software's terms of service; some games prohibit any form of macro or automation
-
----
-
-## 📈 v1.0.0 Feature Overview
-
-First public release, organized by feature area:
-
-### Recording & Playback
-
-- Smart track recording: raw relative movement while the cursor is locked at the window center (game view turning, sampled at ≤16 ms); desktop coordinates resume outside the window (default 20 ms, 10–500 ms configurable)
-- Relative view turning has zero extra playback overhead: the window is only activated when the target window changes
-- Automatically switches to English (US) input method before recording; F8 detaches new recordings from the open script
-- Playback supports starting from a specific line, repeat counts, breakpoint resume, and multi-click
-
-### Script Editing
-
-- Action types: delay, keyboard, text, mouse move / click / multi-click, wheel, image match, OCR, notice, comment, script reference, open / close app, jump, foreground window, special modules, module reference
-- Multi-select editing, undo / redo, duplicate down, run from here; script insertion as a live reference or a full copy (IDs rebuilt, jump references remapped)
-- Jump targets use stable line-object IDs and stay valid after script edits
-
-### Recognition & Module Objects
-
-- Template matching: region, threshold, timeout branches, secondary confirmation
-- Offline PaddleOCR: loaded on demand; real text-box coordinates, pixel offsets, wait-until-text-gone, number reading
-- Module repository: switch / workflow-global / script-global / special; enable / disable, bulk add / remove, post-action & timeout code segments, fallback recognition, multi-click, pre-recognition delay; script-row timeout skip for blocking references (off by default)
-- Window auto-hiding while picking coordinates on screen so the tool never blocks the target page
-
-### Workflows
-
-- Steps: repeat count, unlimited, wait before run, repeat interval, enable state, start delay, unified restart target, start-from-line from the 2nd run
-- Workflow-global modules: hold-duration trigger, timeout code segments, end current script / restart workflow, breakpoint resume
-- Test mode, run from selected line, single-run test, right-click a script-reference row to run it a specified number of times; remaining counts and jump lines are strictly consistent
-
-### System & Stability
-
-- Focus lock mode with a system-level input lock; held keys are released on abnormal exit
-- Execution mini window never steals focus; run logs are written per date / session
-- Screensaver / display timeout / sleep are suppressed while a script runs (a system-level request, your power settings are left untouched), so long recognition waits are not cut off by the screensaver
-- Timed backup, auto start on boot, start to tray, auto-run a workflow at startup
-- OCR engine externalized in the packaged build (~70 MB main exe); the build pipeline verifies version, symbols, and input locks
-
----
-
-## 🤝 AI Collaboration Rules
-
-- **DeepSeek**: no need to launch the app to test after changes — no program launches, no GUI-driving scripts to reproduce bugs, no visual checks, no packaged smoke tests. Acceptance = `python -m unittest discover -s tests -t .` all green + successful build + `verify_build.py` passing; bug fixes are located via code reading and unit tests, and the user runs the app to verify afterwards.
-- **GPT**: visual and smoke checks as needed — UI layout / button changes require launching the app to confirm; pure logic changes can be delivered directly; packaged DPI smoke tests on demand.
-
----
-
-<div align="center">
-
-**MacroFlow Studio** · [Changelog](CHANGELOG.md) · [Releases](https://github.com/SakuraLoveForever/MacroFlowStudio-/releases)
-
-</div>
-
+</details>
