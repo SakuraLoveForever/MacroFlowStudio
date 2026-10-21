@@ -1,8 +1,11 @@
-"""页面动作与当前页面追踪：大厅页面用整页截图特征快速判定。
+"""页面动作：战斗界面读内存，大厅页面用整页截图特征。
 
-页面库在 images/全屏；动作语义：
-- enter：等待页面出现（timeout_ms=0 一直等）；
-- leave：等待页面消失；
+来源 source：
+- battle_ui：读战斗端 UI 可见状态（Unity/Mono，只读），按中文 UI 名判断；
+- screen：整页截图相似度（大厅没有可读内存状态，只能用截图）。
+动作语义：
+- enter：等待页面/界面出现（timeout_ms=0 一直等）；
+- leave：等待页面/界面消失；
 - check：立即判断一次，不等待。
 超时后按 on_timeout 继续/结束脚本/跳转；成功后可选点击固定坐标。
 """
@@ -20,6 +23,9 @@ import time
 from .control import PlaybackStopped
 
 PAGE_MODES = ("enter", "leave", "check")
+PAGE_SOURCE_SCREEN = "screen"
+PAGE_SOURCE_BATTLE = "battle_ui"
+PAGE_SOURCES = (PAGE_SOURCE_BATTLE, PAGE_SOURCE_SCREEN)
 PAGE_ACTION_DEFAULT_INTERVAL_MS = 150
 PAGE_ACTION_DEFAULT_TIMEOUT_MS = 3000
 
@@ -59,7 +65,14 @@ class PageMixin:
         return tracker
 
     def _track_page(self) -> None:
-        """等待片段里顺带更新当前页面；失败不打断正常执行。"""
+        """等待片段里顺带更新当前页面/界面；失败不打断正常执行。"""
+        snapshot = self.battle_ui_snapshot()
+        if snapshot is not None:
+            visible = tuple(name for name, flag in snapshot.items() if flag)
+            if visible != getattr(self, "_battle_ui_visible_cache", None):
+                self._battle_ui_visible_cache = visible
+                self._log_event("战斗界面：" + ("、".join(visible) if visible else "无"))
+            return
         tracker = getattr(self, "_page_tracker_cache", None)
         if tracker is None and not self._page_library_exists():
             return
@@ -115,6 +128,8 @@ class PageMixin:
     def _execute_page(self, action: dict, hwnd: int | None,
                       script_stack: set[str] | None = None,
                       depth: int = 0) -> tuple[str, str | int] | None:
+        if str(action.get("source") or PAGE_SOURCE_SCREEN) == PAGE_SOURCE_BATTLE:
+            return self._execute_battle_page(action, hwnd)
         name = str(action.get("page") or "").strip()
         if not name:
             raise RuntimeError("页面动作未选择页面，请重新编辑这一行")
@@ -187,16 +202,21 @@ class PageMixin:
         self._trace(result_text, module_detail=True)
         if action.get("show_result_notice") and self.on_notice:
             self.on_notice(result_text, 3500)
-        if action.get("click"):
-            raw_point = action.get("click_point") or []
-            if len(raw_point) != 2:
-                raise RuntimeError("页面动作勾选了成功后点击，但没有设置点击坐标")
-            x, y = self._scale_point(int(raw_point[0]), int(raw_point[1]))
-            self._click_module_point(
-                x, y, str(action.get("button", "left")),
-                max(1, int(action.get("click_count", 1))), hwnd,
-            )
+        self._click_page_target(action, hwnd)
         return None
+
+    def _click_page_target(self, action: dict, hwnd: int | None) -> None:
+        """页面/战斗界面命中后的可选点击。"""
+        if not action.get("click"):
+            return
+        raw_point = action.get("click_point") or []
+        if len(raw_point) != 2:
+            raise RuntimeError("页面动作勾选了成功后点击，但没有设置点击坐标")
+        x, y = self._scale_point(int(raw_point[0]), int(raw_point[1]))
+        self._click_module_point(
+            x, y, str(action.get("button", "left")),
+            max(1, int(action.get("click_count", 1))), hwnd,
+        )
 
     def _page_timeout(self, action: dict, name: str, timeout_ms: int, mode: str,
                       score) -> tuple[str, str | int] | None:
@@ -233,3 +253,102 @@ class PageMixin:
         if score is not None:
             text += f"（最好相似度 {score:.1%}）"
         return text
+
+    # ---- 战斗界面（内存） -------------------------------------------------
+
+    def _execute_battle_page(self, action: dict, hwnd: int | None,
+                             ) -> tuple[str, str | int] | None:
+        key = str(action.get("ui_key") or "").strip()
+        if not key:
+            raise RuntimeError("战斗界面动作缺少界面名称，请重新编辑这一行")
+        mode = str(action.get("mode", "enter"))
+        if mode not in PAGE_MODES:
+            mode = "enter"
+        try:
+            interval_ms = max(
+                50, int(action.get("interval_ms", PAGE_ACTION_DEFAULT_INTERVAL_MS)),
+            )
+        except (TypeError, ValueError):
+            interval_ms = PAGE_ACTION_DEFAULT_INTERVAL_MS
+        try:
+            timeout_ms = max(
+                0, int(action.get("timeout_ms", PAGE_ACTION_DEFAULT_TIMEOUT_MS)),
+            )
+        except (TypeError, ValueError):
+            timeout_ms = PAGE_ACTION_DEFAULT_TIMEOUT_MS
+        if mode == "check":
+            timeout_ms = 0
+
+        label = {"enter": "出现", "leave": "消失", "check": "可见"}[mode]
+        self._trace(
+            f"战斗界面：{'立即判断' if mode == 'check' else '等待'}「{key}」{label}"
+            + ("" if mode == "check" or timeout_ms <= 0 else f"（最多 {timeout_ms} ms）"),
+            module_detail=True,
+        )
+        start = time.perf_counter()
+        status_at = 0.0
+        snapshot = None
+        while True:
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            snapshot = self.battle_ui_snapshot()
+            matched = False
+            if snapshot is not None:
+                present = bool(snapshot.get(key))
+                matched = present if mode != "leave" else not present
+            if matched:
+                break
+            elapsed = time.perf_counter() - start
+            if mode != "check" and elapsed >= status_at + 1.0:
+                status_at = elapsed
+                self._status(
+                    f"等待战斗界面「{key}」{label}"
+                    + ("" if timeout_ms <= 0 else f"（已等 {elapsed:.0f} s）"),
+                )
+            timed_out = (
+                mode != "check" and timeout_ms > 0 and elapsed * 1000 >= timeout_ms
+            )
+            if mode == "check" or timed_out:
+                return self._battle_page_timeout(action, key, timeout_ms, mode, snapshot)
+            self._wait(interval_ms)
+
+        result_text = f"战斗界面{'已出现' if mode != 'leave' else '已消失'}：{key}"
+        self._status(result_text)
+        self._log_event(result_text)
+        self._trace(result_text, module_detail=True)
+        if action.get("show_result_notice") and self.on_notice:
+            self.on_notice(result_text, 3500)
+        self._click_page_target(action, hwnd)
+        return None
+
+    def _battle_page_timeout(self, action: dict, key: str, timeout_ms: int, mode: str,
+                             snapshot: dict[str, bool] | None,
+                             ) -> tuple[str, str | int] | None:
+        elapsed = "" if mode == "check" else f"（{timeout_ms} ms）"
+        if snapshot is None:
+            detail = f"战斗界面动作无法判定{elapsed}：当前不在对局或读不到战斗内存"
+        elif mode == "leave":
+            detail = f"战斗界面动作超时{elapsed}：「{key}」一直未消失"
+        elif mode == "check":
+            detail = f"战斗界面动作判断失败：当前看不到「{key}」"
+        else:
+            detail = f"战斗界面动作超时{elapsed}：「{key}」一直未出现"
+        self._trace(detail, module_detail=True)
+        self._log_event(detail)
+        if action.get("show_result_notice") and self.on_notice:
+            self.on_notice(detail, 3500)
+        behavior = str(action.get("on_timeout", "continue"))
+        subject = "消失" if mode == "leave" else "出现"
+        if behavior == "end_current_script":
+            self._status(f"战斗界面「{key}」未{subject}，结束当前脚本")
+            return "end_current_script", 0
+        if behavior == "jump":
+            self._jump_reason = f"战斗界面「{key}」未{subject}"
+            target_id = str(action.get("timeout_jump_action_id", "")).strip()
+            if target_id:
+                return "action_id", target_id
+            return "row", max(1, int(action.get("timeout_jump_row", 1)))
+        if behavior != "continue":
+            raise RuntimeError(detail)
+        self._status(f"战斗界面「{key}」未{subject}，按设置继续")
+        return None

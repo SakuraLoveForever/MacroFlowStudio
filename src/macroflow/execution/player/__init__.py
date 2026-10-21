@@ -40,6 +40,7 @@ from .image import ImageMixin
 from .modules import ModuleResultMixin
 from .ocr import OcrMixin
 from .page import PageMixin
+from .battle_state import BattleStateMixin
 from .row_list import RowListMixin
 
 from .control import (  # 原先由本模块导入的名字，保持可导入
@@ -113,6 +114,7 @@ from .row_list import (  # 原先由本模块导入的名字，保持可导入
 
 
 class MacroPlayer(CoreMixin, GuardsMixin, WindowMixin, AppsMixin, ImageMixin,
-                  ModuleResultMixin, OcrMixin, RowListMixin, PageMixin):
+                  ModuleResultMixin, OcrMixin, RowListMixin, PageMixin,
+                  BattleStateMixin):
     """脚本回放器：状态与动作分发在 core，各动作族按 mixin 分开。"""
 

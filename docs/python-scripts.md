@@ -24,6 +24,9 @@ def main(ctx):
 - `ctx.read_text(region=None)`：OCR 返回文字。
 - `ctx.page()`：当前游戏页面名（与 `images/全屏` 下的整页截图同名，例如 `全屏_回到大厅`），识别不出返回空字符串。
 - `ctx.page_is(name, threshold=0.95)`：当前画面是否就是指定页面；用整页截图相似度判断，比逐模块识图快得多。
+- `ctx.in_battle()`：当前是否读得到战斗内存（即已进入对局且 Unity 客户端在运行）。
+- `ctx.battle_uis()`：当前可见的战斗界面名列表（如 `["小地图UI", "对战战绩UI"]`），不在对局返回空列表。
+- `ctx.ui_visible(key)`：某个战斗界面此刻是否可见，例如 `ctx.ui_visible("对战战绩UI")`。
 - `ctx.run_module(key)`：按模块 ID 或唯一名称执行模块。
 - `ctx.run_script(path, repeats=1)`：运行 JSON 或 Python 脚本，相对路径按 Python 文件所在目录解析。
 - `ctx.action(action)`：执行现有模块脚本格式的一条动作，例如 `ctx.action({"type": "text", "text": "你好"})`。

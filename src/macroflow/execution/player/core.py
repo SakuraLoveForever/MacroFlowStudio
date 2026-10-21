@@ -611,6 +611,12 @@ class CoreMixin:
                 if getattr(self, '_ssjj_aim_lock', None) is not None:
                     from macroflow.execution.ssjj_aim import close_aim_lock
                     close_aim_lock(self)
+                reset_battle = getattr(self, '_battle_reset', None)
+                if (
+                    reset_battle is not None
+                    and getattr(self, '_battle_reader_cache', None) is not None
+                ):
+                    reset_battle()
                 self._release_all(hwnd)
                 cleanup_finished = time.perf_counter()
                 if self._stop_requested_at is not None:

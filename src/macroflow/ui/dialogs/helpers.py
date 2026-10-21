@@ -240,7 +240,11 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         elif kind == "page":
             mode = {"enter": "等出现", "leave": "等消失", "check": "判断"}.get(
                 str(action.get("mode")), "等出现")
-            detail = f"{mode} {clip(action.get('page') or '未选择', 18)}"
+            if str(action.get("source") or "screen") == "battle_ui":
+                row_kind_label = "战斗界面"
+                detail = f"内存 {mode} {clip(action.get('ui_key') or '未选择', 18)}"
+            else:
+                detail = f"{mode} {clip(action.get('page') or '未选择', 18)}"
         elif kind == "text_ocr":
             detail = clip(action.get("expected_text", ""), 16) or "任意文字"
         elif kind == "ocr_compare":

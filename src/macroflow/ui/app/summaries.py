@@ -186,8 +186,14 @@ PAGE_MODE_LABELS = {"enter": "等待出现", "leave": "等待消失", "check": "
 
 def _page_action_summary(action: dict, action_rows: dict[str, int] | None,
                          delay: str) -> tuple[str, str, str]:
-    """页面动作摘要：页面名 + 等待方式 + 成功后点击 + 超时行为。"""
-    name = str(action.get("page") or "未选择页面")
+    """页面动作摘要：页面/战斗界面名 + 等待方式 + 成功后点击 + 超时行为。"""
+    battle = str(action.get("source") or "screen") == "battle_ui"
+    if battle:
+        name = str(action.get("ui_key") or "未选择界面")
+        kind_label = action_kind_label("page", "战斗界面")
+    else:
+        name = str(action.get("page") or "未选择页面")
+        kind_label = action_kind_label("page", "页面")
     mode = str(action.get("mode", "enter"))
     if mode not in PAGE_MODE_LABELS:
         mode = "enter"
@@ -218,7 +224,7 @@ def _page_action_summary(action: dict, action_rows: dict[str, int] | None,
             parts.append("超时跳转目标未设置")
     elif mode != "check":
         parts.append("超时继续下一行")
-    return action_kind_label("page", "页面"), " · ".join(parts), delay
+    return kind_label, " · ".join(parts), delay
 
 
 def action_summary(action: dict, action_rows: dict[str, int] | None = None,

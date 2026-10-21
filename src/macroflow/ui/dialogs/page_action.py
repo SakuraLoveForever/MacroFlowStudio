@@ -23,6 +23,13 @@ TIMEOUT_OPTIONS = (
     ("跳转到脚本行", "jump"),
 )
 BUTTON_OPTIONS = ("左键", "右键", "中键")
+SOURCE_OPTIONS = (
+    ("战斗界面（内存）", "battle_ui"),
+    ("大厅页面（整页截图）", "screen"),
+)
+
+# 本次运行里读到过的战斗界面名，供对话框下拉复用。
+_UI_KEY_CACHE: list[str] = []
 
 
 def page_library_names() -> list[str]:
@@ -31,57 +38,65 @@ def page_library_names() -> list[str]:
 
 
 class PageActionDialog(ModalDialog):
-    """页面动作：等页面出现/消失，或立即判断当前是不是某页面。"""
+    """页面动作：等战斗界面/大厅页面出现或消失，或立即判断一次。"""
 
     def __init__(self, parent, action: dict | None = None,
                  actions: list[dict] | None = None):
-        super().__init__(parent, "编辑页面动作" if action else "添加页面动作", 660, 760)
-        self.source = dict(action or {})
+        super().__init__(parent, "编辑页面动作" if action else "添加页面动作", 680, 800)
+        self.data = dict(action or {})
+        source_key = str(self.data.get("source") or "battle_ui")
+        selected_source = next(
+            (label for label, key in SOURCE_OPTIONS if key == source_key),
+            SOURCE_OPTIONS[0][0],
+        )
+        self.source = tk.StringVar(self, selected_source)
         names = page_library_names()
         self.page_names = names
         self.page_name = tk.StringVar(
-            self, str(self.source.get("page") or (names[0] if names else "")),
+            self, str(self.data.get("page") or (names[0] if names else "")),
         )
+        self.ui_key = tk.StringVar(self, str(self.data.get("ui_key") or ""))
+        self._probe_text = ""
         selected_mode = next(
-            (label for label, key in MODE_OPTIONS if key == self.source.get("mode")),
+            (label for label, key in MODE_OPTIONS if key == self.data.get("mode")),
             MODE_OPTIONS[0][0],
         )
         self.mode = tk.StringVar(self, selected_mode)
         self.threshold = tk.StringVar(
-            self, str(self.source.get("threshold", PAGE_DEFAULT_THRESHOLD)),
+            self, str(self.data.get("threshold", PAGE_DEFAULT_THRESHOLD)),
         )
-        self.timeout = duration_var(self.source.get("timeout_ms", 3000))
-        self.interval = duration_var(self.source.get("interval_ms", 150))
+        self.timeout = duration_var(self.data.get("timeout_ms", 3000))
+        self.interval = duration_var(self.data.get("interval_ms", 150))
         self.wait_forever = tk.BooleanVar(
-            self, int(self.source.get("timeout_ms", 3000) or 0) <= 0,
+            self, int(self.data.get("timeout_ms", 3000) or 0) <= 0,
         )
-        click_point = self.source.get("click_point") or [0, 0]
-        self.click_enabled = tk.BooleanVar(self, bool(self.source.get("click")))
+        click_point = self.data.get("click_point") or [0, 0]
+        self.click_enabled = tk.BooleanVar(self, bool(self.data.get("click")))
         self.click_point = tk.StringVar(
             self, ",".join(map(str, click_point)) if len(click_point) == 2 else "",
         )
-        self.click_count = tk.StringVar(self, str(max(1, int(self.source.get("click_count", 1)))))
+        self.click_count = tk.StringVar(self, str(max(1, int(self.data.get("click_count", 1)))))
         self.button = tk.StringVar(self, {
             "left": "左键", "right": "右键", "middle": "中键",
-        }.get(str(self.source.get("button", "left")), "左键"))
+        }.get(str(self.data.get("button", "left")), "左键"))
         selected_timeout = next(
-            (label for label, key in TIMEOUT_OPTIONS if key == self.source.get("on_timeout")),
+            (label for label, key in TIMEOUT_OPTIONS if key == self.data.get("on_timeout")),
             TIMEOUT_OPTIONS[0][0],
         )
         self.on_timeout = tk.StringVar(self, selected_timeout)
         jump_options = image_jump_target_options(actions or [])
         self.jump_target_labels = [label for label, _action_id in jump_options]
         self.jump_target_ids = dict(jump_options)
-        saved_target_id = str(self.source.get("timeout_jump_action_id", "")).strip()
+        saved_target_id = str(self.data.get("timeout_jump_action_id", "")).strip()
         selected_target = next(
             (label for label in self.jump_target_labels
              if self.jump_target_ids.get(label) == saved_target_id),
             self.jump_target_labels[0] if self.jump_target_labels else "",
         )
         self.jump_target = tk.StringVar(self, selected_target)
-        self.notice = tk.BooleanVar(self, bool(self.source.get("show_result_notice", False)))
-        self.delay = duration_var(self.source.get("delay_ms", 0))
-        self.after_delay = duration_var(self.source.get("after_delay_ms", 0))
+        self.notice = tk.BooleanVar(self, bool(self.data.get("show_result_notice", False)))
+        self.delay = duration_var(self.data.get("delay_ms", 0))
+        self.after_delay = duration_var(self.data.get("after_delay_ms", 0))
 
         body = ttk.Frame(self, padding=px(16))
         body.pack(fill="both", expand=True)
@@ -104,28 +119,60 @@ class PageActionDialog(ModalDialog):
             row_widgets.extend((label, widget))
             if note:
                 note_label = ttk.Label(
-                    body, text=note, foreground=COLOR_MUTED, wraplength=px(430),
+                    body, text=note, foreground=COLOR_MUTED, wraplength=px(450),
                 )
                 note_label.grid(row=next_row(), column=0, columnspan=2, sticky="w")
                 row_widgets.append(note_label)
             self._row_widgets[index] = tuple(row_widgets)
             return index
 
-        ttk.Label(
-            body, text="用整页截图判断当前游戏页面；等待页面比逐模块识图等超时更快。",
-            foreground=COLOR_MUTED, wraplength=px(560),
-        ).grid(row=next_row(), column=0, columnspan=2, sticky="w", pady=pad(0, 8))
+        def full_width(text: str) -> tuple[int, ttk.Label]:
+            index = next_row()
+            label = ttk.Label(
+                body, text=text, foreground=COLOR_MUTED, wraplength=px(590),
+            )
+            label.grid(row=index, column=0, columnspan=2, sticky="w", pady=pad(0, 6))
+            self._row_widgets[index] = (label,)
+            return index, label
+
+        full_width(
+            "战斗界面直接读游戏内存（需先进对局），不再截图；"
+            "大厅没有可读的页面状态，只能用整页截图判断。",
+        )
+
+        source_frame = ttk.Frame(body)
+        for label, _key in SOURCE_OPTIONS:
+            ttk.Radiobutton(
+                source_frame, text=label, variable=self.source, value=label,
+                command=self._refresh_visibility,
+            ).pack(side="left", padx=pad(0, 16))
+        self.source_row = labeled("来源", source_frame)
+
+        battle_frame = ttk.Frame(body)
+        self.ui_key_combo = ttk.Combobox(
+            battle_frame, textvariable=self.ui_key, values=_UI_KEY_CACHE,
+        )
+        self.ui_key_combo.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            battle_frame, text="读取当前", command=self._read_current_ui,
+        ).pack(side="left", padx=pad(8, 0))
+        self.battle_row = labeled(
+            "战斗界面", battle_frame,
+            "点“读取当前”抓取当前可见的界面名；要等待还没出现的界面时，可直接输入名字。",
+        )
+
+        self.probe_row, self._probe_label = full_width("")
 
         page_combo = ttk.Combobox(
             body, textvariable=self.page_name, values=names, state="readonly",
         )
-        labeled("页面", page_combo)
+        self.page_row = labeled("页面", page_combo)
+
+        self.empty_row = None
         if not names:
-            ttk.Label(
-                body,
-                text=f"页面库为空：请把整页截图放到 {PAGE_LIBRARY_DIR} 后再新建页面动作。",
-                foreground=COLOR_MUTED, wraplength=px(560),
-            ).grid(row=next_row(), column=0, columnspan=2, sticky="w")
+            self.empty_row, _empty_label = full_width(
+                f"页面库为空：请把整页截图放到 {PAGE_LIBRARY_DIR} 后再新建页面动作。",
+            )
 
         mode_combo = ttk.Combobox(
             body, textvariable=self.mode, values=[label for label, _key in MODE_OPTIONS],
@@ -134,8 +181,8 @@ class PageActionDialog(ModalDialog):
         mode_combo.bind("<<ComboboxSelected>>", self._refresh_visibility)
         labeled(
             "判定方式", mode_combo,
-            "等待出现：页面没出现就一直等；等待消失：页面还在就一直等；"
-            "立即判断：只抓一帧判断，不等待。",
+            "等待出现：界面/页面没出现就一直等；等待消失：还在就一直等；"
+            "立即判断：只判断一次，不等待。",
         )
 
         threshold_row = ttk.Frame(body)
@@ -144,7 +191,7 @@ class PageActionDialog(ModalDialog):
         )
         threshold_entry.pack(side="left")
         ttk.Label(threshold_row, text="（0.1~1.0）").pack(side="left", padx=pad(6, 0))
-        labeled(
+        self.threshold_row = labeled(
             "相似度阈值", threshold_row,
             "与页面库截图的相似度；同一页面实机通常在 0.98 以上，不同页面大多低于 0.9。",
         )
@@ -165,7 +212,7 @@ class PageActionDialog(ModalDialog):
         interval_entry.pack(side="left")
         self.interval_row_index = labeled(
             "检测间隔", self.interval_row,
-            "每次抓屏判定的间隔；150 ms 左右对页面切换足够灵敏。",
+            "每次判断的间隔；150 ms 左右对界面切换足够灵敏。",
         )
 
         self.click_row = ttk.Frame(body)
@@ -246,12 +293,47 @@ class PageActionDialog(ModalDialog):
         self.click_enabled.set(True)
         self._refresh_visibility()
 
+    def _read_current_ui(self):
+        """只读探针：抓一次当前战斗界面可见状态，填进下拉。"""
+        from macroflow.execution.ssjj_ui_state import read_battle_uis
+        try:
+            snapshot = read_battle_uis()
+        except Exception as exc:
+            show_floating_notice(
+                self, "读不到战斗界面", f"需要先进入对局再读取：{exc}",
+            )
+            return
+        visible = [name for name, flag in snapshot.items() if flag]
+        keys = sorted(set(_UI_KEY_CACHE) | set(snapshot))
+        _UI_KEY_CACHE[:] = keys
+        self.ui_key_combo.configure(values=keys)
+        if visible and not self.ui_key.get().strip():
+            self.ui_key.set(visible[0])
+        text = "当前可见：" + ("、".join(visible) if visible else "（无）")
+        text += f"　共 {len(snapshot)} 个界面，下拉里可选全部"
+        self._probe_text = text
+        self._probe_label.configure(text=text)
+        self._refresh_visibility()
+
+    def _source_key(self) -> str:
+        return dict(SOURCE_OPTIONS).get(self.source.get(), "battle_ui")
+
     def _mode_key(self) -> str:
         return dict(MODE_OPTIONS).get(self.mode.get(), "enter")
+
+    def _set_row_visible(self, index: int | None, visible: bool) -> None:
+        if index is None:
+            return
+        for widget in self._row_widgets.get(index) or ():
+            if visible:
+                widget.grid()
+            else:
+                widget.grid_remove()
 
     def _refresh_visibility(self, _event=None):
         mode = self._mode_key()
         is_check = mode == "check"
+        battle = self._source_key() == "battle_ui"
         self.timeout_entry.configure(
             state="disabled" if self.wait_forever.get() or is_check else "normal",
         )
@@ -269,29 +351,19 @@ class PageActionDialog(ModalDialog):
             and dict(TIMEOUT_OPTIONS).get(self.on_timeout.get()) == "jump"
         )
         self.jump_combo.configure(state="readonly" if jump_enabled else "disabled")
-        for index, visible in (
-            (self.timeout_row_index, not is_check),
-            (self.interval_row_index, not is_check),
-        ):
-            widgets = self._row_widgets.get(index)
-            if widgets is None:
-                continue
-            for widget in widgets:
-                if visible:
-                    widget.grid()
-                else:
-                    widget.grid_remove()
+        self._set_row_visible(self.battle_row, battle)
+        self._set_row_visible(self.probe_row, battle and bool(self._probe_text))
+        self._set_row_visible(self.page_row, not battle)
+        self._set_row_visible(
+            self.empty_row, (not battle) and not self.page_names,
+        )
+        self._set_row_visible(self.threshold_row, not battle)
+        self._set_row_visible(self.timeout_row, not is_check)
+        self._set_row_visible(self.interval_row, not is_check)
 
     def save(self):
         try:
-            name = self.page_name.get().strip()
-            if not name:
-                raise ValueError(f"请先选择页面；页面截图应放在 {PAGE_LIBRARY_DIR}")
-            if name not in self.page_names:
-                raise ValueError(f"页面库中没有「{name}」")
-            threshold = float(self.threshold.get())
-            if not 0.1 <= threshold <= 1.0:
-                raise ValueError("相似度阈值必须在 0.1 到 1.0 之间")
+            source = self._source_key()
             mode = self._mode_key()
             timeout_ms = 0 if self.wait_forever.get() or mode == "check" \
                 else max(0, int(self.timeout.get()))
@@ -310,12 +382,11 @@ class PageActionDialog(ModalDialog):
                 target_id = self.jump_target_ids.get(self.jump_target.get(), "")
                 if not target_id:
                     raise ValueError("请选择超时后的跳转目标")
-            action = dict(self.source)
+            action = dict(self.data)
             action.update({
                 "type": "page",
-                "page": name,
+                "source": source,
                 "mode": mode,
-                "threshold": threshold,
                 "timeout_ms": timeout_ms,
                 "interval_ms": interval_ms,
                 "click": click,
@@ -329,10 +400,28 @@ class PageActionDialog(ModalDialog):
                 "delay_ms": max(0, int(self.delay.get())),
                 "after_delay_ms": max(0, int(self.after_delay.get())),
             })
+            if source == "battle_ui":
+                key = self.ui_key.get().strip()
+                if not key:
+                    raise ValueError("请点“读取当前”选择战斗界面，或直接输入界面名")
+                action["ui_key"] = key
+                action.pop("page", None)
+                action.pop("threshold", None)
+            else:
+                name = self.page_name.get().strip()
+                if not name:
+                    raise ValueError(f"请先选择页面；页面截图应放在 {PAGE_LIBRARY_DIR}")
+                if name not in self.page_names:
+                    raise ValueError(f"页面库中没有「{name}」")
+                threshold = float(self.threshold.get())
+                if not 0.1 <= threshold <= 1.0:
+                    raise ValueError("相似度阈值必须在 0.1 到 1.0 之间")
+                action["page"] = name
+                action["threshold"] = threshold
+                action.pop("ui_key", None)
             action.pop("timeout_jump_row", None)
             self.result = action
         except ValueError as exc:
-            from macroflow.ui.dialogs.base import show_floating_notice
             show_floating_notice(self, "页面动作设置无效", str(exc))
             return
         self.destroy()

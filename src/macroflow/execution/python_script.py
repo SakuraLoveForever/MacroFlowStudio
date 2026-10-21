@@ -64,6 +64,18 @@ class ScriptContext:
         """当前画面是否就是指定页面：整页截图相似度达到阈值即返回 True。"""
         return self._call("page_is", name=str(name), threshold=float(threshold))
 
+    def in_battle(self) -> bool:
+        """当前是否连上了战斗端内存（进了对局才有战斗界面状态）。"""
+        return self._call("in_battle")
+
+    def battle_uis(self) -> list[str]:
+        """当前可见的战斗界面名（服务端下发的 UI 名，如“小地图UI”）。"""
+        return self._call("battle_uis")
+
+    def ui_visible(self, key: str) -> bool:
+        """指定战斗界面当前是否可见。"""
+        return self._call("ui_visible", key=str(key))
+
     def run_module(self, key: str):
         return self._call("module", key=key)
 
@@ -152,6 +164,12 @@ def _request(method, data, player, hwnd, stack, depth, module_bindings):
         from macroflow.core.page_state import PAGE_DEFAULT_THRESHOLD
         threshold = float(data.get("threshold", PAGE_DEFAULT_THRESHOLD))
         return player.page_similarity(data.get("name", "")) >= threshold
+    elif method == "in_battle":
+        return player.battle_ui_snapshot() is not None
+    elif method == "battle_uis":
+        return player.battle_ui_names()
+    elif method == "ui_visible":
+        return player.battle_ui_visible(data.get("key", ""))
     elif method in ("exists", "read_text"):
         region = data.get("region")
         if region is not None:
