@@ -1,0 +1,21 @@
+{
+  "method": "static XOR of artifact bytes; no target execution",
+  "source_sha256": "7214aa9f37f906d7198caf64bbfa47ab7147eff0a880398b6da4d58393e40c74",
+  "virtual_address": "0x10224e81",
+  "file_offset": "0x224081",
+  "byte_count": 144,
+  "encoded_sha256": "eb653204a02951b9d9b452461bf7b6d025c408d62b2dbe78361c6fe667adad29",
+  "formula": "decoded[i] = encoded[i] XOR ((0x86+i) & 0xff)",
+  "decoded_utf8": "{\n  \"@type\": \"common.net.APC\",\n  \"functionName\": \"raidRpgBattleField\",\n  \"isTrace\": true,\n  \"parameters\": [\n    10023,\n    1002301,\n    1\n  ]\n}",
+  "template": {
+    "@type": "common.net.APC",
+    "functionName": "raidRpgBattleField",
+    "isTrace": true,
+    "parameters": [
+      10023,
+      1002301,
+      1
+    ]
+  },
+  "limitation": "Template defaults are not a captured request; actual stage arguments are set by the sender. No live acceptance observed."
+}
