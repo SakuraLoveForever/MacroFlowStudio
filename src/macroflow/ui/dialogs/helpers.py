@@ -152,6 +152,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "repeat_click": "连续点击",
         "scroll": "滚轮", "scroll_sequence": "组合滚轮",
         "image_match": "识图", "text_ocr": "识别文字",
+        "page": "页面",
         "ocr_compare": "数字比较", "multi_condition_click": "多条件识图",
         "row_list_condition_click": "列表逐行点击",
         "notice": "浮动提醒", "comment": "注释",
@@ -236,6 +237,10 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
                     detail = "模块 " + clip(name, 16)
             else:
                 detail = clip(Path(str(action.get("template", ""))).name, 16)
+        elif kind == "page":
+            mode = {"enter": "等出现", "leave": "等消失", "check": "判断"}.get(
+                str(action.get("mode")), "等出现")
+            detail = f"{mode} {clip(action.get('page') or '未选择', 18)}"
         elif kind == "text_ocr":
             detail = clip(action.get("expected_text", ""), 16) or "任意文字"
         elif kind == "ocr_compare":

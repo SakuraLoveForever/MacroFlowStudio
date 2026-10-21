@@ -22,6 +22,8 @@ def main(ctx):
 - `ctx.log(message)`：写入软件日志；`print` 也进入日志。
 - `ctx.exists(template, region=None, threshold=0.85)`：图片是否匹配；图片相对路径按 Python 文件所在目录解析，区域为 `(x, y, w, h)`，省略时识别全屏。
 - `ctx.read_text(region=None)`：OCR 返回文字。
+- `ctx.page()`：当前游戏页面名（与 `images/全屏` 下的整页截图同名，例如 `全屏_回到大厅`），识别不出返回空字符串。
+- `ctx.page_is(name, threshold=0.95)`：当前画面是否就是指定页面；用整页截图相似度判断，比逐模块识图快得多。
 - `ctx.run_module(key)`：按模块 ID 或唯一名称执行模块。
 - `ctx.run_script(path, repeats=1)`：运行 JSON 或 Python 脚本，相对路径按 Python 文件所在目录解析。
 - `ctx.action(action)`：执行现有模块脚本格式的一条动作，例如 `ctx.action({"type": "text", "text": "你好"})`。

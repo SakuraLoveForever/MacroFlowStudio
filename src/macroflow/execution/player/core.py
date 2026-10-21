@@ -302,6 +302,7 @@ class CoreMixin:
                 remaining -= slice_ms
                 if self.on_guard_poll is not None:
                     self._poll_guards()
+                self._track_page()
                 # 长等待只轮询守卫：前台恢复由播放开始时的激活与每次截图后的
                 # 校验负责（见 app._restore_workflow_scan_foreground），等待
                 # 期间不再反复检测/激活目标窗口。
@@ -741,7 +742,7 @@ class CoreMixin:
                     action, index, total, depth,
                     (time.perf_counter() - action_started) * 1000, waited_ms,
                 )
-                if action.get("type") in {"delay", "script_ref", "image_match", "ssjj_wait_mobs_absent"}:
+                if action.get("type") in {"delay", "script_ref", "image_match", "page", "ssjj_wait_mobs_absent"}:
                     self._timeline.mark_boundary()
             except GuardJumpRequest as request:
                 self._timeline.rebase()
@@ -1114,6 +1115,8 @@ class CoreMixin:
                 self._run_action_sequence(steps, hwnd, script_stack=script_stack, depth=depth + 1)
         elif kind == "image_match":
             return self._execute_image(action, hwnd, script_stack, depth)
+        elif kind == "page":
+            return self._execute_page(action, hwnd, script_stack, depth)
         elif kind == "text_ocr":
             return self._execute_text_ocr(action, hwnd, script_stack, depth)
         elif kind == "ocr_compare":

@@ -649,6 +649,7 @@ class ShellMixin:
             ("⇄ 数字比较", "add_ocr_compare", "AccentScriptTool.TButton"),
             ("⊞ 多条件识图", "add_multi_condition_click", "AccentScriptTool.TButton"),
             ("▤ 列表逐行点击", "add_row_list_condition_click", "AccentScriptTool.TButton"),
+            ("◫ 页面", "add_page", "AccentScriptTool.TButton"),
             ("▶ 软件", "add_open_app", "ScriptTool.TButton"),
             ("✕ 关闭", "add_close_app", "ScriptTool.TButton"),
             ("▣ 分辨率", "add_set_resolution", "AccentScriptTool.TButton"),

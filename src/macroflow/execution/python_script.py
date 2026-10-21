@@ -56,6 +56,14 @@ class ScriptContext:
     def read_text(self, region=None) -> str:
         return self._call("read_text", region=region)
 
+    def page(self) -> str:
+        """当前游戏页面名（与 images/全屏 下的截图同名）；识别不出返回空字符串。"""
+        return self._call("page")
+
+    def page_is(self, name: str, threshold: float = 0.95) -> bool:
+        """当前画面是否就是指定页面：整页截图相似度达到阈值即返回 True。"""
+        return self._call("page_is", name=str(name), threshold=float(threshold))
+
     def run_module(self, key: str):
         return self._call("module", key=key)
 
@@ -138,6 +146,12 @@ def _request(method, data, player, hwnd, stack, depth, module_bindings):
             key = keys[0]
         return player._execute_action(module_action_for_key(key, objects[key]["category"]),
                                       hwnd, script_stack=stack, depth=depth + 1)
+    elif method == "page":
+        return player.current_page()
+    elif method == "page_is":
+        from macroflow.core.page_state import PAGE_DEFAULT_THRESHOLD
+        threshold = float(data.get("threshold", PAGE_DEFAULT_THRESHOLD))
+        return player.page_similarity(data.get("name", "")) >= threshold
     elif method in ("exists", "read_text"):
         region = data.get("region")
         if region is not None:

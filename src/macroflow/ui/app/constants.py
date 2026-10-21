@@ -62,6 +62,7 @@ ACTION_ICONS = {
     "scroll": "↕",
     "scroll_sequence": "↕",
     "image_match": "▣",
+    "page": "◫",
     "ocr_compare": "⇄",
     "multi_condition_click": "⊞",
     "row_list_condition_click": "▤",

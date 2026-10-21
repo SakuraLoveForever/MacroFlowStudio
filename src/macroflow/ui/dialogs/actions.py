@@ -1773,6 +1773,11 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         return preserve_identity(ScrollSequenceDialog(parent, action).show())
     if kind == "image_match":
         return preserve_identity(ImageActionDialog(parent, action, actions=all_actions).show())
+    if kind == "page":
+        from .page_action import PageActionDialog
+        return preserve_identity(
+            PageActionDialog(parent, action, actions=all_actions).show(),
+        )
     if kind == "text_ocr":
         return preserve_identity(
             OcrActionDialog(parent, action, actions=all_actions).show(),

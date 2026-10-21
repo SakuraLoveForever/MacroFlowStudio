@@ -1134,6 +1134,15 @@ class ScriptsMixin:
         if value is not None:
             self._insert_action({"type": "ssjj_wait_mobs_absent", "duration_ms": value, "delay_ms": 0})
 
+    def add_page(self):
+        from macroflow.ui.dialogs.page_action import PageActionDialog
+        ensure_action_ids(self.script.actions)
+        action = PageActionDialog(
+            self.root, actions=self.script.actions,
+        ).show()
+        if action:
+            self._insert_action(action)
+
     def add_aim_lock(self):
         from macroflow.ui.dialogs.ssjj_aim import AimActionDialog
         action = AimActionDialog(self.root).show()

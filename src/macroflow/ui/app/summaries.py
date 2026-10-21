@@ -181,6 +181,46 @@ def set_matching_key_action_delays(
             action["delay_ms"] = delay
             changed.append(index)
     return changed
+PAGE_MODE_LABELS = {"enter": "等待出现", "leave": "等待消失", "check": "立即判断"}
+
+
+def _page_action_summary(action: dict, action_rows: dict[str, int] | None,
+                         delay: str) -> tuple[str, str, str]:
+    """页面动作摘要：页面名 + 等待方式 + 成功后点击 + 超时行为。"""
+    name = str(action.get("page") or "未选择页面")
+    mode = str(action.get("mode", "enter"))
+    if mode not in PAGE_MODE_LABELS:
+        mode = "enter"
+    timeout_ms = max(0, int(action.get("timeout_ms", 3000) or 0))
+    if mode == "check":
+        parts = [f"判断当前是否为「{name}」"]
+    elif timeout_ms <= 0:
+        parts = [f"{PAGE_MODE_LABELS[mode]}「{name}」（一直等）"]
+    else:
+        parts = [f"{PAGE_MODE_LABELS[mode]}「{name}」（最多 {timeout_ms} ms）"]
+    if action.get("click"):
+        point = list(action.get("click_point") or [])
+        parts.append(
+            f"成功后点击 ({point[0]}, {point[1]})" if len(point) == 2
+            else "成功后点击（坐标未设置）"
+        )
+    behavior = str(action.get("on_timeout", "continue"))
+    if behavior == "end_current_script":
+        parts.append("超时结束当前脚本")
+    elif behavior == "jump":
+        target_id = str(action.get("timeout_jump_action_id", "")).strip()
+        target_row = action_rows.get(target_id) if action_rows and target_id else None
+        if target_row is not None:
+            parts.append(f"超时跳到第 {target_row} 行")
+        elif target_id:
+            parts.append("超时跳转目标已删除")
+        else:
+            parts.append("超时跳转目标未设置")
+    elif mode != "check":
+        parts.append("超时继续下一行")
+    return action_kind_label("page", "页面"), " · ".join(parts), delay
+
+
 def action_summary(action: dict, action_rows: dict[str, int] | None = None,
                    module_objects: dict | None = None) -> tuple[str, str, str]:
     kind = action.get("type", "unknown")
@@ -275,6 +315,8 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
             else "还没有录到内容 · 双击开始录制"
         )
         return action_kind_label(kind, "录制动作"), detail, delay
+    if kind == "page":
+        return _page_action_summary(action, action_rows, delay)
     if kind == "image_match":
         if action.get("module_ref"):
             return _module_ref_summary(action, "识图模块", action_rows, module_objects)
