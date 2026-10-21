@@ -11,7 +11,8 @@ from macroflow.core.models import (
 from macroflow.core.storage import (
     BASE_DIR, DIRECTION_SCRIPTS_DIR, IMAGES_DIR, SCRIPTS_DIR, display_path,
     DEFAULT_MODULE_INTERVAL_MS, DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
+    DEFAULT_MODULE_RECHECK_DELAY_MS,
+    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, MODULE_CATEGORIES, _normalize_object,
     load_app_settings, load_module_images_dir, load_module_objects,
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
@@ -23,7 +24,7 @@ from macroflow.ui.animation import animator_for
 from macroflow.ui.detect_overlay import show_overlay
 from pathlib import Path
 from macroflow.core.image_match import capture_bgr
-from macroflow.execution.player import running_process_names
+from .process_names import ProcessNamePicker
 import copy
 from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -81,15 +82,10 @@ from .helpers import (
 from .screen_pickers import (
     ScreenOffsetPicker,
     ScreenPointPicker,
-    ScreenProcessPicker,
     ScreenRegionPicker,
 )
-from .segments import (
-    FailureSegmentMixin,
-    SegmentEditorMixin,
-    module_action_for_key,
-    module_reference_binding,
-)
+from .segments import FailureSegmentMixin, SegmentEditorMixin
+from macroflow.core.modules import module_action_for_key, module_reference_binding
 from .virtual_tree import VirtualRow, VirtualTreeRows
 from .module_test import start_module_recognition_test
 
@@ -107,11 +103,6 @@ def _valid_scripts_in(root: Path) -> list[Path]:
             continue
         paths[str(resolved).casefold()] = resolved
     return sorted(paths.values(), key=lambda path: pinyin_sort_key(path.stem))
-
-
-def direction_script_files() -> list[Path]:
-    """Return valid JSON scripts from the hotkey direction folder (scripts/方向)."""
-    return _valid_scripts_in(resolve_path(DIRECTION_SCRIPTS_DIR))
 
 
 def configured_script_files(settings: dict | None = None) -> list[Path]:
@@ -281,7 +272,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.category_choices = (
             [CATEGORY_LABELS["special"]]
             if pure_edit else [
-                CATEGORY_LABELS["switch"], CATEGORY_LABELS["workflow_global"],
+                CATEGORY_LABELS["switch"], CATEGORY_LABELS["recognition"], CATEGORY_LABELS["workflow_global"],
                 CATEGORY_LABELS["script_global"],
             ]
         )
@@ -334,10 +325,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.threshold_var = tk.StringVar(value=str(obj.get("threshold", 0.85)))
         # 新建模块的「检测间隔」默认 1 秒；编辑已有模块时沿用对象里保存的值。
         self.interval_var = duration_var(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))
+        self.start_delay_var = duration_var(obj.get("start_delay_ms", 0))
         self.cooldown_var = duration_var(
             obj.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS),
         )
-        self.start_delay_var = duration_var(obj.get("start_delay_ms", 0))
+        self.recheck_enabled_var = tk.BooleanVar(value=bool(obj.get("recheck_enabled", False)))
+        self.recheck_delay_var = duration_var(
+            obj.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS),
+        )
         fallback_objects = load_module_objects()
         fallback_key = str(obj.get("fallback_module_key", "")).strip()
         self.fallback_module_keys = {"（不启用）": ""}
@@ -368,10 +363,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         ))
         self.advanced_recognition_var = tk.BooleanVar(value=bool(
             obj.get("fallback_module_key") or obj.get("hold_enabled")
+            or obj.get("recheck_enabled")
         ))
         self.hold_enabled_var = tk.BooleanVar(value=bool(obj.get("hold_enabled", False)))
         self.hold_var = duration_var(obj.get("hold_ms", 1000))
-        self.delay_var = duration_var(obj.get("delay_ms", 0))
         after_action = str(obj.get("after_action", "click_match"))
         if obj.get("recognize") == "text" and after_action == "second_match":
             # 识别文字方式没有二次图片匹配：编辑旧对象时回落为点击识别区域。
@@ -501,8 +496,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.row_process_name = self._labeled_row(
             body, row, "进程名",
             self._process_picker_row,
-            "可展开列表选择当前运行的进程，或点击“鼠标选取”后移到目标软件预览进程名，单击确认，Esc 取消。"
-            "列表每次展开自动刷新；不区分大小写，同名进程有一个运行即视为检测到。已保存的进程停止后仍保留在选项中。",
+            "从进程名库选择；在库中从运行列表选取或用鼠标抓取后保存，可供所有模块和插件复用。"
+            "软件关闭后仍可选择；不区分大小写，同名进程有一个运行即视为检测到。",
         )
         row += 1
         self.row_expected_text = self._labeled_row(
@@ -552,6 +547,13 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "限时等待开始识别后，最多重试这么久；超时返回失败。全局模块用于连续未识别的超时步骤。",
         )
         row += 1
+        self.row_start_delay = self._labeled_row(
+            body, row, "识别前强制等待",
+            lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
+            "进入模块后先完整等待，再首次识别；等待时限从识别开始计算。"
+            "F12 可停止。全局模块从启用时开始等待，期间不识别。",
+        )
+        row += 1
         self.row_advanced_recognition = self._labeled_row(
             body, row, "高级识别设置",
             lambda m: dark_checkbutton(
@@ -572,14 +574,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "触发后等待多少毫秒才允许同一模块再次触发；目标持续存在也会在冷却结束后再次触发。新建模块默认 2 秒。",
         )
         row += 1
-        self.row_start_delay = self._labeled_row(
-            body, row, "识别前强制等待",
-            lambda m: ttk.Entry(m, textvariable=self.start_delay_var, width=14),
-            "进入模块后先完整等待，再首次识别；等待时限从识别开始计算。"
-            "F12 可停止。全局模块从启用时开始等待，期间不识别。",
-        )
-        row += 1
         self.confirmation_heading = self._section_heading(body, row, "识别确认")
+        row += 1
+        self.row_recheck_confirm = self._labeled_row(
+            body, row, "再次识别等待",
+            self._build_recheck_control,
+            "第一次识别结束后等待设定秒数，再识别一次；以第二次结果决定是否执行点击等成功动作。"
+            "默认关闭，等待默认 5 秒。",
+        )
         row += 1
         self.row_hold = self._labeled_row(
             body, row, "持续命中确认",
@@ -616,12 +618,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 "次数", "间隔",
             ),
             "备用模块命中后连续点击的次数，以及两次点击之间的等待毫秒数。",
-        )
-        row += 1
-        self.row_delay = self._labeled_row(
-            body, row, "延时",
-            lambda m: ttk.Entry(m, textvariable=self.delay_var, width=14),
-            "识别成功后、执行动作前的等待毫秒数。",
         )
         row += 1
         self.action_section_heading = self._section_heading(body, row, "成功后动作")
@@ -771,12 +767,20 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         buttons = ttk.Frame(body)
         buttons.grid(row=row, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存模块", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="保存模块", command=self.save)
+        save_button.pack(side="right", padx=px(8))
         ttk.Button(buttons, text="识别测试", command=self.test_recognition).pack(side="left")
         self._toggle_sections()
         fit_scrollable_window_to_content(
             self, parent, body, self._scrollbar, align_top=True,
         )
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button, self._save_values, new=not bool(old_key))
+
+    def _save_values(self):
+        values = {name: value.get() for name, value in self.__dict__.items()
+                  if name.endswith('_var') and isinstance(value, tk.Variable)}
+        return values, self.segment, self.timeout_segment, self.timed_segment, self.module_enabled
 
     def _build_hold_control(self, master):
         frame = ttk.Frame(master)
@@ -786,6 +790,17 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         ).pack(side="left")
         self.hold_entry = ttk.Entry(frame, textvariable=self.hold_var, width=14)
         self.hold_entry.pack(side="left", padx=pad(10, 0))
+        return frame
+
+    def _build_recheck_control(self, master):
+        frame = ttk.Frame(master)
+        dark_checkbutton(
+            frame, "启用", self.recheck_enabled_var,
+            command=self._toggle_recheck_control,
+        ).pack(side="left")
+        self.recheck_entry = ttk.Entry(frame, textvariable=self.recheck_delay_var, width=8)
+        self.recheck_entry.pack(side="left", padx=pad(10, 0))
+        ttk.Label(frame, text="秒").pack(side="left")
         return frame
 
     def _build_ocr_offset_control(self, master):
@@ -821,6 +836,11 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         if entry is not None:
             entry.configure(state="normal" if self.hold_enabled_var.get() else "disabled")
 
+    def _toggle_recheck_control(self):
+        entry = getattr(self, "recheck_entry", None)
+        if entry is not None:
+            entry.configure(state="normal" if self.recheck_enabled_var.get() else "disabled")
+
     def _labeled_row(self, body, row, label, control_factory, tip: str = ""):
         """字段行：label 在左、控件在右。
 
@@ -836,15 +856,11 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         frame.columnconfigure(1, weight=1)
         name_box = ttk.Frame(frame)
         name_box.grid(row=0, column=0, sticky="w", padx=pad(0, 14))
-        ttk.Label(name_box, text=label).pack(side="left")
+        label_widget = ttk.Label(name_box, text=label)
+        label_widget.pack(side="left")
         if tip:
-            help_badge = tk.Label(
-                name_box, text="?", width=2, cursor="hand2",
-                background=COLOR_BLUE_SELECTION, foreground="#EAF4FF",
-                font=(FONT_FAMILY, FONT_BODY, "bold"), relief="flat",
-            )
-            help_badge.pack(side="left", padx=pad(6, 0))
-            Tooltip(help_badge, tip, anchor=frame)
+            # 说明挂在字段名文字上：悬停文字即显示，不再显示问号角标。
+            Tooltip(label_widget, tip, anchor=frame)
         control = control_factory(frame)
         control.grid(row=0, column=1, sticky="ew")
         return frame
@@ -861,35 +877,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         return frame
 
     def _process_picker_row(self, frame):
-        current = self.process_name_var.get().strip()
-        self.process_name_combo = ttk.Combobox(
-            frame, textvariable=self.process_name_var, state="readonly", width=30,
-            values=[current] if current else [], postcommand=self._refresh_process_choices,
-        )
-        self.process_name_combo.grid(row=0, column=1, sticky="ew")
-        ttk.Button(frame, text="鼠标选取…", command=self._pick_process).grid(
-            row=0, column=2, padx=pad(8, 0),
-        )
-        return self.process_name_combo
-
-    def _pick_process(self):
-        self.picker = ScreenProcessPicker(
-            self, self.master, self.process_name_var.set,
-            hidden_windows=self._ancestors_to_hide(),
-            tip_text="移动到目标软件，预览进程名；单击确认，Esc 取消",
-        )
-        self.picker.start()
-
-    def _refresh_process_choices(self):
-        try:
-            names = running_process_names()
-        except OSError as exc:
-            show_floating_notice(self, "无法枚举进程", f"读取进程列表失败：{exc}")
-            return
-        current = self.process_name_var.get().strip()
-        if current and current.lower() not in names:
-            names.append(current)
-        self.process_name_combo.configure(values=sorted(names, key=str.lower))
+        return ProcessNamePicker(frame, self.process_name_var)
 
     def _image_picker_row(self, frame):
         row = ttk.Frame(frame)
@@ -967,6 +955,16 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
     def _toggle_sections(self, _event=None):
         after = self.after_action_var.get()
         category = self.category_var.get()
+        if category == "识图":
+            if self.recognize_var.get() not in ("模板图片", "识别文字"):
+                self.recognize_var.set("模板图片")
+            self.after_action_var.set("成功后继续")
+            for name in ('run_code_after_action_var', 'run_code_on_timeout_var',
+                         'timed_detection_var', 'recheck_enabled_var'):
+                variable = self.__dict__.get(name)
+                if variable is not None:
+                    variable.set(False)
+            after = "成功后继续"
         # 特殊模块 = 纯动作（无图片）：只保留 分类 + 名称，隐藏全部检测/行为行。
         pure = category == "特殊模块"
         process_mode = not pure and self.recognize_var.get() == "进程检测"
@@ -1004,12 +1002,13 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self._set_row(self.row_match_mode, text_mode)
         self._set_row(self.row_wait_text_absent, not pure and not number_mode and not direct_mode)
         self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
+        self._set_row(self.row_start_delay, not pure)
         self._set_row(self.row_interval, not pure and not direct_mode)
         self._set_row(
             self.row_cooldown,
             not pure and category in ("工作流全局模块", "脚本全局模块"),
         )
-        self._set_row(self.row_start_delay, not pure)
+        self._set_row(self.row_recheck_confirm, not pure and not number_mode and not direct_mode and not process_mode)
         fallback_supported = not pure and not number_mode and not direct_mode
         self._set_row(self.row_fallback_module, fallback_supported)
         self._set_row(
@@ -1035,7 +1034,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             and not wait_for_disappearance
             and (category == "切换模块" or after == "二次识别后点击"),
         )
-        self._set_row(self.row_delay, not pure and not number_mode and not direct_global)
         self._set_row(self.action_section_heading, not pure and not number_mode and not direct_global)
         self._set_row(self.row_after, not pure and not number_mode and not direct_global)
         self._set_row(
@@ -1043,6 +1041,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             not direct_mode and category in ("工作流全局模块", "脚本全局模块"),
         )
         self._toggle_hold_control()
+        self._toggle_recheck_control()
         self._set_row(
             self.row_button,
             not pure and after in ("点击识别区域", "点击自定义位置", "二次识别后点击"),
@@ -1112,7 +1111,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                                  self.segment_frame, self.timeout_section_heading,
                                  self.row_run_code_on_timeout, self.row_not_found_timeout,
                                  self.timeout_segment_frame, self.row_wait_text_absent,
-                                 self.row_blocking, self.row_delay, self.action_section_heading,
+                                 self.row_blocking, self.row_recheck_confirm, self.action_section_heading,
                                  self.row_after, self.row_hold, self.row_button, self.row_click_count,
                                  self.row_ocr_offset, self.row_click_point, self.row_second_template,
                                  self.row_second_timeout, self.row_second_click_target,
@@ -1124,7 +1123,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self._set_row(
             self.confirmation_heading, advanced_available and not direct_mode and not number_mode
             and not process_mode and not timed_enabled
-            and category in ("工作流全局模块", "脚本全局模块")
             and bool(self.advanced_recognition_var.get()),
         )
         if not advanced_available or not self.advanced_recognition_var.get():
@@ -1132,8 +1130,23 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 self.row_interval, self.row_cooldown, self.confirmation_heading,
                 self.row_hold, self.row_fallback_module, self.row_fallback_click,
                 self.row_fallback_click_settings,
+                self.row_recheck_confirm,
             ):
                 self._set_row(advanced_row, False)
+        if category == "识图":
+            for name in (
+                'row_start_delay', 'row_interval', 'row_cooldown', 'row_recheck_confirm',
+                'row_wait_text_absent', 'row_blocking', 'row_fallback_module', 'row_fallback_click',
+                'row_fallback_click_settings', 'action_section_heading', 'row_after', 'row_hold',
+                'row_button', 'row_click_count', 'row_ocr_offset', 'row_click_point',
+                'row_second_template', 'row_second_timeout', 'row_second_click_target',
+                'row_second_click_region', 'segment_section_heading', 'row_run_code_after_action',
+                'segment_frame', 'timeout_section_heading', 'row_run_code_on_timeout',
+                'row_not_found_timeout', 'timeout_segment_frame', 'timed_heading',
+                'row_timed_detection', 'row_timed_condition', 'row_timed_duration',
+                'timed_segment_frame', 'row_advanced_recognition', 'confirmation_heading',
+            ):
+                self._set_row(getattr(self, name, None), False)
         self._resize_for_content()
 
     def _set_row(self, row, visible: bool):
@@ -1314,7 +1327,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             return
         start_module_recognition_test(self, obj)
 
-
     def save(self):
         if self.category_var.get() == "特殊模块":
             # 特殊模块 = 纯动作（无图片）：名称做 key，行为固定为「重新执行工作流」。
@@ -1331,7 +1343,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         process_mode = self.recognize_var.get() == "进程检测"
         process_name = self.process_name_var.get().strip()
         if process_mode and (not process_name or any(part in process_name for part in ("/", "\\", ":", "\x00"))):
-            show_floating_notice(self, "进程名无效", "请从进程列表选择要检测的进程。")
+            show_floating_notice(self, "进程名无效", "请从进程名库选择要检测的进程。")
             return
         text_mode = self.recognize_var.get() == "识别文字"
         number_mode = self.recognize_var.get() == "读取数字"
@@ -1379,6 +1391,13 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 show_floating_notice(self, "相似度无效", "相似度必须在 0.1 到 1.0 之间。")
                 return
         try:
+            start_delay = int(self.start_delay_var.get())
+            if not 0 <= start_delay <= 86400000:
+                raise ValueError
+        except ValueError:
+            show_floating_notice(self, "识别前等待无效", "请输入 0–86400 秒以内的时间。")
+            return
+        try:
             interval = max(50, int(self.interval_var.get()))
         except ValueError:
             show_floating_notice(self, "检测间隔格式错误", "检测间隔必须是不小于 50 的整数（毫秒）。")
@@ -1389,12 +1408,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             show_floating_notice(self, "触发冷却格式错误", "触发冷却必须是大于等于 0 的时间。")
             return
         try:
-            start_delay = max(0, min(86400000, int(self.start_delay_var.get())))
-        except ValueError:
-            show_floating_notice(self, "开始识别前延时格式错误", "延时必须是大于等于 0 的时间。")
-            return
-        try:
-            delay = max(0, int(self.delay_var.get()))
             hold = max(0, int(self.hold_var.get()))
             click_count = max(1, min(9999, int(self.click_count_var.get())))
             fallback_count_var = getattr(self, "fallback_click_count_var", None)
@@ -1404,10 +1417,27 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         except ValueError:
             show_floating_notice(
                 self, "数字格式错误",
-                "延时和持续时间必须是大于等于 0 的整数；点击次数必须是大于等于 1 的整数。",
+                "持续时间必须是大于等于 0 的整数；点击次数必须是大于等于 1 的整数。",
             )
             return
         timed_enabled = process_mode or (not number_mode and not direct_mode and self.timed_detection_var.get())
+        recheck_enabled = (
+            bool(self.recheck_enabled_var.get())
+            and not number_mode and not direct_mode and not timed_enabled
+        )
+        try:
+            recheck_delay = int(self.recheck_delay_var.get())
+        except ValueError:
+            recheck_delay = 0
+        if recheck_enabled and not 1000 <= recheck_delay <= 600000:
+            show_floating_notice(
+                self, "再次识别等待无效",
+                "再次识别等待必须是 1–600 秒之间的整秒数，例如 5 表示 5 秒。",
+            )
+            return
+        if not 1000 <= recheck_delay <= 600000:
+            # 未启用时允许留空/填 0，保存回默认 5 秒，不拦保存。
+            recheck_delay = DEFAULT_MODULE_RECHECK_DELAY_MS
         after_value = "continue" if timed_enabled else AFTER_ACTION_VALUES.get(self.after_action_var.get(), "click_match")
         if direct_mode and after_value not in ("click_custom", "continue"):
             after_value = "continue"
@@ -1531,6 +1561,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         module_dict = {
             "category": {
                 "切换模块": "switch",
+                "识图": "recognition",
                 "工作流全局模块": "workflow_global",
                 "脚本全局模块": "script_global",
             }.get(self.category_var.get(), "special"),
@@ -1540,8 +1571,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "region": region,
             "threshold": threshold,
             "interval_ms": interval,
-            "cooldown_ms": cooldown,
             "start_delay_ms": start_delay,
+            "cooldown_ms": cooldown,
+            "recheck_enabled": recheck_enabled,
+            "recheck_delay_ms": recheck_delay,
             "fallback_module_key": (
                 getattr(self, "fallback_module_keys", {}).get(
                     self.fallback_module_key_var.get(), self.fallback_module_key_var.get().strip(),
@@ -1555,7 +1588,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "blocking": False if direct_mode else self.wait_rule_var.get() == "一直等待",
             "hold_enabled": bool(self.hold_enabled_var.get()),
             "hold_ms": hold,
-            "delay_ms": 0 if number_mode else delay,
             "after_action": "continue" if number_mode else after_value,
             "run_code_after_action": run_code_after_action,
             "click_point": click_point,
@@ -1637,6 +1669,7 @@ class ModuleImageInventoryDialog(ModalDialog):
     def _category_label(category: str) -> str:
         return {
             "switch": "切换",
+            "recognition": "识图",
             "workflow_global": "工作流全局",
             "script_global": "脚本全局",
             "special": "特殊",
@@ -1723,7 +1756,7 @@ class ModuleImageInventoryDialog(ModalDialog):
             tree, scrollbar, row_height=row_height, animator=animator_for(tree),
         )
         tree.bind("<Double-1>", lambda _event: self._open_inventory_item())
-        tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
+        tree.bind("<<TreeviewSelect>>", self._update_action_buttons, add="+")
         self.trees["images"] = tree
         self._apply_sort_heading(tree)
         bind_wheel_to_scroll_tree(self, lambda: self.virtual_rows)
@@ -1895,7 +1928,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     """
 
     search_query = ""
-    TAB_KEYS = ("all", "switch", "workflow_global", "script_global", "special")
+    TAB_KEYS = ("all", "switch", "recognition", "workflow_global", "script_global", "special")
 
     def __init__(self, parent, app=None):
         super().__init__(parent, "模块对象管理", 1040, 520)
@@ -1994,7 +2027,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     @staticmethod
     def _tab_label(tab_key: str) -> str:
         return {
-            "all": "全部模块", "switch": "切换",
+            "all": "全部模块", "switch": "切换", "recognition": "识图",
             "workflow_global": "工作流全局", "script_global": "脚本全局",
             "special": "特殊",
         }[tab_key]
@@ -2041,7 +2074,7 @@ class TemplateRegionManagerDialog(ModalDialog):
         tree.bind("<Return>", lambda _event: (self._open_edit(), "break")[1])
         tree.bind("<KP_Enter>", lambda _event: (self._open_edit(), "break")[1])
         tree.bind("<Button-3>", self._show_module_context_menu, add="+")
-        tree.bind("<<TreeviewSelect>>", self._update_action_buttons)
+        tree.bind("<<TreeviewSelect>>", self._update_action_buttons, add="+")
         self.trees[tab_key] = tree
         self._apply_sort_heading(tab_key, tree)
 
@@ -2049,7 +2082,7 @@ class TemplateRegionManagerDialog(ModalDialog):
     def _sort_heading_label(tab_key: str) -> str:
         return {
             "all": "模块名称",
-            "switch": "模块名称", "workflow_global": "模块名称",
+            "switch": "模块名称", "recognition": "模块名称", "workflow_global": "模块名称",
             "script_global": "模块名称", "special": "名称",
         }[tab_key]
 
@@ -2122,7 +2155,7 @@ class TemplateRegionManagerDialog(ModalDialog):
                         (text, module_manager_special_action_summary(obj) or "—", modified_text),
                         ((tag,) if tag else ()), "normal", self._row_color(tag),
                     ))
-            elif tab_key in ("switch", "workflow_global", "script_global"):
+            elif tab_key in ("switch", "recognition", "workflow_global", "script_global"):
                 if obj.get("category") != tab_key or pure:
                     continue
                 tag = module_manager_tag(obj)
@@ -2207,6 +2240,15 @@ class TemplateRegionManagerDialog(ModalDialog):
             label="▶ 测试指定次数…",
             command=lambda: self._test_module_with_count(key),
         )
+        menu.add_command(label="复制…", command=lambda: self._copy_module(key))
+        category_menu = tk.Menu(menu, tearoff=0)
+        for target_category in MODULE_CATEGORIES:
+            category_menu.add_command(
+                label=CATEGORY_LABELS[target_category],
+                state="disabled" if category == target_category else "normal",
+                command=lambda target=target_category: self._change_module_category(key, target),
+            )
+        menu.add_cascade(label="切换分类", menu=category_menu)
         if category in ("workflow_global", "script_global"):
             target = "script_global" if category == "workflow_global" else "workflow_global"
             target_label = "脚本全局" if target == "script_global" else "工作流全局"
@@ -2235,14 +2277,12 @@ class TemplateRegionManagerDialog(ModalDialog):
             return
         self._test_module_recognition(selection[0])
 
-
     def _test_module_recognition(self, key: str):
         obj = self.objects.get(key)
         if obj is None:
             show_floating_notice(self, "识别测试失败", "模块不存在。", duration_ms=500)
             return
         start_module_recognition_test(self, obj)
-
 
     def _test_module_with_count(self, key: str):
         """Ask once for a repeat count, then test the saved module independently."""
@@ -2255,6 +2295,23 @@ class TemplateRegionManagerDialog(ModalDialog):
         if repeats is None:
             return
         self.app.run_module_object_test(key, repeats)
+
+    def _change_module_category(self, key, target):
+        obj = self.objects.get(key)
+        if not obj or target not in MODULE_CATEGORIES or obj.get('category') == target:
+            return
+        changed = copy.deepcopy(obj)
+        changed.update(category=target, pure_action=target == 'special')
+        if target == 'special':
+            changed['special_action_type'] = (
+                'end_current_script' if key == END_CURRENT_SCRIPT_LABEL else
+                'restart_workflow' if key == '重新执行工作流' else 'delay'
+            )
+        changed = _normalize_object(changed, key)
+        updated = {**self.objects, key: changed}
+        save_module_objects(updated)
+        self.objects = updated
+        self._reload_trees()
 
     def _change_global_module_category(self, key: str, target: str,
                                        copy_object: bool = False):
@@ -2284,6 +2341,29 @@ class TemplateRegionManagerDialog(ModalDialog):
             self, f"已{action_label}为{target_label}",
             f"“{name}”已{action_label}为{target_label}模块。",
         )
+
+    def _copy_module(self, key):
+        source = self.objects.get(key)
+        if source is None:
+            return
+        draft = copy.deepcopy(source)
+        draft['name'] = f"{source.get('name') or '模块'} 副本"
+        draft.pop('modified_at', None)
+        form = TemplateRegionFormDialog(self, object_dict=draft,
+                                        category=source.get('category', 'switch'))
+        form.title("复制模块对象")
+        result = form.show()
+        if result is None:
+            return
+        copied = {**draft, **copy.deepcopy(result[2])}
+        if copied.get('category') == 'special':
+            copied['special_action_type'] = source.get('special_action_type') or (
+                'end_current_script' if key == END_CURRENT_SCRIPT_LABEL else 'restart_workflow'
+            )
+        new_key = f"module:{uuid.uuid4().hex}"
+        self.objects = update_module_object(new_key, copied)
+        self._reload_trees()
+        self._current_view().select_key(new_key)
 
     def _open_form(self, key: str = "", object_dict: dict | None = None,
                    category: str = "switch", initial_image: str = ""):
@@ -2850,10 +2930,10 @@ class ModulePickerDialog(ModalDialog):
 
     @staticmethod
     def _allowed_categories(categories: tuple[str, ...] | None = None) -> tuple[str, ...]:
-        allowed = categories or ("switch", "workflow_global", "script_global", "special")
+        allowed = categories or ("switch", "recognition", "workflow_global", "script_global", "special")
         return tuple(
             category for category in allowed
-            if category in ("switch", "workflow_global", "script_global", "special")
+            if category in ("switch", "recognition", "workflow_global", "script_global", "special")
         ) or ("switch",)
 
     search_query = ""
@@ -2879,7 +2959,7 @@ class ModulePickerDialog(ModalDialog):
         self.selection_only = bool(selection_only)
         self.objects: dict[str, dict] = load_module_objects()
         self.category_keys: dict[str, list[str]] = {
-            "switch": [], "workflow_global": [], "script_global": [], "special": [],
+            "switch": [], "recognition": [], "workflow_global": [], "script_global": [], "special": [],
         }
         self.listboxes: dict[str, tk.Listbox] = {}
         self.empty_labels: dict[str, ttk.Label] = {}
@@ -2910,6 +2990,10 @@ class ModulePickerDialog(ModalDialog):
             tab_switch = ttk.Frame(notebook)
             notebook.add(tab_switch, text="切换模块")
             self._build_category_tab("switch", tab_switch)
+        if "recognition" in self.allowed_categories:
+            tab_recognition = ttk.Frame(notebook)
+            notebook.add(tab_recognition, text="识图")
+            self._build_category_tab("recognition", tab_recognition)
         if "workflow_global" in self.allowed_categories:
             tab_global = ttk.Frame(notebook)
             notebook.add(tab_global, text="工作流全局模块")
@@ -3238,7 +3322,7 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
         category = str(self.action.get("module_category", "switch"))
         if category == "global":
             category = "script_global"
-        if category not in ("switch", "script_global"):
+        if category not in ("switch", "recognition", "workflow_global", "script_global"):
             category = "switch"
         replacement = ModulePickerDialog(
             self, categories=(category,),

@@ -39,13 +39,13 @@ def action_with_live_module_binding(action: dict | None) -> dict:
 
 def module_action_for_key(key: str, category: str, obj: dict | None = None) -> dict:
     """Build the live-reference action stored when a module is inserted."""
-    if category == "special":
-        return {
-            "type": "end_current_script"
-            if key == END_CURRENT_SCRIPT_LABEL
-            else "restart_workflow"
-        }
     obj = obj if obj is not None else (registered_module_object(key) or {})
+    if category == "special":
+        action_type = obj.get("special_action_type") or (
+            "end_current_script" if key == END_CURRENT_SCRIPT_LABEL
+            else "restart_workflow"
+        )
+        return {"type": action_type, **({"ms": 0} if action_type == "delay" else {})}
     binding = module_reference_binding(key, obj)
     if category in ("workflow_global", "script_global", "global"):
         return {
@@ -56,10 +56,11 @@ def module_action_for_key(key: str, category: str, obj: dict | None = None) -> d
         }
     action = {
         "type": "image_match", **binding,
-        "module_category": "switch", "delay_ms": 0,
+        "module_category": category, "delay_ms": 0,
         "on_found": "continue", "on_timeout": "continue",
     }
     if obj.get("recognize") == "number":
         # 数字模块插入脚本时由行编辑框补比较值；相等默认跳转，失败默认继续下一行。
         action["on_found"] = "jump"
     return action
+

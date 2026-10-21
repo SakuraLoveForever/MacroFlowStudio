@@ -60,6 +60,8 @@ class GuardTestHelpers:
             "ocr_offset_left": 0, "ocr_offset_right": 0,
             "hold_ms": 0,
             "hold_enabled": True,
+            "recheck_enabled": False,
+            "recheck_delay_ms": 5000,
             "delay_ms": 0,
             "region_mode": "screen",
             "region": None,
@@ -182,8 +184,8 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         }), resolve_hwnd=False)
         self.assertEqual(hit["click"], (950, 291))
 
-    def test_guard_module_delay_and_button_refresh_live(self):
-        """运行中改模块的「延时」（命中后点击前的等待）与按键，下一轮就生效。"""
+    def test_guard_module_recheck_and_button_refresh_live(self):
+        """运行中更新复查开关及按键，旧模块延时不再生效。"""
         app = self._make_guard_app()
         guard = self._make_guard(
             Path("images/部分/输入密码.png"),
@@ -196,13 +198,16 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             "template": "images/部分/输入密码.png", "region": [914, 273, 91, 36],
             "after_action": "click_custom", "click_point": [1129, 291],
             "button": "right", "click_count": 1, "delay_ms": 1500,
+            "recheck_enabled": True, "recheck_delay_ms": 7000,
         }
         with package_patch('app', 'registered_module_object', return_value=module):
             app._refresh_guard_from_module(guard)
-        self.assertEqual(guard["delay_ms"], 1500)
+        self.assertEqual(guard["delay_ms"], 0)
+        self.assertTrue(guard["recheck_enabled"])
+        self.assertEqual(guard["recheck_delay_ms"], 7000)
         self.assertEqual(guard["button"], "right")
         hit = app._build_guard_hit(guard, resolve_hwnd=False)
-        self.assertEqual(hit["delay_ms"], 1500)
+        self.assertEqual(hit["delay_ms"], 0)
         self.assertEqual(hit["button"], "right")
 
     def test_run_workflow_validation_early_return_shuts_down_detection_worker(self):
@@ -366,7 +371,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             move.assert_called_once_with(60, 70)
             self.assertEqual(button.call_count, 2)
 
-    def test_module_object_start_delay_waits_before_detection(self):
+    def test_module_object_start_delay_precedes_detection(self):
         with tempfile.TemporaryDirectory() as folder:
             main_path = Path(folder) / "main.png"
             main_path.write_bytes(b"main")
@@ -389,11 +394,9 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                     "module_key": "module:entertain", "template": str(main_path),
                     "region_mode": "template",
                 }, None)
-            # 进入模块前延时先等（识别前的第一件事），识别成功后动作前的
-            # 「延时」是另一码事（此处 delay_ms=0，仍会走一次 0 ms 等待）。
             self.assertEqual(player._wait.call_args_list[0].args, (2500,))
             self.assertEqual(find.call_count, 1)
-            self.assertTrue(
+            self.assertFalse(
                 any("模块 娱乐模式 进入前延时 2500 ms" in line for line in logs),
                 logs,
             )
@@ -922,7 +925,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertNotIn("thread", guard)
         self.assertNotIn("stop", guard)
 
-    def test_script_global_module_start_delay_is_loaded_into_guard(self):
+    def test_script_global_module_recheck_is_loaded_without_start_delay(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}
         app.guards_lock = threading.Lock()
@@ -932,6 +935,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         module_obj = {
             "enabled": True, "category": "script_global", "template": "images/g.png",
             "start_delay_ms": 125000,
+            "recheck_enabled": True, "recheck_delay_ms": 8000,
         }
         with package_patch('app', 'registered_module_object', return_value=module_obj), \
              package_patch('app', 'resolve_path', return_value=Path('images/g.png')):
@@ -940,6 +944,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 "module_key": "module:g", "action_id": "row-g",
             })
         self.assertEqual(app.global_guards["script:row-g"]["start_delay_ms"], 125000)
+        self.assertTrue(app.global_guards["script:row-g"]["recheck_enabled"])
+        self.assertEqual(app.global_guards["script:row-g"]["recheck_delay_ms"], 8000)
 
     def test_guard_check_interval_throttles(self):
         # 节流窗口内重复评估只截一次图：所有到点守卫共享同一帧，未到点的跳过。
@@ -1585,7 +1591,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertIn("循环执行片段 第 2-3 行", message)
         self.assertIn("第 1、4 行的全局模块不启用", message)
 
-    def test_script_scope_restarts_module_start_delay_from_each_script_start(self):
+    def test_script_scope_resets_pending_module_recheck_from_each_script_start(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.global_guards = {}
         app.guards_lock = threading.Lock()
@@ -1624,6 +1630,8 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 app.global_guards[f"script:row-{suffix}"]["start_delay_since"]
                 for suffix in ("a", "b")
             ]
+            for guard in app.global_guards.values():
+                guard["recheck_started_at"] = 150.0
             app._enter_script_global_scope(actions)
             second_starts = [
                 app.global_guards[f"script:row-{suffix}"]["start_delay_since"]
@@ -1632,6 +1640,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
 
         self.assertEqual(first_starts, [100.0, 100.0])
         self.assertEqual(second_starts, [200.0, 200.0])
+        self.assertTrue(all("recheck_started_at" not in guard for guard in app.global_guards.values()))
 
     def test_scope_exit_removes_only_script_guards(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -2182,6 +2191,29 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         )
         # 重启完成后目标行复位，避免影响下一次触发。
         self.assertEqual(app.workflow_restart_target_row, 1)
+
+    def test_restart_keeps_segment_and_remaining_rounds(self):
+        for target, expected in ((1, 1), (3, 2), (99, 3)):
+            with self.subTest(target=target):
+                app = MacroFlowApp.__new__(MacroFlowApp)
+                app.workflow = Workflow(steps=[{"script": "a.json"}] * 6)
+                app.workflow_restart_requested = True
+                app.workflow_restart_target_row = target
+                app.workflow_segment = (1, 3)
+                app.workflow_segment_rounds_remaining = 2
+                app.rebuild_workflow_tree = Mock()
+                app._persist_workflow_draft = Mock()
+                app._log = Mock()
+                app._append_mini_step = Mock()
+                app.run_workflow = Mock()
+
+                app._launch_workflow_restart()
+
+                app.run_workflow.assert_called_once_with(
+                    start_index=expected, start_repeat=0, resume_action_index=0,
+                    preserve_global_cooldowns=True, suppress_start_sound=True,
+                    segment=(1, 3), segment_repeats=2,
+                )
 
     def test_workflow_module_enabled_follows_registry_state(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -3103,14 +3135,14 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         on_save = Mock()
         button.cget.return_value = "修改"
         app._toggle_locked_spinbox(spin, button, on_save)
-        button.configure.assert_called_with(text="保存")
+        button.configure.assert_any_call(text="保存")
         spin.configure.assert_called_with(state="normal")
         spin.focus_set.assert_called_once()
         on_save.assert_not_called()
 
         button.cget.return_value = "保存"
         app._toggle_locked_spinbox(spin, button, on_save)
-        button.configure.assert_called_with(text="修改")
+        button.configure.assert_any_call(text="修改")
         spin.configure.assert_called_with(state="disabled")
         on_save.assert_called_once()
 

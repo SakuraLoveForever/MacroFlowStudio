@@ -2,12 +2,9 @@ import unittest
 import threading
 from unittest.mock import Mock, patch
 
-from macroflow.ui.dialogs import (
-    condition_field_visibility,
-    parse_named_region,
-)
+from macroflow.ui.dialogs.helpers import condition_field_visibility, parse_named_region
 from macroflow.ui.update_queue import UIUpdateQueue
-from macroflow.ui.app import MacroFlowApp
+from macroflow.ui.app.main import MacroFlowApp
 
 
 class FakeRoot:

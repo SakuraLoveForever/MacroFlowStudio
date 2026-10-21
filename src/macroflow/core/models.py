@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import math
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -35,6 +37,50 @@ SPECIAL_ACTION_LABELS = {
     "jump_current_script_last": "跳转到当前脚本最后一行",
     "block": "阻塞等待跳转",
 }
+
+
+KEY_SEQUENCE_TOKEN = r"[A-Za-z0-9]|\[(?:左键|右键|中键)\]|\[(?:滚轮[上下]|延时):[1-9][0-9]*\]"
+
+
+def key_sequence_steps(keys: str):
+    """Yield elementary inputs lazily so large wheel counts stay interruptible."""
+    for match in re.finditer(KEY_SEQUENCE_TOKEN, keys):
+        token = match.group()
+        if len(token) == 1:
+            yield {"type": "key_press", "vk": ord(token.upper())}
+        elif token.startswith("[延时:"):
+            yield {"type": "delay", "ms": int(token[4:-1])}
+        elif token[1:3] == "滚轮":
+            direction = 1 if token[3] == "上" else -1
+            for _ in range(int(token[5:-1])):
+                yield {"type": "scroll", "dy": direction}
+        else:
+            yield {"type": "click", "button": {"左键": "left", "右键": "right", "中键": "middle"}[token[1:-1]],
+                   "pos_mode": "current"}
+
+
+def key_sequence_parameters(action: dict[str, Any]) -> tuple[str, int, float]:
+    keys = action.get("keys", "")
+    if not isinstance(keys, str) or not re.fullmatch(f"(?:{KEY_SEQUENCE_TOKEN})+", keys):
+        raise ValueError("序列不能为空；支持英文字母、数字、[左键]、[右键]、[中键]、[滚轮上:次数]、[滚轮下:次数]、[延时:毫秒]，次数和延时须为正整数。")
+    for count in re.findall(r"\[(?:滚轮[上下]|延时):([0-9]+)\]", keys):
+        int(count)
+    interval = 0
+    if action.get("interval_enabled", False):
+        raw_interval = action.get("interval_ms", 500)
+        if isinstance(raw_interval, bool) or not str(raw_interval).isascii() or not str(raw_interval).isdecimal():
+            raise ValueError("相邻操作间隔必须是非负整数，单位为 ms。")
+        interval = int(raw_interval)
+    if not action.get("cycle_interval_enabled", False):
+        return keys, interval, 0.0
+    raw_cycle = action.get("cycle_interval_s", 20)
+    try:
+        cycle = float(raw_cycle)
+    except (TypeError, ValueError):
+        raise ValueError("整套执行间隔必须是大于 0 的秒数。") from None
+    if isinstance(raw_cycle, bool) or not math.isfinite(cycle) or cycle <= 0:
+        raise ValueError("整套执行间隔必须是大于 0 的秒数。")
+    return keys, interval, cycle
 
 
 def special_action_label(action_type: str) -> str:

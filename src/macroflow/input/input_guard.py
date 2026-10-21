@@ -26,7 +26,13 @@ WM_SYSKEYUP = 0x0105
 WM_LBUTTONDOWN = 0x0201
 WM_RBUTTONDOWN = 0x0204
 WM_MBUTTONDOWN = 0x0207
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
+VK_XBUTTON1 = 0x05
+VK_XBUTTON2 = 0x06
 VK_ESCAPE = 0x1B
+VK_F6 = 0x75
+VK_F7 = 0x76
 VK_F8 = 0x77
 VK_F9 = 0x78
 VK_F10 = 0x79
@@ -35,7 +41,7 @@ LLKHF_INJECTED = 0x10
 LLMHF_INJECTED = 0x00000001
 
 # Software hotkeys that keyboard capture must never claim.
-RESERVED_HOTKEY_VKS = {VK_F8, VK_F9, VK_F10, VK_F12}
+RESERVED_HOTKEY_VKS = {VK_F6, VK_F7, VK_F8, VK_F9, VK_F10, VK_F12}
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -290,6 +296,7 @@ class FocusInputGuard:
 
     def _run(self) -> None:
         session = self._session
+        self._hotkey_down.clear()
         self._thread_id = int(ctypes.windll.kernel32.GetCurrentThreadId())
 
         @HOOKPROC
@@ -331,6 +338,17 @@ class FocusInputGuard:
         def mouse_proc(code, wparam, lparam):
             if code == HC_ACTION:
                 data = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                button = int(data.mouseData) >> 16
+                vk = {1: VK_XBUTTON1, 2: VK_XBUTTON2}.get(button)
+                if vk in self._hotkey_vks and not (int(data.flags) & LLMHF_INJECTED):
+                    message = int(wparam)
+                    if message == WM_XBUTTONDOWN and vk not in self._hotkey_down:
+                        self._hotkey_down.add(vk)
+                        self._fire_hotkey(vk)
+                    elif message == WM_XBUTTONUP:
+                        self._hotkey_down.discard(vk)
+                    if message in (WM_XBUTTONDOWN, WM_XBUTTONUP):
+                        return 1
                 if self._system_blocked and should_block_mouse(data.flags, data.dwExtraInfo):
                     return 1
             return user32.CallNextHookEx(self._mouse_hook, code, wparam, lparam)
@@ -394,10 +412,12 @@ class KeyCapturer:
         on_key: Callable[[int], None],
         on_cancel: Callable[[], None] | None = None,
         allow_escape: bool = False,
+        allow_reserved: bool = False,
     ):
         self._on_key = on_key
         self._on_cancel = on_cancel
         self._allow_escape = bool(allow_escape)
+        self._allow_reserved = bool(allow_reserved)
         self.active = False
         self._ready = threading.Event()
         self._thread: threading.Thread | None = None
@@ -444,7 +464,7 @@ class KeyCapturer:
                                 pass
                         user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
                         return 1
-                    if vk not in RESERVED_HOTKEY_VKS:
+                    if vk != VK_F12 and (self._allow_reserved or vk not in RESERVED_HOTKEY_VKS):
                         if self._on_key:
                             try:
                                 self._on_key(vk)

@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 class PackageEntryTests(unittest.TestCase):
     """包入口只转出主窗口类：不再聚合工具函数与实现。"""
 
-    def test_app_package_entry_only_exports_the_app_class(self):
+    def test_app_package_entry_does_not_aggregate_client_implementations(self):
         import macroflow.ui.app as package
 
         exported = {
@@ -26,7 +26,7 @@ class PackageEntryTests(unittest.TestCase):
             and not (isinstance(value, ModuleType)
                      and value.__name__.startswith(package.__name__ + "."))
         }
-        leaked = sorted(exported - {"MacroFlowApp", "annotations"})
+        leaked = sorted(exported)
         self.assertEqual(
             leaked, [],
             f"macroflow.ui.app 又聚合了这些名字：{leaked}；"

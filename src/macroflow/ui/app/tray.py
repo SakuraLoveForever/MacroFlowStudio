@@ -1,40 +1,18 @@
 from __future__ import annotations
 
 from PIL import Image, ImageDraw
-from macroflow.execution.player import (
-    JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
-    AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
-    JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
-    screen_template_scale,
-)
+from macroflow.execution.player import MAX_SCRIPT_REF_DEPTH
 from pathlib import Path
-from macroflow.core.ocr import (
-    _get_engine, find_expected_match, format_ocr_observation, matches_expected,
-    ocr_match_center, recognize_image_with_boxes, recognize_region_with_boxes,
-    set_progress_callback,
-)
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
+from macroflow.core.ocr import _get_engine, set_progress_callback
+from macroflow.core.storage import load_script, registered_module_object, resolve_path
 import os
-from macroflow.core.alerts import play_alert, prewarm_alert
+from macroflow.core.alerts import prewarm_alert
 import pystray
 import threading
 import time
+from macroflow.input.wininput import show_window_no_activate
 
-from .constants import (
-    APP_NAME,
-)
+from .constants import APP_NAME
 
 class TrayMixin:
     """系统托盘图标与托盘菜单。"""
@@ -430,18 +408,21 @@ class TrayMixin:
         self.root.withdraw()
         self.main_hidden_to_tray = True
         return True
-    def _restore_main_window(self):
-        if self.recorder.running:
+    def _restore_main_window(self, *, activate: bool = True):
+        if self.recorder is not None and self.recorder.running:
             # 录制期间主窗口保持隐藏：开了悬浮小窗就继续用小窗显示进度，
             # 没开就什么都不弹（用户正在别的窗口里操作，突然跳出的主界面会
             # 抢走前台，也会被录进去）。录制结束由 stop_recording 无条件恢复。
             if self.mini_window_enabled_var.get():
                 self._show_operation_mini("recording")
             return
-        self.root.deiconify()
-        self.root.state("normal")
-        self.root.lift()
-        self.root.focus_force()
+        if activate:
+            self.root.deiconify()
+            self.root.state("normal")
+            self.root.lift()
+            self.root.focus_force()
+        else:
+            show_window_no_activate(int(self.root.winfo_id()))
         self.main_hidden_to_tray = False
         self.main_hidden_for_recording = False
         if self.tray_icon is not None:
@@ -470,16 +451,20 @@ class TrayMixin:
         return False
     def _hide_main_for_execution(self):
         if self.root.state() == "withdrawn":
-            self.execution_should_remain_in_tray = self.main_hidden_to_tray
+            # 执行前就已经收起来了（手动收起或启动即最小化）：执行期间保持隐藏，
+            # 结束后由 _finish_execution_visibility 恢复主窗口。
             self.main_hidden_for_execution = True
             return
-        self.execution_should_remain_in_tray = False
         if not self._hide_main_to_tray():
             # A tray icon is helpful, but execution must still be unobstructed
             # when the shell refuses to create one.
             self.root.withdraw()
         self.main_hidden_for_execution = True
     def _finish_execution_visibility(self):
+        # 执行结束：这次由执行自动打开的监测浮窗一并收回，别留下用户没要的窗口。
+        close_panel = getattr(self, "close_ssjj_panel_after_run", None)
+        if close_panel is not None:
+            close_panel()
         player = getattr(self, "player", None)
         if player is not None:
             player.resume()
@@ -490,26 +475,9 @@ class TrayMixin:
             return
         self.main_hidden_for_execution = False
         self._hide_execution_mini()
-        if getattr(self, "execution_should_remain_in_tray", False):
-            self.execution_should_remain_in_tray = False
-            if self._tray_visible():
-                self._log_tray_still_running()
-                return
-            self._restore_main_window()
-            return
-        # 执行结束后不再把主窗口抢回前台：托盘图标确认可见时保持隐藏在
-        # 托盘，需要时用户通过托盘图标手动恢复；托盘图标不可用时必须
-        # 恢复主窗口，避免出现既无窗口又无托盘图标的隐藏进程。
-        if self.main_hidden_to_tray and self._tray_visible():
-            self._log_tray_still_running()
-            return
-        self._restore_main_window()
-    def _log_tray_still_running(self) -> None:
-        """窗口留在托盘时明确告诉用户：软件没关，快捷键也还在生效。"""
-        self._log(
-            "主窗口已留在系统托盘，软件仍在运行：全局快捷键照旧生效；"
-            "要显示界面请右键托盘图标选“显示窗口”，要彻底关闭请选“退出”。"
-        )
+        # 执行结束一律把主窗口放回桌面：软件不自动留在托盘。执行期间藏起来只是
+        # 为了不挡游戏，结束后必须自己回来，否则用户会以为软件已经关了。
+        self._restore_main_window(activate=False)
     def open_folder(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
         os.startfile(path)

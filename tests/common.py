@@ -39,7 +39,7 @@ import macroflow.ui.dialogs as dialog_module
 
 from macroflow.core.alerts import play_alert
 from macroflow.ui.app.main import (
-    BACKUP_INTERVAL_CHOICES, BACKUP_INTERVAL_MS, MacroFlowApp,
+    MacroFlowApp,
     RECORD_TOOLBAR_BUTTON_LABEL,
     SEGMENT_BAR,
     action_summary, coordinate_scale_summary,
@@ -47,37 +47,18 @@ from macroflow.ui.app.main import (
     key_action_matches,
     set_matching_key_action_delays,
     floating_notice_xy,
-    windows_startup_command, workflow_execution_progress, workflow_script_name,
+    workflow_execution_progress, workflow_script_name,
     spawn_new_instance,
 )
-from macroflow.ui.dialogs import (
-    KEY_HINT_CAPTURING, BatchModuleScriptDialog, ClickDialog, CloseAppDialog, GlobalDetectDialog,
-    DurationVar, ImageActionDialog, JumpActionDialog, KeyActionDialog, ModalDialog,
-    ModulePickerDialog, ModuleReferenceDelayDialog, MultiConditionClickDialog,
-    MouseMoveDialog, OcrActionDialog, OcrCompareActionDialog, OpenAppDialog, RepeatClickDialog, RestartWorkflowTargetDialog,
-    ScreenPointPicker, ScriptRefDialog, ScrollDialog,
-    ScreenOffsetPicker, ScreenRegionPicker, ScriptDirectoriesDialog, SetResolutionActionDialog, TemplateRegionFormDialog,
-    TemplateRegionManagerDialog, TextActionDialog, activate_main_after_modal, ancestor_windows,
-    drag_selection_region, edit_action,
-    configure_module_list_scrollbar,
-    configure_module_tree_styles,
-    FONT_FAMILY, FONT_SUBTITLE, px,
-    fallback_template_options, fit_window_to_content,
-    image_action_option_defaults, image_click_target_defaults,
-    image_found_jump_target_options, image_jump_target_options,
-    image_timeout_option_label, image_timeout_option_value,
-    image_timeout_option_defaults, key_to_vk,
-    module_action_for_key, module_manager_label, module_manager_selection_colors,
-    module_manager_special_action_summary, module_manager_tag,
-    pinyin_sort_key, prepend_module_to_scripts,
-    remove_module_from_scripts, script_category_for_path,
-    registered_template_options, restart_workflow_row_options, select_jump_target_label, vk_to_key_name,
-    restore_modal_after_overlay, show_floating_notice,
-    SegmentEditorMixin, RecordedInputDialog,
-    recorded_action_description,
-    segment_action_is_blocking, segment_row_label,
-    selectable_target_windows,
-)
+from macroflow.ui.dialogs.base import KEY_HINT_CAPTURING, DurationVar, ModalDialog, activate_main_after_modal, ancestor_windows, drag_selection_region, FONT_FAMILY, FONT_SUBTITLE, px, fit_window_to_content, key_to_vk, vk_to_key_name, restore_modal_after_overlay, show_floating_notice, selectable_target_windows
+from macroflow.ui.dialogs.module_objects import BatchModuleScriptDialog, ModulePickerDialog, ModuleReferenceDelayDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog, prepend_module_to_scripts, remove_module_from_scripts
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, SetResolutionActionDialog, TextActionDialog, edit_action
+from macroflow.ui.dialogs.recognition import GlobalDetectDialog, ImageActionDialog, MultiConditionClickDialog, OcrActionDialog, OcrCompareActionDialog
+from macroflow.ui.dialogs.app_dialogs import RestartWorkflowTargetDialog, ScriptRefDialog, ScriptDirectoriesDialog
+from macroflow.ui.dialogs.screen_pickers import ScreenPointPicker, ScreenOffsetPicker, ScreenRegionPicker
+from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar, configure_module_tree_styles, fallback_template_options, image_action_option_defaults, image_click_target_defaults, image_found_jump_target_options, image_jump_target_options, image_timeout_option_label, image_timeout_option_value, image_timeout_option_defaults, module_manager_label, module_manager_selection_colors, module_manager_special_action_summary, module_manager_tag, pinyin_sort_key, script_category_for_path, registered_template_options, restart_workflow_row_options, select_jump_target_label, recorded_action_description, segment_action_is_blocking, segment_row_label
+from macroflow.core.modules import module_action_for_key
+from macroflow.ui.dialogs.segments import SegmentEditorMixin, RecordedInputDialog
 from macroflow.core.image_match import find_template, find_template_in_image
 from mss.exception import ScreenShotError
 from macroflow.core.ocr import (
@@ -116,7 +97,7 @@ from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.rawinput import RawMouseListener
 from macroflow.input.recorder import MacroRecorder
 from macroflow.core.storage import (
-    BASE_DIR, available_script_path, backup_script, display_path, load_app_settings,
+    BASE_DIR, available_script_path, display_path, load_app_settings,
     load_module_images_dir, load_module_objects, load_script,
     load_template_regions, load_workflow,
     migrate_workflow_templates,

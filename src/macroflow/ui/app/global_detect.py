@@ -1,38 +1,13 @@
 from __future__ import annotations
 
-from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
-    DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
-    END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
-    RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
-    SCRIPT_START_TARGET_ID,
-    MacroScript, Workflow, clone_actions_with_new_ids,
-    ensure_action_ids, ensure_workflow_step_ids, is_global_script,
-    new_action_id,
-    recorded_input_steps,
-    script_ref_repeat_count, scroll_clicks, scroll_direction_label,
-)
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
+from macroflow.core.workflow_plugins import PROCESS_ABSENCE_RESTART, process_absence_guard_config
+from macroflow.core.models import ACTION_ID_KEY, NEXT_WORKFLOW_STEP_TARGET_ID, ensure_action_ids, new_action_id
+from macroflow.core.storage import DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_RECHECK_DELAY_MS, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, registered_module_object, registered_template_region, resolve_path
 from macroflow.ui.detect_overlay import hide_overlay
 from pathlib import Path
 import time
 
-from .constants import (
-    DEFAULT_GLOBAL_CLICK_DELAY_MS,
-)
+from .constants import DEFAULT_GLOBAL_CLICK_DELAY_MS
 
 class GlobalDetectMixin:
     """全局检测的注册与配置播报（脚本动作 / 工作流全局模块）。"""
@@ -147,6 +122,10 @@ class GlobalDetectMixin:
         keyed by action_id. 守卫只是数据：由播放器在动作边界/等待期间评估，
         触发时在播放器内联执行处理段，注册阶段不启动任何线程。
         """
+        if config.get("plugin") == PROCESS_ABSENCE_RESTART:
+            config = process_absence_guard_config(config)
+            if module is not None:
+                module = {**module, "name": config["name"]}
         template_path = resolve_path(str(config.get("template", "")))
         # 引用模块：识别参数与动作 B 从对象仓库实时读取（改对象即生效）。
         # 统一用解析后的绝对路径查询，避免启用阶段和评估阶段读到不同配置。
@@ -173,12 +152,16 @@ class GlobalDetectMixin:
                     "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
                 )
                 config["start_delay_ms"] = obj.get("start_delay_ms", 0)
+                config["recheck_enabled"] = bool(obj.get("recheck_enabled", False))
+                config["recheck_delay_ms"] = obj.get(
+                    "recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS,
+                )
                 config["fallback_module_key"] = obj.get("fallback_module_key", "")
                 config["fallback_on_match"] = obj.get("fallback_on_match", "continue")
                 config["fallback_click"] = obj.get("fallback_click", False)
                 config["hold_enabled"] = obj.get("hold_enabled", False)
                 config["hold_ms"] = obj.get("hold_ms", 1000)
-                config["restart_delay_ms"] = obj.get("delay_ms", 0)
+                config["restart_delay_ms"] = 0
                 config["recognize"] = obj.get("recognize", "")
                 config["expected_text"] = obj.get("expected_text", "")
                 config["match_mode"] = obj.get("match_mode", "contains")
@@ -204,6 +187,12 @@ class GlobalDetectMixin:
             threshold, interval, cooldown, start_delay, hold, restart_delay, jump_row = (
                 0.85, 500, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, 0, 1000, 0, 0,
             )
+        try:
+            recheck_delay = max(1000, min(600000, int(config.get(
+                "recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS,
+            ))))
+        except (TypeError, ValueError):
+            recheck_delay = DEFAULT_MODULE_RECHECK_DELAY_MS
         region = config.get("region", [])
         # 旧配置没有 region_mode：有区域按自定义区域，否则按全屏。
         region_mode = str(config.get(
@@ -302,6 +291,8 @@ class GlobalDetectMixin:
             "fallback_click_interval_ms": max(0, min(60000, int(config.get("fallback_click_interval_ms", 100)))),
             "fallback_present": False,
             "fallback_click_since": 0.0,
+            "recheck_enabled": bool(config.get("recheck_enabled", False)),
+            "recheck_delay_ms": recheck_delay,
             "recognize": str(config.get("recognize", "")),
             "expected_text": str(config.get("expected_text", "")),
             "match_mode": str(config.get("match_mode", "contains")),
@@ -358,9 +349,12 @@ class GlobalDetectMixin:
             "warned_missing_module": False,
             "standalone_replay": standalone_replay,
         }
-        if module_ref and obj is not None:
+        timing_config = obj if module_ref and obj is not None else config
+        if (module_ref and obj is not None) or config.get("plugin") == PROCESS_ABSENCE_RESTART:
             for field in ("timed_detection", "timed_condition", "timed_duration_ms", "timed_actions", "process_name"):
-                guard[field] = obj.get(field)
+                guard[field] = timing_config.get(field)
+        if config.get("plugin") == PROCESS_ABSENCE_RESTART:
+            guard["plugin"] = PROCESS_ABSENCE_RESTART
         with self.guards_lock:
             self.global_guards[key] = guard
         self._invalidate_detection_config()
@@ -385,6 +379,11 @@ class GlobalDetectMixin:
         else:
             tail = "执行脚本动作，再继续检测。"
         hold_text = f"持续超过 {hold} ms" if guard.get("hold_enabled", False) else "识别到立即执行"
+        if guard.get("recheck_enabled"):
+            hold_text = (
+                f"首次识别结束后等 {recheck_delay / 1000:g} 秒，再次识别后决定是否执行 · "
+                + hold_text
+            )
         if guard.get("timed_detection"):
             condition = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
             hold_text = f"连续{condition} {guard.get('timed_duration_ms', 30000)} ms；状态变化重新计时"

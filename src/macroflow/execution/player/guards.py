@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
-    SCRIPT_START_TARGET_ID, recorded_input_steps, script_ref_repeat_count,
+    SCRIPT_START_TARGET_ID, recorded_input_steps, script_ref_repeat_count, ensure_action_ids,
 )
 from pathlib import Path
 from macroflow.input.wininput import (
@@ -29,6 +29,8 @@ from .base import (
 from .control import (
     GuardJumpRequest,
     PlaybackStopped,
+    EndCurrentScriptRequest, EndCurrentScriptRepeatRequest,
+    AdvanceToNextWorkflowStep, JumpToCurrentScriptLastAction,
 )
 
 class GuardsMixin:
@@ -90,6 +92,12 @@ class GuardsMixin:
             )
         if kind == "key_press":
             return f"敲击 {action.get('name', action.get('vk'))}"
+        if kind == "key_sequence":
+            cycle_text = (f"整套每 {action.get('cycle_interval_s', 20)} s 循环，直到停止"
+                          if action.get("cycle_interval_enabled", False) else "仅执行一次")
+            interval_text = (f"相邻操作间隔 {action.get('interval_ms', 500)} ms"
+                             if action.get("interval_enabled", False) else "相邻操作间隔关闭")
+            return f"组合按键 {action.get('keys', '')} · {interval_text} · {cycle_text}"
         if kind == "key":
             state = "按下" if bool(action.get("down", True)) else "抬起"
             return f"{state} {action.get('name', action.get('vk'))}"
@@ -112,14 +120,14 @@ class GuardsMixin:
                 return "跳转到工作流下一项"
             return f"跳转到动作 {target or action.get('jump_row', 1)}"
         return kind
-    def _log_guard_processing_actions(self, actions: object) -> None:
+    def _log_guard_processing_actions(self, actions: object, subject: str) -> None:
         """Log each configured guard-processing action before it runs."""
         if not isinstance(actions, (list, tuple)):
             return
         total = len(actions)
         for index, action in enumerate(actions, start=1):
             self._trace(
-                f"全局检测处理段动作 {index}/{total}："
+                f"全局检测处理段动作 {index}/{total}：{subject} · "
                 f"{self._guard_processing_action_description(action)}。"
             )
     def _enter_script_scope(self, actions: list[dict], origin_row: int = 0,
@@ -140,6 +148,8 @@ class GuardsMixin:
         """
         if self._handler_depth >= MAX_SCRIPT_REF_DEPTH:
             raise RuntimeError("全局守卫处理段嵌套过深，已停止执行")
+        if callable(hit.get('_plugin_complete')):
+            return self._play_interval_plugin(hit)
         hwnd = hit.get("hwnd")
         self._handler_depth += 1
         # 处理段跑完后至少停 self.guard_settle_ms 再回原脚本（见 _settle_after_guard）。
@@ -160,7 +170,7 @@ class GuardsMixin:
                 self._trace(f"全局检测触发：{script_context}{subject}，开始执行处理段。")
             delay = max(0, int(hit.get("delay_ms", 0)))
             if delay:
-                self._trace(f"全局检测处理动作：等待 {delay} ms。")
+                self._trace(f"全局检测处理动作：{subject} · 等待 {delay} ms。")
                 match = hit.get("match")
                 if isinstance(match, dict) and all(
                     key in match for key in ("x", "y", "width", "height")
@@ -178,7 +188,7 @@ class GuardsMixin:
                     self._wait(delay)
             activation_hwnd = hit.get("activation_hwnd")
             if activation_hwnd and is_window(activation_hwnd):
-                self._trace("全局检测处理动作：执行前置窗口激活。")
+                self._trace(f"全局检测处理动作：{subject} · 执行前置窗口激活。")
                 if not activate_window(activation_hwnd):
                     self._status("未能执行一次前置窗口激活，将继续尝试发送输入")
             click = hit.get("click")
@@ -187,7 +197,7 @@ class GuardsMixin:
                 # 全局模块这一下点击是事件级的：它会打断正在跑的那一行，用户要能
                 # 在事件日志里看到“确实点了、点在哪”，不必翻执行明细。
                 self._log_event(
-                    f"全局检测处理动作：点击 {hit.get('button', 'left')} "
+                    f"全局检测处理动作：{subject} · 点击 {hit.get('button', 'left')} "
                     f"@ ({int(click[0])}, {int(click[1])})"
                     + (f" × {click_count}" if click_count > 1 else "")
                     + "。"
@@ -201,13 +211,13 @@ class GuardsMixin:
             second = hit.get("second")
             if second:
                 self._trace(
-                    "全局检测处理动作：执行二次识别"
+                    f"全局检测处理动作：{subject} · 执行二次识别"
                     f"（{Path(str(second.get('second_match_template', ''))).name or '未设置模板'}）。"
                 )
                 self._execute_second_match(second, hwnd, hit.get("match"))
             actions = hit.get("actions")
             if actions:
-                self._log_guard_processing_actions(actions)
+                self._log_guard_processing_actions(actions, subject)
                 self._play_guard_actions(
                     actions, hwnd, hit,
                     source_screen=hit.get("source_screen"),
@@ -218,12 +228,12 @@ class GuardsMixin:
                 if not script_path.is_file():
                     raise RuntimeError(f"全局模块脚本不存在：{script_value}")
                 script = load_script(script_path)
-                self._trace(f"全局检测处理动作：执行模块脚本「{script.name}」。")
+                self._trace(f"全局检测处理动作：{subject} · 执行模块脚本「{script.name}」。")
                 self._play_guard_actions(
                     script.actions, hwnd, hit,
                     source_screen=dict(script.settings.get("recorded_screen", {})) or None,
                 )
-                self._trace(f"全局模块步骤已执行：{script.name}。")
+                self._trace(f"全局模块步骤已执行：{subject} · {script.name}。")
             jump_action_id = str(hit.get("jump_action_id", "")).strip()
             if jump_action_id or hit.get("jump_row"):
                 target = (
@@ -232,7 +242,7 @@ class GuardsMixin:
                     else f"动作 {jump_action_id}" if jump_action_id
                     else f"第 {max(1, int(hit.get('jump_row', 1)))} 行"
                 )
-                self._trace(f"全局检测处理动作：跳转到{target}。")
+                self._trace(f"全局检测处理动作：{subject} · 跳转到{target}。")
                 raise GuardJumpRequest(
                     jump_action_id, max(1, int(hit.get("jump_row", 1))),
                     hit.get("scope_action_ids"),
@@ -243,6 +253,76 @@ class GuardsMixin:
             self._handler_depth -= 1
             # 超时处理段等提前返回的路径同样要有这段停顿（幂等，重复调用不会多等）。
             self._settle_after_guard()
+
+    def _play_interval_plugin(self, hit):
+        """An inline script boundary with its own global guards and flow targets."""
+        actions = hit.get('actions') or []
+        ensure_action_ids(actions)
+        complete = hit['_plugin_complete']
+        valid = hit.get('_plugin_valid', lambda: True)
+        hwnd = hit.get('hwnd')
+        scope = None
+        saved_scope = getattr(self, '_plugin_action_scope_ids', None)
+        saved_owned = getattr(self, '_plugin_owned_scopes', None)
+        saved_enter = self.on_script_scope_enter
+        saved_managed = self._script_scope_managed
+        saved_callback = self.on_action_start
+        def before_plugin_action(event):
+            if not valid():
+                raise EndCurrentScriptRequest()
+            if saved_callback is not None:
+                saved_callback(event)
+        self.on_action_start = before_plugin_action
+        saved_keys, saved_buttons = set(self._held_keys), set(self._held_buttons)
+        success = False
+        self._release_all(hwnd)
+        self._plugin_action_scope_ids = frozenset(str(action[ACTION_ID_KEY]) for action in actions)
+        self._plugin_owned_scopes = {self._plugin_action_scope_ids}
+        if saved_enter is not None:
+            def enter_plugin_scope(items, *args, **kwargs):
+                ensure_action_ids(items)
+                self._plugin_owned_scopes.add(frozenset(str(item[ACTION_ID_KEY]) for item in items))
+                return saved_enter(items, *args, **kwargs)
+            self.on_script_scope_enter = enter_plugin_scope
+        try:
+            if not valid() or self.stop_event.is_set():
+                return
+            if getattr(self, '_enable_script_globals', True) and self.on_script_scope_enter:
+                scope = self.on_script_scope_enter(actions)
+                self._script_scope_managed = True
+            index = 0
+            while True:
+                try:
+                    self._run_action_sequence(actions, hwnd, start_index=index, depth=1)
+                except JumpToCurrentScriptLastAction:
+                    if not actions or index == len(actions) - 1:
+                        break
+                    index = len(actions) - 1
+                    continue
+                except (EndCurrentScriptRequest, EndCurrentScriptRepeatRequest, AdvanceToNextWorkflowStep):
+                    pass  # End this plugin invocation; the caller's script continues.
+                break
+            success = bool(valid())
+        finally:
+            try:
+                if scope is not None and self.on_script_scope_exit:
+                    self.on_script_scope_exit(scope)
+            finally:
+                self.on_action_start = saved_callback
+                self._plugin_action_scope_ids = saved_scope
+                self._plugin_owned_scopes = saved_owned
+                self.on_script_scope_enter = saved_enter
+                self._script_scope_managed = saved_managed
+                try:
+                    self._release_all(hwnd)
+                    if not self.stop_event.is_set() and not self.paused:
+                        for vk in saved_keys:
+                            self._execute_action({'type': 'key', 'vk': vk, 'down': True}, hwnd)
+                        for button in saved_buttons:
+                            self._execute_action({'type': 'mouse_button', 'button': button, 'down': True,
+                                                  'pos_mode': 'current'}, hwnd)
+                finally:
+                    complete(success)
     def _settle_after_guard(self) -> None:
         """全局模块处理完之后的停顿：先执行完模块步骤，等 1 秒，再继续原来的任务。
 

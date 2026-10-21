@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import psutil
-from macroflow.execution.disconnect_monitor import DisconnectMonitor
+from macroflow.execution.disconnect_monitor import CONSECUTIVE_FAILURES, DisconnectMonitor
 
 
 def connection(status=psutil.CONN_ESTABLISHED, ip="203.0.113.1", port=443):
@@ -32,11 +32,15 @@ class DisconnectMonitorTests(unittest.TestCase):
         with patch("macroflow.execution.disconnect_monitor.time.time", return_value=now):
             self.monitor.check_once(threading.Event())
 
+    def scans(self, count, now=121):
+        for _ in range(count):
+            self.scan(now)
+
     def test_only_exact_target_name_after_twenty_seconds(self):
         for name, now in [("other.exe", 121), ("SSJJ_BattleClient_Unity.exe", 120)]:
             with self.subTest(name=name, now=now):
                 self.process.info["name"] = name
-                self.scan(now)
+                self.scans(CONSECUTIVE_FAILURES + 1, now)
                 self.process.net_connections.assert_not_called()
                 self.process.kill.assert_not_called()
 
@@ -48,12 +52,48 @@ class DisconnectMonitorTests(unittest.TestCase):
     def test_process_name_is_case_insensitive(self):
         self.process.info["name"] = "ssjj_battleclient_unity.EXE"
         self.process.net_connections.return_value = []
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES)
         self.process.kill.assert_called_once_with()
 
-    def test_no_connections_kills_target(self):
+    def test_single_or_double_failure_does_not_disconnect(self):
+        # 连续多次才算掉线：偶发一次/两次异常只记日志，不结束战斗端。
         self.process.net_connections.return_value = []
+        for count in range(1, CONSECUTIVE_FAILURES):
+            with self.subTest(count=count):
+                self.scan()
+                self.process.kill.assert_not_called()
+        self.assertIn('连接异常', self.log.call_args_list[0].args[0])
+        self.scans(CONSECUTIVE_FAILURES)
+        self.process.kill.assert_called_once_with()
+
+    def test_healthy_check_resets_the_streak(self):
+        self.process.net_connections.return_value = []
+        self.scans(CONSECUTIVE_FAILURES - 1)
+        self.process.net_connections.return_value = [connection()]
         self.scan()
+        self.process.net_connections.return_value = []
+        self.scans(CONSECUTIVE_FAILURES - 1)
+        self.process.kill.assert_not_called()
+
+    def test_restarted_battle_client_starts_a_new_streak(self):
+        self.process.net_connections.return_value = []
+        self.scans(CONSECUTIVE_FAILURES - 1)
+        self.process.info["create_time"] = 200
+        self.scans(CONSECUTIVE_FAILURES - 1, now=260)
+        self.process.kill.assert_not_called()
+
+    def test_missing_battle_client_resets_the_streak(self):
+        self.process.net_connections.return_value = []
+        self.scans(CONSECUTIVE_FAILURES - 1)
+        with patch("macroflow.execution.disconnect_monitor.psutil.process_iter",
+                   return_value=[]):
+            self.scan()
+        self.scans(CONSECUTIVE_FAILURES - 1)
+        self.process.kill.assert_not_called()
+
+    def test_no_connections_kills_target_after_consecutive_failures(self):
+        self.process.net_connections.return_value = []
+        self.scans(CONSECUTIVE_FAILURES)
         self.process.kill.assert_called_once_with()
         self.assertIn("42", self.log.call_args.args[0])
 
@@ -63,7 +103,7 @@ class DisconnectMonitorTests(unittest.TestCase):
             with self.subTest(state=state):
                 self.process.kill.reset_mock()
                 self.process.net_connections.return_value = [connection(), connection(state)]
-                self.scan()
+                self.scans(CONSECUTIVE_FAILURES)
                 self.process.kill.assert_called_once_with()
 
     def test_loopback_and_remote_port_eighty_are_excluded(self):
@@ -71,27 +111,27 @@ class DisconnectMonitorTests(unittest.TestCase):
             connection(), connection(psutil.CONN_CLOSE_WAIT, ip="127.0.0.1"),
             connection(psutil.CONN_CLOSE_WAIT, port=80),
         ]
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES)
         self.process.kill.assert_not_called()
         self.process.net_connections.return_value = [connection(ip="127.0.0.1")]
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES)
         self.process.kill.assert_called_once_with()
 
     def test_listener_without_remote_address_is_abnormal(self):
         self.process.net_connections.return_value = [
             SimpleNamespace(status=psutil.CONN_LISTEN, raddr=())]
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES)
         self.process.kill.assert_called_once_with()
 
     def test_access_denied_never_counts_as_disconnection(self):
         self.process.net_connections.side_effect = psutil.AccessDenied(42)
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES + 2)
         self.process.kill.assert_not_called()
-        self.log.assert_called_once()
+        self.assertEqual(self.log.call_count, CONSECUTIVE_FAILURES + 2)
 
     def test_vanished_process_is_ignored(self):
         self.process.net_connections.side_effect = psutil.NoSuchProcess(42)
-        self.scan()
+        self.scans(CONSECUTIVE_FAILURES + 1)
         self.process.kill.assert_not_called()
         self.log.assert_not_called()
 

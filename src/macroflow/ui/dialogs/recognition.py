@@ -83,13 +83,8 @@ from .screen_pickers import (
     ScreenPointPicker,
     ScreenRegionPicker,
 )
-from .segments import (
-    FailureSegmentMixin,
-    action_with_live_module_binding,
-    choose_module_binding,
-    module_display_name,
-    module_reference_binding,
-)
+from .segments import FailureSegmentMixin, choose_module_binding, module_display_name
+from macroflow.core.modules import action_with_live_module_binding, module_reference_binding
 
 
 class RowListDiagnosticResultDialog:

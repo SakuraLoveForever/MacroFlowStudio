@@ -3,15 +3,7 @@ from __future__ import annotations
 
 APP_NAME = "MacroFlow Studio"
 APP_VERSION = "1.0.0"
-WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-WINDOWS_RUN_VALUE = "MacroFlowStudio"
 DEFAULT_GLOBAL_CLICK_DELAY_MS = 1000
-BACKUP_INTERVAL_CHOICES = ("1h", "1天", "1周")
-BACKUP_INTERVAL_MS = {
-    "1h": 60 * 60 * 1000,
-    "1天": 24 * 60 * 60 * 1000,
-    "1周": 7 * 24 * 60 * 60 * 1000,
-}
 FLOATING_NOTICE_POSITIONS = ("左上", "顶部居中", "右上", "左下", "底部居中", "右下")
 SCRIPT_CATEGORY_VALUES = ("关卡", "关卡封装", "切换", "方向")
 FLOATING_NOTICE_WIDTH = 360
@@ -53,11 +45,14 @@ ACTION_TREE_COLUMNS = (
 RECORD_TOOLBAR_BUTTON_LABEL = "⏺ 录制"
 ACTION_ICONS = {
     "ssjj_route": "⌖",
+    "ssjj_wait_mobs_absent": "◷",
+    "ssjj_aim": "⌖",
     "delay": "◷",
     "rebind_window": "◎",
     "activate_window": "▣",
     "key": "⌨",
     "key_press": "⌨",
+    "key_sequence": "⌨",
     "text": "T",
     "mouse_move": "↖",
     "mouse_button": "◉",

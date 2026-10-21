@@ -18,14 +18,13 @@ class SidebarPersistenceTests(unittest.TestCase):
         for name in (
             'sound_enabled', 'mini_window_enabled', 'execution_mini_enabled',
             'focus_mode_enabled', 'activate_target_enabled', 'partial_script_globals',
-            'partial_workflow_globals', 'activation_enabled', 'timed_backup_enabled',
-            'windows_startup_enabled', 'start_minimized_to_tray', 'startup_run_workflow',
+            'partial_workflow_globals', 'activation_enabled',
         ):
             setattr(app, name + '_var', FakeVar(False))
         for name, value in {
-            'repeat': 1, 'backup_interval': '1h',
+            'repeat': 1,
             'floating_notice_position': '顶部居中', 'close_action': 'exit',
-            'startup_workflow_path': '', 'level_scripts_dir': '',
+            'level_scripts_dir': '',
             'level_pack_scripts_dir': '', 'switch_scripts_dir': '', 'direction_scripts_dir': '',
         }.items():
             setattr(app, name + '_var', FakeVar(value))

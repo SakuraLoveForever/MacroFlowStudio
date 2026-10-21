@@ -1,0 +1,27 @@
+void __cdecl fcn.004a2aa0(int32_t arg_8h,int32_t arg_ch,int32_t arg_10h,int32_t arg_14h)
+
+{
+    float8 *pfVar1;
+    float8 fStack_30;
+    float8 fStack_28;
+    float8 fStack_20;
+    int32_t iStack_18;
+    uint uStack_14;
+
+    pfVar1 = *0xbb1bbc;
+    fStack_30 = arg_8h;
+    iStack_18 = arg_14h;
+    fStack_28 = arg_ch;
+    fStack_20 = arg_10h;
+    if (*0xbb1bbc != *0xbb1bc0) {
+        **0xbb1bbc = fStack_30;
+        pfVar1[1] = fStack_28;
+        pfVar1[2] = fStack_20;
+        *(pfVar1 + 3) = arg_14h;
+        *(pfVar1 + 0x1c) = uStack_14;
+        *0xbb1bbc = *0xbb1bbc + 4;
+        return;
+    }
+    fcn.004a4680(*0xbb1bbc,&fStack_30);
+    return;
+}

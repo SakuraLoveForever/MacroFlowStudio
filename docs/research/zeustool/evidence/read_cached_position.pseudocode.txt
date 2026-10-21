@@ -1,0 +1,8 @@
+void __cdecl fcn.004a3390(int32_t arg_8h,int32_t arg_ch,int32_t arg_10h)
+
+{
+    *arg_8h = *0xbb1c30;
+    *arg_ch = *0xbb1c38;
+    *arg_10h = *0xbb1c40;
+    return;
+}

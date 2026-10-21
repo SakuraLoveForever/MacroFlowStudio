@@ -315,12 +315,12 @@ class StartupVisibilityTests(unittest.TestCase):
         app._ui_scaling_dpi = Mock(return_value=96)
         app._apply_display_dpi = Mock()
         app._adapt_execution_mini_position = Mock()
-        with patch('macroflow.ui.app.helpers.get_window_dpi', return_value=144), \
-             patch('macroflow.ui.app.helpers.get_monitor_work_area_for_window', return_value=area):
+        with patch('macroflow.ui.app.runtime.helpers.get_window_dpi', return_value=144), \
+             patch('macroflow.ui.app.runtime.helpers.get_monitor_work_area_for_window', return_value=area):
             app._watch_display_dpi()
             app._watch_display_dpi()
         app._adapt_execution_mini_position.assert_called_once_with(area)
-        app._apply_display_dpi.assert_not_called()
+        app._apply_display_dpi.assert_called_once_with(96)
 
     def test_execution_mini_position_is_clamped_to_the_app_monitor(self):
         # 多屏下必须按"软件所在显示器"的可用区域收敛，不能用虚拟桌面尺寸，
@@ -348,6 +348,16 @@ class StartupVisibilityTests(unittest.TestCase):
         self.assertEqual(env["PYINSTALLER_RESET_ENVIRONMENT"], "1")
         self.assertEqual(env["PATH"], "C:/Windows")
 
+    def test_main_window_stays_hidden_while_the_ui_is_built(self):
+        # 窗口一创建就显示的话，Windows 会先用白底画一块空窗，界面建好才补齐。
+        from macroflow.ui.app.runtime import shell as shell_module
+        window = Mock()
+        with patch.object(shell_module.ttk, 'Window', return_value=window) as factory:
+            created = MacroFlowApp._create_main_window(MacroFlowApp.__new__(MacroFlowApp))
+        factory.assert_called_once_with(themename="darkly")
+        window.withdraw.assert_called_once_with()
+        self.assertIs(created, window)
+
     def test_startup_explicitly_shows_and_activates_main_window(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.root = Mock()
@@ -364,6 +374,23 @@ class StartupVisibilityTests(unittest.TestCase):
         app.root.state.assert_called_once_with("normal")
         show.assert_called_once_with(123)
         activate.assert_called_once_with(123)
+
+    def test_recovery_startup_keeps_main_window_in_background(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.root.winfo_id.return_value = 123
+        app.exiting = False
+        app.main_hidden_to_tray = False
+        app.main_hidden_for_recording = False
+        app.main_hidden_for_execution = False
+        app.main_hidden_for_cursor_tracking = False
+        with patch.object(sys, 'argv', ['MacroFlowStudio.exe', '--recover-workflow', 'resume.json']), \
+             package_patch('app', 'show_window') as show, \
+             package_patch('app', 'activate_window') as activate:
+            app._ensure_startup_visible()
+        app.root.deiconify.assert_not_called()
+        show.assert_not_called()
+        activate.assert_not_called()
 
 
 class AlertTests(unittest.TestCase):
@@ -416,20 +443,17 @@ class CloseActionTests(unittest.TestCase):
         app.close_action_var = FakeSettingVar("tray")
         app.interval_var = FakeSettingVar("100")
         app.repeat_var = FakeSettingVar("1")
-        app.backup_interval_var = FakeSettingVar("1h")
         for name in (
             "sound_enabled_var", "mini_window_enabled_var", "execution_mini_enabled_var",
             "focus_mode_enabled_var", "activate_target_enabled_var",
             "partial_script_globals_var", "partial_workflow_globals_var",
-            "timed_backup_enabled_var", "windows_startup_enabled_var",
-            "start_minimized_to_tray_var", "startup_run_workflow_var",
             "activation_enabled_var",
         ):
             setattr(app, name, FakeSettingVar(False))
         for name, value in (
             ("script_category_var", "关卡"),
             ("floating_notice_position_var", "顶部居中"),
-            ("startup_workflow_path_var", ""), ("level_scripts_dir_var", "scripts/关卡"),
+            ("level_scripts_dir_var", "scripts/关卡"),
             ("level_pack_scripts_dir_var", "scripts/关卡封装"),
             ("switch_scripts_dir_var", "scripts/切换"),
             ("direction_scripts_dir_var", "scripts/方向"),

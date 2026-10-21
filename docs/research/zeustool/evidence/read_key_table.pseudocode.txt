@@ -1,0 +1,12 @@
+//WARNING: Removing unreachable block (ram,0x0001800247c7)
+
+uchar fcn.180024790(int64_t arg1)
+
+{
+    uchar uVar1;
+
+    (*_sym.imp.KERNEL32.DLL_AcquireSRWLockExclusive)(0x18005b260);
+    uVar1 = *((arg1 & 0xffU) + 0x18005b270);
+    (*_sym.imp.KERNEL32.DLL_ReleaseSRWLockExclusive)(0x18005b260);
+    return uVar1;
+}

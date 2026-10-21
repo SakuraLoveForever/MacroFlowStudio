@@ -1,35 +1,14 @@
 from __future__ import annotations
 
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
+from macroflow.core.storage import BASE_DIR
 from pathlib import Path
 import os
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
-from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
-from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
-from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
-from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
+from macroflow.ui.dialogs.base import show_floating_notice
 import subprocess
 import sys
 import tkinter as tk
 import traceback
 
-from .constants import (
-    WINDOWS_RUN_KEY,
-    WINDOWS_RUN_VALUE,
-)
 
 def instance_command() -> list[str]:
     """Command for this installed executable or source entrypoint."""
@@ -37,24 +16,11 @@ def instance_command() -> list[str]:
     if not getattr(sys, "frozen", False):
         # 源码模式指向包入口（__main__.py 自己会把 src/ 加进导入路径）。
         parts.append(str(Path(__file__).resolve().parent / "__main__.py"))
+        from macroflow.core.client_mode import is_runner
+        if is_runner():
+            parts.append("--runner")
     return parts
 
-def windows_startup_command() -> str:
-    """Build the quoted command stored in the current-user Windows Run key."""
-    return subprocess.list2cmdline(instance_command())
-def set_windows_startup(enabled: bool) -> None:
-    """Enable or disable per-user startup without requiring administrator rights."""
-    import winreg
-
-    if enabled:
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY) as key:
-            winreg.SetValueEx(key, WINDOWS_RUN_VALUE, 0, winreg.REG_SZ, windows_startup_command())
-        return
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-            winreg.DeleteValue(key, WINDOWS_RUN_VALUE)
-    except FileNotFoundError:
-        pass
 def spawn_new_instance(args: list[str], *, background: bool = False):
     """Launch another MacroFlow instance.
 
@@ -71,13 +37,12 @@ def spawn_new_instance(args: list[str], *, background: bool = False):
         clean_env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     return subprocess.Popen(args, cwd=str(BASE_DIR), env=clean_env,
                             creationflags=subprocess.CREATE_NO_WINDOW if background else 0)
-def main():
-    from .main import MacroFlowApp
-
+def run_application(app_class):
     try:
-        app = MacroFlowApp()
-        if len(sys.argv) == 3 and sys.argv[1] == "--recover-workflow":
-            app.root.after(0, app._restore_recovery_workflow, Path(sys.argv[2]))
+        app = app_class()
+        args = [arg for arg in sys.argv if arg != "--runner"]
+        if len(args) == 3 and args[1] == "--recover-workflow":
+            app.root.after(0, app._restore_recovery_workflow, Path(args[2]))
         app.run()
     except Exception:
         error = traceback.format_exc()

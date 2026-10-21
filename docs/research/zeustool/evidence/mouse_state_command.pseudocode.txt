@@ -1,0 +1,24 @@
+void __fastcall fcn.004a53e0(int param_1,int param_2)
+
+{
+    int iVar1;
+    uint in_XMM2_Da;
+
+    iVar1 = *0xbb1b9c;
+    if (*0xbb1b84 == NULL) {
+        if (*0xbb1b9c != 0) {
+            *(*0xbb1b9c + 0x300) = 0;
+            *(iVar1 + 0x304) = 0;
+            *(iVar1 + 0x308) = param_1;
+            *(iVar1 + 0x30c) = param_2;
+            *(iVar1 + 0x310) = in_XMM2_Da;
+        }
+    }
+    else if ((param_1 != *0xb94568) || (param_2 != *0xb94564)) {
+        *0xb94564 = param_2;
+        *0xb94568 = param_1;
+        (**0xbb1b84)(param_1,param_2);
+        return;
+    }
+    return;
+}

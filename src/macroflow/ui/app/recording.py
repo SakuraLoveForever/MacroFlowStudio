@@ -1,34 +1,8 @@
 from __future__ import annotations
 
-from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
-    DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
-    END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
-    RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
-    SCRIPT_START_TARGET_ID,
-    MacroScript, Workflow, clone_actions_with_new_ids,
-    ensure_action_ids, ensure_workflow_step_ids, is_global_script,
-    new_action_id,
-    recorded_input_steps,
-    script_ref_repeat_count, scroll_clicks, scroll_direction_label,
-)
-from macroflow.input.wininput import (
-    WindowInfo, activate_window, enum_windows, get_cursor_pos,
-    get_monitor_rect_for_window, get_monitor_work_area_for_point,
-    get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect,
-    get_window_dpi,
-    force_english_input, get_foreground_window_info, get_window_rect,
-    is_current_process_window, is_window, is_window_process_foreground,
-    make_window_no_activate, send_button, send_move_absolute,
-    set_dark_titlebar, set_rounded_window, show_window,
-    show_window_no_activate,
-)
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
-from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
-from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
-from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
-from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
+from macroflow.core.models import RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE, ensure_action_ids
+from macroflow.input.wininput import get_monitor_rect_for_window, get_primary_screen_rect, force_english_input, get_foreground_window_info, is_current_process_window
+from macroflow.ui.dialogs.helpers import recorded_action_description
 import time
 
 class RecordingMixin:
@@ -54,7 +28,7 @@ class RecordingMixin:
         if panel is not None and panel.monitor.status()[2]:
             self._notify('正在录制路线', '请先按 F8 停止路线录制。')
             return False
-        if self.recorder.running:
+        if self.recorder is not None and self.recorder.running:
             self._notify("正在录制", "已经在录制中，请先按 F8 停止。")
             return False
         if self.worker and self.worker.is_alive():
@@ -81,8 +55,13 @@ class RecordingMixin:
         if panel is not None and panel.monitor.status()[2]:
             panel.save()
             return
-        if self.recorder.running:
+        if self.recorder is not None and self.recorder.running:
             self.stop_recording(discard_recent=from_ui)
+        elif not from_ui and panel is not None and not panel.closed:
+            if panel.pending_action is not None:
+                panel.save()
+            else:
+                panel.start()
         else:
             self.start_recording(from_ui=from_ui)
     def start_recording(self, from_ui: bool = False):

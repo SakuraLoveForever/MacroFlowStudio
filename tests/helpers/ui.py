@@ -54,7 +54,7 @@ def patch_module_objects(module_objects: dict):
 def make_edit_app(*, actions=None, steps=None, module_objects: dict | None = None,
                    workflow: bool = False):
     """一个未创建窗口的主窗口替身，动作列表 / 工作流表格用 FakeTree。"""
-    from macroflow.ui.app import MacroFlowApp
+    from macroflow.ui.app.main import MacroFlowApp
 
     app = MacroFlowApp.__new__(MacroFlowApp)
     app.root = Mock()

@@ -17,10 +17,13 @@ class RecoveryMixin:
         return self.__dict__.setdefault("_recovery_lifecycle_lock", threading.RLock())
 
     def _emergency_stop_from_hook(self) -> None:
+        from .plugins_runtime import stop_interval_plugins
+        stop_interval_plugins(self)
         # F12 must disarm the independent watchdog even if Tk is unresponsive.
         self._cancel_workflow_recovery()
         self.workflow_stop.set()
         self.player.stop()
+        self._stop_hotkey_script()
         self._ui(self.stop_all)
 
     def _workflow_heartbeat(self) -> None:
@@ -85,9 +88,7 @@ class RecoveryMixin:
             self.workflow_restart_requested = False
             self.workflow_stop.set()
             self.player.stop()
-        hotkey = getattr(self, "hotkey_player", None)
-        if hotkey is not None:
-            hotkey.stop()
+        self._stop_hotkey_script()
         self._ui(self._show_workflow_recovery_wait, recovery, reason)
         self._ui(self._log, f"工作流自动恢复：{reason}；已请求停止，等待旧线程退出及屏幕恢复。")
 

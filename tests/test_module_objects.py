@@ -22,18 +22,63 @@ from macroflow.input.wininput import WindowInfo
 from macroflow.ui.app.base import px
 from macroflow.ui.app.constants import FONT_FAMILY, FONT_SUBTITLE
 from macroflow.ui.app.main import MacroFlowApp
-import macroflow.ui.dialogs as dialog_module
+import macroflow.core.modules as macroflow_core_modules
+import macroflow.ui.dialogs.base as macroflow_ui_dialogs_base
+import macroflow.ui.dialogs.module_objects as macroflow_ui_dialogs_module_objects
+import macroflow.ui.dialogs.recognition as macroflow_ui_dialogs_recognition
 from macroflow.ui.dialogs.actions import ClickDialog, RepeatClickDialog, edit_action
 from macroflow.ui.dialogs.app_dialogs import RestartWorkflowTargetDialog
 from macroflow.ui.dialogs.base import ModalDialog, fit_window_to_content
 from macroflow.ui.dialogs.helpers import configure_module_tree_styles, fallback_template_options, module_manager_label, module_manager_selection_colors, module_manager_special_action_summary, module_manager_tag, pinyin_sort_key, registered_template_options, restart_workflow_row_options, segment_action_is_blocking, segment_row_label
 from macroflow.ui.dialogs.module_objects import BatchModuleScriptDialog, ModulePickerDialog, ModuleReferenceDelayDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog, prepend_module_to_scripts, remove_module_from_scripts
 from macroflow.ui.dialogs.recognition import GlobalDetectDialog
-from macroflow.ui.dialogs.segments import module_action_for_key
+from macroflow.core.modules import module_action_for_key
 from tests.helpers.patches import package_patch
 
 
 class TemplateRegionTests(unittest.TestCase):
+    def test_manager_double_click_edits_selected_virtual_module(self):
+        from macroflow.ui.dialogs.virtual_tree import VirtualRow
+
+        dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
+        dialog.current = 'all'
+        dialog.trees = {}
+        dialog.virtual_trees = {}
+        dialog.objects = {'module:one': {'name': 'One', 'category': 'switch'}}
+        dialog.module_tree_style = Mock()
+        dialog.module_tree_style.lookup.return_value = 24
+        dialog._apply_sort_heading = Mock()
+        dialog._update_action_buttons = Mock()
+        dialog._open_form = Mock()
+        tree = Mock()
+        bindings = {}
+
+        def bind(event, callback, add=None):
+            if add != '+':
+                bindings[event] = []
+            bindings.setdefault(event, []).append(callback)
+
+        tree.bind.side_effect = bind
+        with patch('macroflow.ui.dialogs.module_objects.ttk.Frame'), \
+             patch('macroflow.ui.dialogs.module_objects.ttk.Treeview', return_value=tree), \
+             patch('macroflow.ui.dialogs.module_objects.ttk.Scrollbar'), \
+             patch('macroflow.ui.dialogs.module_objects.configure_module_list_scrollbar'), \
+             patch('macroflow.ui.dialogs.module_objects.animator_for', return_value=None), \
+             patch('macroflow.ui.dialogs.module_objects.show_floating_notice'):
+            dialog._build_tab('all', Mock())
+            view = dialog._current_view()
+            row = VirtualRow('module:one', 'One', ())
+            view.rows = [row]
+            view._bound = {'virtual:normal:0': row}
+            tree.selection.return_value = ('virtual:normal:0',)
+            for callback in bindings['<<TreeviewSelect>>']:
+                callback(Mock(widget=tree))
+            for callback in bindings['<Double-1>']:
+                callback(Mock(widget=tree))
+        self.assertEqual(view.selected_keys(), ('module:one',))
+        dialog._open_form.assert_called_once_with('module:one', dialog.objects['module:one'])
+        dialog._update_action_buttons.assert_called_once()
+
     def test_persistent_scrollbar_leaves_virtual_scroll_control_intact(self):
         from macroflow.ui.dialogs.helpers import configure_module_list_scrollbar
         tree, scrollbar = Mock(), Mock()
@@ -200,21 +245,21 @@ class TemplateRegionTests(unittest.TestCase):
     def test_image_inventory_is_a_separate_dialog_not_a_manager_tab(self):
         self.assertEqual(
             TemplateRegionManagerDialog.TAB_KEYS,
-            ("all", "switch", "workflow_global", "script_global", "special"),
+            ("all", "switch", "recognition", "workflow_global", "script_global", "special"),
         )
         self.assertEqual(
-            dialog_module.ModuleImageInventoryDialog._category_label("script_global"),
+            macroflow_ui_dialogs_module_objects.ModuleImageInventoryDialog._category_label("script_global"),
             "脚本全局",
         )
         self.assertEqual(
-            dialog_module.ModuleImageInventoryDialog._category_label("special"),
+            macroflow_ui_dialogs_module_objects.ModuleImageInventoryDialog._category_label("special"),
             "特殊",
         )
 
     def test_module_picker_defaults_to_all_module_categories(self):
         self.assertEqual(
             ModulePickerDialog._allowed_categories(),
-            ("switch", "workflow_global", "script_global", "special"),
+            ("switch", "recognition", "workflow_global", "script_global", "special"),
         )
 
     def test_live_module_binding_refreshes_saved_action_for_edit(self):
@@ -224,7 +269,7 @@ class TemplateRegionTests(unittest.TestCase):
             "region_mode": "template", "region": [1, 2, 3, 4],
         }
         with package_patch('dialogs', 'registered_module_object', return_value={'category': 'switch', 'template': 'images/current.png', 'region': [11, 22, 333, 444]}):
-            refreshed = dialog_module.action_with_live_module_binding(stale)
+            refreshed = macroflow_core_modules.action_with_live_module_binding(stale)
 
         self.assertEqual(refreshed["template"], "images/current.png")
         self.assertEqual(refreshed["region"], [11, 22, 333, 444])
@@ -455,8 +500,8 @@ class TemplateRegionTests(unittest.TestCase):
         dialog._set_sort_direction.assert_called_once_with("desc")
 
     def test_inventory_filter_switches_visible_group_and_reloads(self):
-        dialog = dialog_module.ModuleImageInventoryDialog.__new__(
-            dialog_module.ModuleImageInventoryDialog,
+        dialog = macroflow_ui_dialogs_module_objects.ModuleImageInventoryDialog.__new__(
+            macroflow_ui_dialogs_module_objects.ModuleImageInventoryDialog,
         )
         dialog.inventory_filter = "all"
         dialog.inventory_filter_buttons = {
@@ -892,12 +937,17 @@ class TemplateRegionTests(unittest.TestCase):
         form.category_var.get.return_value = "切换模块"
         form.threshold_var = Mock()
         form.threshold_var.get.return_value = "0.85"
+        form.start_delay_var = Mock()
+        form.start_delay_var.get.return_value = "0"
+        form.row_start_delay = Mock()
         form.interval_var = Mock()
         form.interval_var.get.return_value = "1000"
         form.cooldown_var = Mock()
         form.cooldown_var.get.return_value = "2000"
-        form.start_delay_var = Mock()
-        form.start_delay_var.get.return_value = "0"
+        form.recheck_enabled_var = Mock()
+        form.recheck_enabled_var.get.return_value = False
+        form.recheck_delay_var = Mock()
+        form.recheck_delay_var.get.return_value = "5000"
         form.fallback_module_key_var = Mock()
         form.fallback_module_key_var.get.return_value = ""
         form.fallback_click_var = Mock()
@@ -915,8 +965,6 @@ class TemplateRegionTests(unittest.TestCase):
         form.hold_enabled_var.get.return_value = False  # 持续延时默认不启用
         form.hold_var = Mock()
         form.hold_var.get.return_value = "1000"
-        form.delay_var = Mock()
-        form.delay_var.get.return_value = "0"
         form.after_action_var = Mock()
         form.after_action_var.get.return_value = after_action
         form.run_code_after_action_var = Mock()
@@ -1064,13 +1112,15 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(obj["threshold"], 0.85)
         self.assertEqual(obj["interval_ms"], 1000)
         self.assertEqual(obj["cooldown_ms"], 2000)
+        self.assertFalse(obj["recheck_enabled"])
+        self.assertEqual(obj["recheck_delay_ms"], 5000)
         self.assertEqual(obj["start_delay_ms"], 0)
         self.assertEqual(obj["fallback_module_key"], "")
         self.assertFalse(obj["fallback_click"])
         self.assertFalse(obj["blocking"])
         self.assertFalse(obj["hold_enabled"])  # 持续延时默认不启用
         self.assertEqual(obj["hold_ms"], 1000)
-        self.assertEqual(obj["delay_ms"], 0)
+        self.assertNotIn("delay_ms", obj)
         self.assertEqual(obj["button"], "left")
         self.assertEqual(obj["click_point"], [])
         self.assertEqual(obj["second_match_template"], "")
@@ -1100,7 +1150,7 @@ class TemplateRegionTests(unittest.TestCase):
     def test_new_module_detection_interval_defaults_to_one_second(self):
         # 以后新建的模块「检测间隔」默认 1 秒：新建表单与新建对象都读这个默认值。
         import macroflow.core.storage as storage_module
-        import macroflow.ui.dialogs as dialogs_module
+        import macroflow.ui.dialogs.module_objects as dialogs_module
 
         self.assertEqual(storage_module.DEFAULT_MODULE_INTERVAL_MS, 1000)
         self.assertEqual(dialogs_module.DEFAULT_MODULE_INTERVAL_MS, 1000)
@@ -1113,7 +1163,7 @@ class TemplateRegionTests(unittest.TestCase):
 
     def test_new_module_trigger_cooldown_defaults_to_two_seconds(self):
         import macroflow.core.storage as storage_module
-        import macroflow.ui.dialogs as dialogs_module
+        import macroflow.ui.dialogs.module_objects as dialogs_module
 
         self.assertEqual(storage_module.DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, 2000)
         self.assertIs(
@@ -1122,15 +1172,49 @@ class TemplateRegionTests(unittest.TestCase):
         )
         self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["cooldown_ms"], 2000)
 
-    def test_form_saves_start_delay_for_any_module_category(self):
+    def test_form_saves_recheck_for_any_module_category(self):
         for label in ("切换模块", "工作流全局模块", "脚本全局模块"):
             form = self._form(image="images/g.png", region="10,20,300,400")
             form.category_var.get.return_value = label
-            form.start_delay_var.get.return_value = "125000"
+            form.recheck_enabled_var.get.return_value = True
+            form.recheck_delay_var.get.return_value = "5000"
             with package_patch('dialogs', 'show_floating_notice') as notice:
                 form.save()
-            self.assertEqual(form.result[2]["start_delay_ms"], 125000, label)
+            self.assertTrue(form.result[2]["recheck_enabled"], label)
+            self.assertEqual(form.result[2]["recheck_delay_ms"], 5000, label)
             notice.assert_not_called()
+
+    def test_form_saves_custom_recheck_delay_seconds(self):
+        form = self._form(image="images/g.png", region="10,20,300,400")
+        form.recheck_enabled_var.get.return_value = True
+        form.recheck_delay_var.get.return_value = "7500"
+        with package_patch('dialogs', 'show_floating_notice') as notice:
+            form.save()
+        self.assertTrue(form.result[2]["recheck_enabled"])
+        self.assertEqual(form.result[2]["recheck_delay_ms"], 7500)
+        notice.assert_not_called()
+
+    def test_form_rejects_out_of_range_recheck_delay(self):
+        for raw in ("500", "700000"):
+            form = self._form(image="images/g.png", region="10,20,300,400")
+            form.recheck_enabled_var.get.return_value = True
+            form.recheck_delay_var.get.return_value = raw
+            with package_patch('dialogs', 'show_floating_notice') as notice:
+                form.save()
+            notice.assert_called_once()
+            form.destroy.assert_not_called()
+
+    def test_new_module_recheck_delay_defaults_to_five_seconds(self):
+        import macroflow.core.storage as storage_module
+        import macroflow.ui.dialogs.module_objects as dialogs_module
+
+        self.assertEqual(storage_module.DEFAULT_MODULE_RECHECK_DELAY_MS, 5000)
+        self.assertIs(
+            dialogs_module.DEFAULT_MODULE_RECHECK_DELAY_MS,
+            storage_module.DEFAULT_MODULE_RECHECK_DELAY_MS,
+            "表单默认值必须与模块仓库默认值同源，不能各写一份",
+        )
+        self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["recheck_delay_ms"], 5000)
 
     def test_form_saves_per_module_trigger_cooldown(self):
         form = self._form(image="images/g.png", region="10,20,300,400")
@@ -1143,15 +1227,15 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(form.result[2]["cooldown_ms"], 3750)
         notice.assert_not_called()
 
-    def test_toggle_sections_shows_start_delay_for_switch_module(self):
+    def test_toggle_sections_shows_recheck_for_switch_module(self):
         form = self._form(recognize="模板图片")
         form.pure = False
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay",
+            "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
             "row_fallback_module", "row_fallback_click",
-            "row_blocking", "row_delay", "action_section_heading", "row_after",
+            "row_blocking", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
             "row_second_template", "row_second_timeout", "row_second_click_target",
             "row_second_click_region", "segment_section_heading",
@@ -1176,7 +1260,7 @@ class TemplateRegionTests(unittest.TestCase):
         visible = {
             item.args[0] for item in form._set_row.call_args_list if item.args[1]
         }
-        self.assertIn(form.row_start_delay, visible)
+        self.assertIn(form.row_recheck_confirm, visible)
 
     def test_restart_target_dialog_save_picks_row_object(self):
         dialog = RestartWorkflowTargetDialog.__new__(RestartWorkflowTargetDialog)
@@ -1335,7 +1419,7 @@ class TemplateRegionTests(unittest.TestCase):
         form = self._form()
         form.segment_listbox = Mock()
         selected = WindowInfo(321, "目标窗口", "GameWnd", r"C:\\Game\\game.exe")
-        with patch('macroflow.ui.dialogs.app_dialogs.WindowPicker') as picker:
+        with patch('macroflow.ui.dialogs.windows.WindowPicker') as picker:
             picker.return_value.show.return_value = selected
             form._add_segment_activate_window()
         action = form.segment[0]
@@ -1383,12 +1467,12 @@ class TemplateRegionTests(unittest.TestCase):
         dialog.master = module_form
         dialog._apply_picked_point = Mock()
 
-        hidden = dialog_module.app_windows(module_form)
+        hidden = macroflow_ui_dialogs_base.app_windows(module_form)
         for expected in (root, manager, module_form, notice):
             self.assertIn(expected, hidden)
         # 不在链上的置顶小窗正是旧实现漏掉的那个。
         self.assertFalse(
-            any(window is notice for window in dialog_module.ancestor_windows(module_form))
+            any(window is notice for window in macroflow_ui_dialogs_base.ancestor_windows(module_form))
         )
 
         with package_patch('dialogs', 'ScreenPointPicker') as picker:
@@ -1601,8 +1685,8 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent",
-            "row_interval", "row_cooldown", "row_start_delay", "row_fallback_module",
-            "row_fallback_click", "row_blocking", "row_delay",
+            "row_interval", "row_cooldown", "row_recheck_confirm", "row_fallback_module",
+            "row_fallback_click", "row_blocking",
             "action_section_heading", "row_after", "row_hold", "row_button",
             "row_click_count",
             "row_ocr_offset",
@@ -1650,9 +1734,9 @@ class TemplateRegionTests(unittest.TestCase):
         for attr in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay",
+            "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
             "row_fallback_module", "row_fallback_click",
-            "row_blocking", "row_delay", "action_section_heading", "row_after",
+            "row_blocking", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
             "row_second_template", "row_second_timeout", "row_second_click_target",
             "row_second_click_region", "segment_section_heading",
@@ -1929,15 +2013,15 @@ class TemplateRegionTests(unittest.TestCase):
         event = Mock(widget=tree, y=30, x_root=100, y_root=120)
         with patch("tkinter.Menu") as menu_class:
             dialog._show_module_context_menu(event)
-        labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
+        labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list if "state" not in call.kwargs]
         self.assertEqual(labels, [
-            "识别测试", "▶ 测试指定次数…", "改成工作流全局", "复制成工作流全局",
+            "识别测试", "▶ 测试指定次数…", "复制…", "改成工作流全局", "复制成工作流全局",
         ])
         tree.selection_set.assert_called_once_with("virtual:normal:0")
         menu_class.return_value.tk_popup.assert_called_once_with(100, 120)
 
     def test_manager_context_menu_offers_test_for_every_module_category(self):
-        for category in ("switch", "workflow_global", "script_global", "special"):
+        for category in ("switch", "recognition", "workflow_global", "script_global", "special"):
             with self.subTest(category=category):
                 dialog = TemplateRegionManagerDialog.__new__(TemplateRegionManagerDialog)
                 dialog.objects = {
@@ -2764,11 +2848,11 @@ class TemplateRegionTests(unittest.TestCase):
         area = self._work_area(1920, 1080, left=-1920, top=181)
         # 右下越界 → 收回到可用区域内（含标题栏余量 40）
         self.assertEqual(
-            dialog_module.clamp_to_work_area(area, 600, 400, 500, 900), (-640, 821),
+            macroflow_ui_dialogs_base.clamp_to_work_area(area, 600, 400, 500, 900), (-640, 821),
         )
         # 左上越界 → 贴到该显示器左上角，而不是主屏的 (0, 0)
         self.assertEqual(
-            dialog_module.clamp_to_work_area(area, 600, 400, -4000, -50), (-1920, 181),
+            macroflow_ui_dialogs_base.clamp_to_work_area(area, 600, 400, -4000, -50), (-1920, 181),
         )
 
     def test_monitor_work_area_uses_the_parent_window_center(self):
@@ -2779,7 +2863,7 @@ class TemplateRegionTests(unittest.TestCase):
         widget.winfo_height.return_value = 80
         area = self._work_area(1260, 840)
         with package_patch('dialogs', 'get_monitor_work_area_for_point', return_value=area) as probe:
-            self.assertEqual(dialog_module.monitor_work_area_for(widget), area)
+            self.assertEqual(macroflow_ui_dialogs_base.monitor_work_area_for(widget), area)
         probe.assert_called_once_with(60, 60)
 
     def test_monitor_work_area_falls_back_to_primary_when_lookup_fails(self):
@@ -2791,17 +2875,17 @@ class TemplateRegionTests(unittest.TestCase):
         widget.winfo_id.return_value = 0
         primary = self._work_area(1260, 840)
         with package_patch('dialogs', 'get_monitor_work_area_for_point', return_value=None), package_patch('dialogs', 'get_monitor_work_area_for_window', return_value=None), package_patch('dialogs', 'get_primary_screen_rect', return_value=primary):
-            self.assertEqual(dialog_module.monitor_work_area_for(widget), primary)
+            self.assertEqual(macroflow_ui_dialogs_base.monitor_work_area_for(widget), primary)
 
     def test_dialog_placement_never_uses_screen_metrics(self):
         # 回归护栏：弹窗定位只看显示器可用区域，winfo_screenwidth/height 在多屏
         # 下是主屏尺寸，用一次就会把窗口锁在主屏。
         for target in (
-            dialog_module.ModalDialog.__init__,
-            dialog_module.ModalDialog._shrink_to_content,
-            dialog_module.place_window_on_parent,
-            dialog_module.fit_window_to_content,
-            dialog_module.monitor_work_area_for,
+            macroflow_ui_dialogs_base.ModalDialog.__init__,
+            macroflow_ui_dialogs_base.ModalDialog._shrink_to_content,
+            macroflow_ui_dialogs_base.place_window_on_parent,
+            macroflow_ui_dialogs_base.fit_window_to_content,
+            macroflow_ui_dialogs_base.monitor_work_area_for,
         ):
             self.assertNotIn("winfo_screen", inspect.getsource(target))
 
@@ -2829,11 +2913,11 @@ class TemplateRegionTests(unittest.TestCase):
         # pack 按顺序分配空间：屏幕放不下时最后挂的控件先被裁。按钮行必须排在
         # 列表/页签之前（side="bottom"），否则窗口一被压扁就看不到按钮。
         for dialog_class, later in (
-            (dialog_module.TemplateRegionManagerDialog, "self.notebook.pack("),
-            (dialog_module.ModuleImageInventoryDialog, "list_frame.pack("),
-            (dialog_module.ModuleReferenceDialog, "list_frame.pack("),
-            (dialog_module.BatchModuleScriptDialog, "frame.pack("),
-            (dialog_module.ModulePickerDialog, "notebook.pack("),
+            (macroflow_ui_dialogs_module_objects.TemplateRegionManagerDialog, "self.notebook.pack("),
+            (macroflow_ui_dialogs_module_objects.ModuleImageInventoryDialog, "list_frame.pack("),
+            (macroflow_ui_dialogs_module_objects.ModuleReferenceDialog, "list_frame.pack("),
+            (macroflow_ui_dialogs_module_objects.BatchModuleScriptDialog, "frame.pack("),
+            (macroflow_ui_dialogs_module_objects.ModulePickerDialog, "notebook.pack("),
         ):
             source = inspect.getsource(dialog_class.__init__)
             self.assertLess(
@@ -2842,7 +2926,7 @@ class TemplateRegionTests(unittest.TestCase):
             )
 
     def test_module_picker_tab_buttons_survive_shrinking(self):
-        source = inspect.getsource(dialog_module.ModulePickerDialog._build_category_tab)
+        source = inspect.getsource(macroflow_ui_dialogs_module_objects.ModulePickerDialog._build_category_tab)
         self.assertLess(
             source.index('buttons.pack(side="bottom"'), source.index("list_frame.pack("),
         )
@@ -2874,7 +2958,7 @@ class TemplateRegionTests(unittest.TestCase):
         parent.winfo_height.return_value = 920
         self._patch_work_area(self._work_area())
 
-        dialog_module.fit_scrollable_window_to_content(window, parent, body, scrollbar)
+        macroflow_ui_dialogs_base.fit_scrollable_window_to_content(window, parent, body, scrollbar)
 
         self.assertTrue(state["laid_out"], "读内容尺寸前必须先跑一次布局")
         self.assertEqual(window.geometry.call_args_list[0].args[0], "637x904")
@@ -2883,12 +2967,12 @@ class TemplateRegionTests(unittest.TestCase):
         # 这 6 个可滚动表单都必须走"先布局再定尺寸"的封装，不能再自己提前读
         # winfo_req*（读到 1×1 会让窗口缩成一条缝）。
         for dialog_class in (
-            dialog_module.GlobalDetectDialog,
-            dialog_module.TemplateRegionFormDialog,
-            dialog_module.ModuleReferenceDelayDialog,
-            dialog_module.ImageActionDialog,
-            dialog_module.OcrActionDialog,
-            dialog_module.OcrCompareActionDialog,
+            macroflow_ui_dialogs_recognition.GlobalDetectDialog,
+            macroflow_ui_dialogs_module_objects.TemplateRegionFormDialog,
+            macroflow_ui_dialogs_module_objects.ModuleReferenceDelayDialog,
+            macroflow_ui_dialogs_recognition.ImageActionDialog,
+            macroflow_ui_dialogs_recognition.OcrActionDialog,
+            macroflow_ui_dialogs_recognition.OcrCompareActionDialog,
         ):
             source = inspect.getsource(dialog_class.__init__)
             self.assertIn(
@@ -2903,12 +2987,12 @@ class TemplateRegionTests(unittest.TestCase):
     def test_module_reference_dialog_keeps_a_scrollbar_for_long_lists(self):
         # 引用位置可能有几十处，列表必须能滚动。
         self.assertIn("ttk.Scrollbar", inspect.getsource(
-            dialog_module.ModuleReferenceDialog.__init__,
+            macroflow_ui_dialogs_module_objects.ModuleReferenceDialog.__init__,
         ))
 
     def test_row_recognition_result_covers_parent_monitor_without_fullscreen(self):
         # Tk 的 -fullscreen 在多屏下按主屏铺满，识别结果窗口会跑到另一块屏。
-        source = inspect.getsource(dialog_module.RowRecognitionResultDialog.show)
+        source = inspect.getsource(macroflow_ui_dialogs_recognition.RowRecognitionResultDialog.show)
         self.assertNotIn('"-fullscreen"', source)
         self.assertIn("monitor_work_area_for", source)
 

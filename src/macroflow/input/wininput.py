@@ -45,6 +45,8 @@ user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetWindowLongW.restype = ctypes.c_long
 user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
 user32.SetWindowLongW.restype = ctypes.c_long
+user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
 user32.SetWindowPos.argtypes = [
     wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
     ctypes.c_int, ctypes.c_int, wintypes.UINT,
@@ -121,6 +123,8 @@ MOUSEEVENTF_RIGHTDOWN = 0x0008
 MOUSEEVENTF_RIGHTUP = 0x0010
 MOUSEEVENTF_MIDDLEDOWN = 0x0020
 MOUSEEVENTF_MIDDLEUP = 0x0040
+MOUSEEVENTF_XDOWN = 0x0080
+MOUSEEVENTF_XUP = 0x0100
 MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x01000
 MOUSEEVENTF_ABSOLUTE = 0x8000
@@ -133,6 +137,7 @@ GA_ROOT = 2
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
+WS_EX_TRANSPARENT = 0x00000020
 HWND_TOPMOST = -1
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
@@ -545,13 +550,16 @@ def _mouse_flags(button: str, down: bool) -> int:
         ("left", True): MOUSEEVENTF_LEFTDOWN, ("left", False): MOUSEEVENTF_LEFTUP,
         ("right", True): MOUSEEVENTF_RIGHTDOWN, ("right", False): MOUSEEVENTF_RIGHTUP,
         ("middle", True): MOUSEEVENTF_MIDDLEDOWN, ("middle", False): MOUSEEVENTF_MIDDLEUP,
+        ("x1", True): MOUSEEVENTF_XDOWN, ("x1", False): MOUSEEVENTF_XUP,
+        ("x2", True): MOUSEEVENTF_XDOWN, ("x2", False): MOUSEEVENTF_XUP,
     }
     return table[(button, down)]
 
 
 def send_button(button: str, down: bool) -> None:
     inp = INPUT(type=INPUT_MOUSE)
-    inp.mi = MOUSEINPUT(0, 0, 0, _mouse_flags(button, down), 0, MACROFLOW_INPUT_TAG)
+    inp.mi = MOUSEINPUT(0, 0, {"x1": 1, "x2": 2}.get(button, 0),
+                        _mouse_flags(button, down), 0, MACROFLOW_INPUT_TAG)
     _send_input(inp)
 
 
@@ -764,6 +772,9 @@ def set_rounded_window(hwnd: int | None, radius: int = 10) -> bool:
         return False
     width = max(1, int(rect.right - rect.left))
     height = max(1, int(rect.bottom - rect.top))
+    if width < 2 or height < 2:
+        # 未映射窗口的客户区还是 1×1；此时设置区域会把窗口裁到看不见。
+        return False
     diameter = max(2, int(radius) * 2)
     region = gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter)
     if not region:
@@ -1078,17 +1089,20 @@ def get_window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     if not is_window(hwnd) or not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return None
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
-def make_window_no_activate(hwnd: int) -> bool:
+def make_window_no_activate(hwnd: int, *, click_through: bool = False, topmost: bool = True) -> bool:
     """Keep a status overlay visible without taking focus from a game."""
     if not hwnd:
         return False
     # Tk winfo_id() is the client HWND; geometry/styles belong to its wrapper.
     handle = wintypes.HWND(user32.GetAncestor(wintypes.HWND(hwnd), GA_ROOT) or hwnd)
     ex_style = user32.GetWindowLongW(handle, GWL_EXSTYLE)
-    user32.SetWindowLongW(handle, GWL_EXSTYLE, ex_style | WS_EX_NOACTIVATE)
+    ex_style = ex_style | WS_EX_NOACTIVATE
+    ex_style = ex_style | WS_EX_TRANSPARENT if click_through else ex_style & ~WS_EX_TRANSPARENT
+    user32.SetWindowLongW(handle, GWL_EXSTYLE, ex_style)
     return bool(user32.SetWindowPos(
-        handle, wintypes.HWND(HWND_TOPMOST), 0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        handle, wintypes.HWND(HWND_TOPMOST if topmost else 0), 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED
+        | (0 if topmost else SWP_NOZORDER),
     ))
 
 
@@ -1102,6 +1116,30 @@ def show_window_no_activate(hwnd: int) -> bool:
         handle, wintypes.HWND(0), 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
     ))
+
+
+def set_window_owner(hwnd: int, owner: int) -> None:
+    """Attach an independent popup to its owner's normal window stacking."""
+    wrapper = user32.GetAncestor(hwnd, GA_ROOT) or hwnd
+    owner_wrapper = user32.GetAncestor(owner, GA_ROOT) or owner
+    user32.SetWindowLongPtrW(wrapper, -8, owner_wrapper)  # GWLP_HWNDPARENT
+
+
+def titlebar_hide_button_rect(hwnd: int, width: int) -> tuple[int, int, int, int] | None:
+    """Return screen bounds immediately beside the native caption buttons."""
+    wrapper = user32.GetAncestor(hwnd, 2) or hwnd
+    outer = wintypes.RECT()
+    caption = wintypes.RECT()
+    if not user32.GetWindowRect(wrapper, ctypes.byref(outer)):
+        return None
+    if dwmapi.DwmGetWindowAttribute(
+        wintypes.HWND(wrapper), 5, ctypes.byref(caption), ctypes.sizeof(caption),
+    ) != 0:
+        return None
+    if caption.right <= caption.left or caption.bottom <= caption.top:
+        return None
+    return (outer.left + caption.left - width, outer.top + caption.top,
+            width, caption.bottom - caption.top)
 
 
 def move_window_no_activate(hwnd: int, x: int, y: int) -> bool:

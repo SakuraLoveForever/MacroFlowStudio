@@ -33,7 +33,7 @@ class RecognitionClickOffsetTests(unittest.TestCase):
                 for name in (
                     "row_name", "row_image", "row_region", "detect_section_heading",
                     "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-                    "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay", "row_recheck_after_3s",
+                    "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay", "row_recheck_confirm",
                     "row_fallback_module", "row_fallback_click", "row_blocking",
                     "action_section_heading", "row_delay", "row_after", "row_hold", "row_button",
                     "row_click_count", "row_ocr_offset", "row_click_point", "row_second_template",

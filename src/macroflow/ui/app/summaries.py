@@ -1,44 +1,12 @@
 from __future__ import annotations
 
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
-from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
-    DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
-    END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
-    RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
-    SCRIPT_START_TARGET_ID,
-    MacroScript, Workflow, clone_actions_with_new_ids,
-    ensure_action_ids, ensure_workflow_step_ids, is_global_script,
-    new_action_id,
-    recorded_input_steps,
-    script_ref_repeat_count, scroll_clicks, scroll_direction_label,
-)
+from macroflow.core.storage import DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_RECHECK_DELAY_MS, registered_module_object
+from macroflow.core.models import END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID, RECORDED_INPUT_TYPE, SCRIPT_START_TARGET_ID, recorded_input_steps, script_ref_repeat_count, scroll_clicks, scroll_direction_label
 from pathlib import Path
 import json
 
-from .base import (
-    action_kind_label,
-    short_region_text,
-    workflow_script_name,
-)
-from .constants import (
-    ACTION_ICONS,
-    DEFAULT_GLOBAL_CLICK_DELAY_MS,
-    MODULE_CLICK_LABELS,
-    REGION_LABELS,
-)
+from .base import action_kind_label, short_region_text, workflow_script_name
+from .constants import DEFAULT_GLOBAL_CLICK_DELAY_MS, MODULE_CLICK_LABELS, REGION_LABELS
 
 def _module_row_result_summary(action: dict, action_rows: dict[str, int] | None,
                                number_mode: bool = False) -> str:
@@ -89,7 +57,7 @@ def _module_ref_summary(action: dict, label: str,
         )
     name = str(obj.get("name") or Path(key.replace("\\", "/")).stem)
     category = {
-        "switch": "切换", "workflow_global": "工作流全局",
+        "switch": "切换", "recognition": "识图", "workflow_global": "工作流全局",
         "script_global": "脚本全局",
     }.get(obj.get("category"), "特殊")
     label = {
@@ -128,6 +96,9 @@ def _module_ref_summary(action: dict, label: str,
         elif click_text:
             detail += f" · {click_text}"
         detail += f" · {blocking}" if not direct_mode else ""
+    if obj.get("recheck_enabled") and not direct_mode and not number_mode:
+        delay_seconds = int(obj.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS)) / 1000
+        detail += f" · 首次识别后等 {delay_seconds:g} 秒复查"
     if obj.get("category") in ("workflow_global", "script_global") \
             and obj.get("hold_enabled", False):
         detail += f" · 持续超过 {int(obj.get('hold_ms', 1000))} ms"
@@ -220,8 +191,20 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return "Python 逻辑", str(action.get("path", "")), delay
     if kind == "ssjj_route":
         return "坐标跑图", f"地图 {action.get('map_id', '?')} · {len(action.get('points', []))} 点 · 需游戏前台", delay
+    if kind == "ssjj_wait_mobs_absent":
+        return "等待小怪消失", (f"连续 {action.get('duration_ms', 5000) / 1000:g} s 无小怪才继续 · "
+                                "出现小怪重新计时 · 含精英，不含 BOSS"), delay
+    if kind == "ssjj_aim":
+        operation = {"unlock": "解锁", "toggle": "切换锁定"}.get(action.get("operation"), "锁定")
+        if action.get('target') == 'competitive':
+            return "光标锁定/解锁", f"{operation} · 敌方玩家 · 头部中心 · 不限范围，实时选择准星最近", delay
+        target = "BOSS 优先，无 BOSS 时最近小怪" if action.get('target') == 'boss' else "最近小怪"
+        return "光标锁定/解锁", f"{operation} · {target} · 身体中心", delay
     if kind == "ssjj_recording":
-        return "键鼠路线回放", f"地图 {action.get('map_id', '?')} · {len(action.get('inputs', []))} 个键鼠输入 · {action.get('duration_ms', 0) / 1000:g} 秒 · 坐标检查", delay
+        return "键鼠连续路线", (f"地图 {action.get('map_id', '?')} · "
+                               f"{len(action.get('marks', []))} 个纠正点 · "
+                               f"{len(action.get('inputs', []))} 个键鼠输入 · "
+                               "纠正点之间直接回放录制按键鼠标（F7 标记）"), delay
     if kind == "rebind_window":
         return action_kind_label(kind, "重新绑定"), "根据已保存的目标窗口信息重新获取窗口", delay
     if kind == "activate_window":
@@ -232,6 +215,12 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
         return action_kind_label(kind, "键盘"), f"{state} {action.get('name', action.get('vk'))}", delay
     if kind == "key_press":
         return action_kind_label(kind, "键盘"), f"敲击 {action.get('name', action.get('vk'))}，按住 {action.get('hold_ms', 30)} ms", delay
+    if kind == "key_sequence":
+        cycle_text = (f"从首个操作起每 {float(action.get('cycle_interval_s', 20)):g} s 循环，直到停止"
+                      if action.get("cycle_interval_enabled", False) else "仅执行一次")
+        interval_text = (f"相邻操作间隔 {action.get('interval_ms', 500)} ms"
+                         if action.get("interval_enabled", False) else "相邻操作间隔关闭")
+        return action_kind_label(kind, "组合按键"), f"依次执行 {action.get('keys', '')} · {interval_text} · {cycle_text}", delay
     if kind == "text":
         text = str(action.get("text", "")).replace("\n", "↵")
         return action_kind_label(kind, "文本"), f"输入 “{text}”", delay

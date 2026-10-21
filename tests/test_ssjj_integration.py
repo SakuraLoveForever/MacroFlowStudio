@@ -8,21 +8,22 @@ from macroflow.execution.ssjj_monitor import RouteCapture, SSJJMonitor
 
 
 def sample(x=0, *, map_id=100001, dead=False):
-    return PlayerState(map_id, (x, 0, 519), 0, dead, True, 1)
+    return PlayerState(map_id, (x, 0, 519), 0, dead, True, 1, 0)
 
 
 class CaptureTests(unittest.TestCase):
-    def test_records_input_and_state_samples_and_builds_native_action(self):
+    def test_records_input_and_explicit_marks_and_builds_native_action(self):
         capture = RouteCapture(sample())
+        capture.feed(sample(), when=time.perf_counter() - .1)
         for x in [50, 110, 180, 240]:
             capture.feed(sample(x))
-        capture.record_input({'type': 'key', 'vk': 87, 'down': True})
+        capture.record_input({'type': 'key', 'vk': 69, 'down': True})
+        capture.feed(sample(240))
         action = capture.finish()
         self.assertEqual(action['type'], 'ssjj_recording')
         self.assertEqual(action['map_id'], 100001)
-        self.assertEqual([s['position'] for s in action['samples']],
-                         [[0, 0, 519], [50, 0, 519], [110, 0, 519], [180, 0, 519], [240, 0, 519], [240, 0, 519]])
-        self.assertEqual(action['inputs'][0]['vk'], 87)
+        self.assertEqual([action['trajectory'][0]['position'], action['trajectory'][-1]['position']], [[0, 0, 519], [240, 0, 519]])
+        self.assertEqual(action['inputs'][0]['vk'], 69)
 
     def test_invalid_capture_cannot_be_used(self):
         for changed in [sample(map_id=2), sample(dead=True), sample(5000)]:
@@ -79,8 +80,10 @@ class CaptureTests(unittest.TestCase):
         from macroflow.core.models import MacroScript
         from macroflow.core.storage import load_script, save_script
         capture = RouteCapture(sample())
+        capture.feed(sample(), when=time.perf_counter() - .1)
         capture.feed(sample(300))
-        capture.record_input({'type': 'key', 'vk': 87, 'down': True})
+        capture.record_input({'type': 'key', 'vk': 69, 'down': True})
+        capture.feed(sample(300))
         script = MacroScript(name='坐标路线', actions=[capture.finish()])
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'route.json'
@@ -88,8 +91,8 @@ class CaptureTests(unittest.TestCase):
             loaded = load_script(path)
         action = loaded.actions[0]
         self.assertEqual(action['type'], 'ssjj_recording')
-        self.assertEqual(action['samples'][-1]['position'], [300, 0, 519])
-        self.assertEqual(action['inputs'][0]['vk'], 87)
+        self.assertEqual(action['trajectory'][-1]['position'], [300, 0, 519])
+        self.assertEqual(action['inputs'][0]['vk'], 69)
 
     def test_native_adapter_owns_continuous_input_and_closes_handle(self):
         from macroflow.execution.ssjj_navigation import run_route_action
@@ -101,7 +104,8 @@ class CaptureTests(unittest.TestCase):
         ) as sender, patch('macroflow.execution.ssjj_navigation.follow_route') as follower:
             reader = factory.return_value.__enter__.return_value
             reader.snapshot.side_effect = FakeReader().snapshot
-            def follow(context, route, *, reader, final_yaw=None):
+            reader.snapshot_stable.side_effect = reader.snapshot.side_effect
+            def follow(context, route, *, reader, final_yaw=None, final_pitch=None):
                 context.move(forward=True)
                 raise RuntimeError('controller failed')
             follower.side_effect = follow
@@ -129,6 +133,7 @@ class CaptureTests(unittest.TestCase):
             ) as follow, patch('macroflow.input.wininput.send_key') as key:
                 reader = factory.return_value.__enter__.return_value
                 reader.snapshot.return_value = sample()
+                reader.snapshot_stable.return_value = sample()
                 follow.side_effect = lambda context, route, **kwargs: context.move(forward=True)
                 run_python_script(path, player, None, set(), 0)
                 follow.assert_called_once()

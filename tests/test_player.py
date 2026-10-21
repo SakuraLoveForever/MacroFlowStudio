@@ -29,7 +29,8 @@ from macroflow.execution.timeline import PlaybackTimeline
 from macroflow.input.wininput import WindowInfo
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.app.summaries import action_summary
-import macroflow.ui.dialogs as dialog_module
+import macroflow.ui.dialogs.module_objects as macroflow_ui_dialogs_module_objects
+import macroflow.ui.dialogs.recognition as macroflow_ui_dialogs_recognition
 from tests.helpers.patches import package_patch
 
 
@@ -396,7 +397,7 @@ class PlayerTests(unittest.TestCase):
             })
 
         self.assertIn(
-            "全局检测处理段动作 1/1：结束当前最里层脚本，继续执行。",
+            "全局检测处理段动作 1/1：模块[看到主线模式结束脚本] · 主线模式.png · 结束当前最里层脚本，继续执行。",
             logs,
         )
 
@@ -802,7 +803,7 @@ class PlayerTests(unittest.TestCase):
         player._run_action_sequence.assert_not_called()
 
     def test_module_reference_dialog_saves_failure_segment(self):
-        dialog_class = dialog_module.ModuleReferenceDelayDialog
+        dialog_class = macroflow_ui_dialogs_module_objects.ModuleReferenceDelayDialog
         dialog = dialog_class.__new__(dialog_class)
         dialog.action = {"type": "image_match", "module_ref": True}
         dialog.delay = Mock(**{"get.return_value": "0"})
@@ -906,7 +907,7 @@ class PlayerTests(unittest.TestCase):
                 "module_key": "module:direct", "template": "",
             }, None)
         self.assertIsNone(result)
-        self.assertEqual(waits, [120])
+        self.assertEqual(waits, [])
         find.assert_not_called()
         run_segment.assert_called_once()
         self.assertIn("无需识图", logs[0])
@@ -1742,7 +1743,7 @@ class PlayerTests(unittest.TestCase):
         self.assertIn("列表逐行识别诊断", app._notify.call_args.args[1])
 
     def test_row_recognition_result_cell_label_includes_row_column_and_text(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         label_builder = getattr(dialog_class, "cell_label", None)
         actual = label_builder({
             "row": 2, "column": 3, "text": "奖励可领取",
@@ -1753,25 +1754,25 @@ class PlayerTests(unittest.TestCase):
         )
 
     def test_grid_result_scale_fits_selected_image_to_viewport(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         scale_builder = getattr(dialog_class, "display_scale", None)
         actual = scale_builder((1920, 1080), (1150, 700)) if scale_builder else None
         self.assertAlmostEqual(actual, 1150 / 1920)
 
     def test_grid_result_viewport_falls_back_when_canvas_is_not_laid_out(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         viewport_builder = getattr(dialog_class, "resolve_viewport_size", None)
         actual = viewport_builder((1, 1), (1180, 780)) if viewport_builder else None
         self.assertEqual(actual, (1100, 630))
 
     def test_grid_result_scale_applies_wheel_zoom_without_changing_aspect_ratio(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         scale_builder = getattr(dialog_class, "display_scale", None)
         actual = scale_builder((1920, 1080), (1150, 700), 2.0) if scale_builder else None
         self.assertAlmostEqual(actual, (1150 / 1920) * 2.0)
 
     def test_grid_result_wheel_zoom_is_bounded(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         zoom_builder = getattr(dialog_class, "next_zoom", None)
         zoom_in = zoom_builder(1.0, 120) if zoom_builder else None
         zoom_out = zoom_builder(0.25, -120) if zoom_builder else None
@@ -1779,7 +1780,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(zoom_out, 0.25)
 
     def test_grid_result_cell_text_does_not_add_row_header_inside_cell(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         text_builder = getattr(dialog_class, "cell_text", None)
         actual = text_builder({
             "row": 2, "column": 3, "text": "奖励可领取",
@@ -1787,7 +1788,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(actual, "奖励可领取")
 
     def test_grid_result_visible_columns_exclude_clicked_column(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         column_builder = getattr(dialog_class, "visible_result_columns", None)
         actual = column_builder({
             "left_column": 0, "right_column": 2, "click_column": 2,
@@ -1795,7 +1796,7 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(actual, [0])
 
     def test_grid_result_toggle_switches_between_overlay_and_original_image(self):
-        dialog_class = getattr(dialog_module, "RowRecognitionResultDialog", None)
+        dialog_class = getattr(macroflow_ui_dialogs_recognition, "RowRecognitionResultDialog", None)
         dialog = dialog_class.__new__(dialog_class)
         dialog.overlay_visible = True
         dialog.canvas = Mock()
@@ -2602,7 +2603,7 @@ class PlayerTests(unittest.TestCase):
             )
         self.assertEqual(
             [line for line in events if "点击" in line],
-            ["全局检测处理动作：点击 left @ (1129, 291)。"],
+            ["全局检测处理动作：守卫 · 点击 left @ (1129, 291)。"],
             events,
         )
 
@@ -3427,7 +3428,7 @@ class PlayerTests(unittest.TestCase):
             overlay.call_args_list,
         )
 
-    def test_module_overlay_counts_down_the_delay_before_action(self):
+    def test_module_overlay_keeps_hold_countdown_without_obsolete_action_delay(self):
         player = MacroPlayer()
         player._wait = Mock()
         module = {
@@ -3457,10 +3458,10 @@ class PlayerTests(unittest.TestCase):
         self.assertEqual(find.call_count, 2)
         self.assertEqual(
             [call.kwargs.get("label") for call in overlay.call_args_list],
-            ["1s", "8s", "7s", "6s", "5s", "4s", "3s", "2s", "1s"],
+            ["1s", None],
         )
         self.assertEqual([call.args[0] for call in player._wait.call_args_list], [
-            50, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+            50, 0,
         ])
 
     def test_module_failure_signal_uses_object_timeout_then_jumps(self):

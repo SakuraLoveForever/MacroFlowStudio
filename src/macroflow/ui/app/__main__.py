@@ -14,9 +14,16 @@ if __package__ in (None, ""):
 if __name__ == '__main__':
     import multiprocessing
     multiprocessing.freeze_support()
-    if len(sys.argv) == 4 and sys.argv[1] == "--watchdog":
+    args = [arg for arg in sys.argv if arg != "--runner"]
+    if len(args) == 4 and args[1] == "--watchdog":
         from macroflow.execution.recovery import run_watchdog
-        run_watchdog(Path(sys.argv[2]), int(sys.argv[3]))
+        run_watchdog(Path(args[2]), int(args[3]))
     else:
-        from macroflow.ui.app.startup import main
-        main()
+        from macroflow.core.client_mode import is_runner
+        from macroflow.ui.app.startup import run_application
+        if is_runner():
+            from macroflow.ui.app.runner import MacroFlowRunner
+            run_application(MacroFlowRunner)
+        else:
+            from macroflow.ui.app.main import MacroFlowApp
+            run_application(MacroFlowApp)

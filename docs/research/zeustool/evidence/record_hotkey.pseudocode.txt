@@ -1,0 +1,58 @@
+uint __cdecl fcn.004c5910(int32_t arg_8h,int32_t arg_ch,int32_t arg_10h)
+
+{
+    int32_t *piVar1;
+    int in_EAX;
+    uint uVar2;
+    int32_t var_10h;
+    int32_t var_ch;
+    int32_t var_8h;
+    int32_t var_4h;
+
+    if ((arg_8h == 0) && (arg_ch == 0x100)) {
+        in_EAX = *arg_10h;
+        if (in_EAX == 0x55) {
+            var_10h = 0;
+            var_ch = 0;
+            var_8h = 0;
+            var_4h = 0;
+            func_0x004a3390(&var_10h,&var_ch,&var_8h);
+            var_4h = 0;
+        }
+        else {
+            if (in_EAX != 0x49) {
+                if (in_EAX == 0x4f) {
+                    var_10h = 0;
+                    var_ch = 0;
+                    var_8h = 0;
+                    var_4h = 0;
+                    func_0x004a3390(&var_10h,&var_ch,&var_8h);
+                    var_4h = 3;
+                    func_0x004c6ad0(&var_10h);
+                    return 1;
+                }
+                goto code_r0x004c5a45;
+            }
+            var_10h = 0;
+            var_ch = 0;
+            var_8h = 0;
+            var_4h = 0;
+            func_0x004a3390(&var_10h,&var_ch,&var_8h);
+            var_4h = 6;
+        }
+        piVar1 = *0xba4540;
+        if (*0xba4540 != *0xba4544) {
+            **0xba4540 = var_10h;
+            piVar1[1] = var_ch;
+            piVar1[2] = var_8h;
+            piVar1[3] = var_4h;
+            *0xba4540 = *0xba4540 + 4;
+            return 1;
+        }
+        func_0x004c4c50(*0xba4540,&var_10h);
+        return 1;
+    }
+code_r0x004c5a45:
+    uVar2 = func_0x015b87cd(in_EAX,*0xba4538,arg_8h,arg_ch,arg_10h);
+    return uVar2;
+}

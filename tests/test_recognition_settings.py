@@ -60,7 +60,7 @@ class RecognitionSettingsTests(unittest.TestCase):
         for name in (
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
-            "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_after_3s",
+            "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
             "row_start_delay", "row_delay",
             "row_fallback_module", "row_fallback_click", "row_blocking",
             "action_section_heading", "row_after", "row_hold", "row_button",

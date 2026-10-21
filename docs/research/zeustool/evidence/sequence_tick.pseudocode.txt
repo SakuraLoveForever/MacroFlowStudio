@@ -1,0 +1,68 @@
+uint __cdecl fcn.004a5450(int32_t arg_8h)
+
+{
+    int iVar1;
+    int iVar2;
+    int iVar3;
+    char *in_ECX;
+
+    if (*in_ECX == '\0') {
+        return 0;
+    }
+    iVar3 = (*(arg_8h + 4) - *arg_8h) / 0xc;
+    if (iVar3 == 0) {
+        *in_ECX = '\0';
+        return 0;
+    }
+    iVar1 = *(in_ECX + 0xc);
+    *(in_ECX + 0xc) = iVar1 + 0x32;
+    iVar2 = *(*arg_8h + 8 + *(in_ECX + 4) * 0xc);
+    if (in_ECX[8] == '\0') {
+        if (-1 < iVar2) {
+            fcn.004a53e0();
+            in_ECX[8] = '\x01';
+            in_ECX[0xc] = '\0';
+            in_ECX[0xd] = '\0';
+            in_ECX[0xe] = '\0';
+            in_ECX[0xf] = '\0';
+            return 1;
+        }
+        fcn.004a5180();
+        in_ECX[8] = '\x01';
+        in_ECX[0xc] = '\0';
+        in_ECX[0xd] = '\0';
+        in_ECX[0xe] = '\0';
+        in_ECX[0xf] = '\0';
+        return 1;
+    }
+    if (iVar1 + 0x32 < *(*arg_8h + 4 + *(in_ECX + 4) * 0xc)) {
+        if (-1 < iVar2) {
+            fcn.004a53e0();
+            return 1;
+        }
+        fcn.004a5180();
+    }
+    else {
+        if (iVar2 < 0) {
+            fcn.004a5180();
+        }
+        else {
+            fcn.004a53e0();
+        }
+        *(in_ECX + 4) = *(in_ECX + 4) + 1;
+        in_ECX[8] = '\0';
+        in_ECX[0xc] = '\0';
+        in_ECX[0xd] = '\0';
+        in_ECX[0xe] = '\0';
+        in_ECX[0xf] = '\0';
+        if (iVar3 <= *(in_ECX + 4)) {
+            *in_ECX = '\0';
+            in_ECX[4] = '\0';
+            in_ECX[5] = '\0';
+            in_ECX[6] = '\0';
+            in_ECX[7] = '\0';
+            return 0;
+        }
+    }
+    return 1;
+}

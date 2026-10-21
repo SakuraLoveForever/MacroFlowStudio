@@ -22,7 +22,8 @@ from macroflow.ui.app.constants import RECORD_TOOLBAR_BUTTON_LABEL, SEGMENT_BAR
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.app.summaries import action_summary, key_action_matches, set_matching_key_action_delays
 from macroflow.ui.dialogs.actions import edit_action
-from macroflow.ui.dialogs.app_dialogs import ScriptRangeInsertDialog, ScriptRefDialog, WindowPicker
+from macroflow.ui.dialogs.app_dialogs import ScriptRangeInsertDialog, ScriptRefDialog
+from macroflow.ui.dialogs.windows import WindowPicker
 from macroflow.ui.dialogs.segments import RecordedInputDialog, SegmentEditorMixin
 from macroflow.input.wininput import WindowInfo
 from tests.helpers.core import FakeSettingVar, FakeTree, FakeVar
@@ -1158,13 +1159,13 @@ class ScriptEditingTests(unittest.TestCase):
         with patch("subprocess.Popen") as popen, \
              patch("sys.executable", "C:/Python313/python.exe"), \
              patch("sys.frozen", False, create=True), \
-             package_patch('app', '__file__', 'E:/proj/app.py'):
+             patch('macroflow.ui.app.startup.__file__', 'E:/proj/app.py'):
             app.open_new_window()
         popen.assert_called_once()
         args = popen.call_args.args[0]
         self.assertEqual(
             args,
-            ["C:/Python313/python.exe", str(Path("E:/proj/app.py")), "--new-script"],
+            [str(Path("C:/Python313/python.exe")), str(Path("E:/proj/__main__.py")), "--new-script"],
         )
         self.assertEqual(popen.call_args.kwargs["cwd"], str(BASE_DIR))
         app._log.assert_called_once()
@@ -2078,6 +2079,7 @@ class ScriptRefWindowTests(unittest.TestCase):
     def test_context_menu_offered_on_script_ref_rows_with_open_window_item(self):
         app = self._app()
         app.root = Mock()
+        app._open_workflow_script_in_editor = Mock()
         app.script = MacroScript(actions=[
             {"type": "script_ref", "script": "scripts/ref.json"},
             {"type": "comment", "text": "备注"},
@@ -2096,7 +2098,10 @@ class ScriptRefWindowTests(unittest.TestCase):
             "▶ 从此行开始运行",
             "▶ 单独执行此动作…",
             "⇪ 在新窗口打开引用的脚本",
+            "✎ 在当前编辑器打开",
         ])
+        menu.add_command.call_args_list[-1].kwargs["command"]()
+        app._open_workflow_script_in_editor.assert_called_once_with(app.script.actions[0])
         menu.add_separator.assert_called_once()
         menu.tk_popup.assert_called_once_with(100, 120)
         menu.grab_release.assert_called_once()
@@ -2772,7 +2777,7 @@ class ModuleObjectRunTests(unittest.TestCase):
             "category": "workflow_global", "name": "结算确定", "enabled": False,
             "template": "images/ok.png", "region": [1, 2, 300, 200],
         }
-        with patch("macroflow.ui.app.execution.registered_module_object", return_value=module_obj), \
+        with patch("macroflow.ui.app.scripts.registered_module_object", return_value=module_obj), \
              patch("threading.Thread") as thread_class:
             app._run_module_object_test_impl("module:ok", 6)
 
@@ -2793,7 +2798,7 @@ class ModuleObjectRunTests(unittest.TestCase):
             "category": "special", "name": "结束当前最里层脚本，继续执行",
             "pure_action": True,
         }
-        with patch("macroflow.ui.app.execution.registered_module_object", return_value=module_obj), \
+        with patch("macroflow.ui.app.scripts.registered_module_object", return_value=module_obj), \
              patch("threading.Thread") as thread_class:
             app._run_module_object_test_impl("结束当前最里层脚本，继续执行", 1)
 
@@ -2860,7 +2865,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app = self._app()
         app.interval_var = FakeSettingVar("100")
         app.repeat_var = FakeSettingVar("1")
-        app.backup_interval_var = FakeSettingVar("1h")
         app.sound_enabled_var = FakeSettingVar(True)
         app.mini_window_enabled_var = FakeSettingVar(True)
         app.execution_mini_enabled_var = FakeSettingVar(True)
@@ -2877,11 +2881,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.activation_draft_signature = None
         app._workflow_snapshot = Mock(return_value={})
         app.workflow_path = None
-        app.timed_backup_enabled_var = FakeSettingVar(False)
-        app.windows_startup_enabled_var = FakeSettingVar(False)
-        app.start_minimized_to_tray_var = FakeSettingVar(False)
-        app.startup_run_workflow_var = FakeSettingVar(False)
-        app.startup_workflow_path_var = FakeSettingVar("")
         app.level_scripts_dir_var = FakeSettingVar("scripts/关卡")
         app.level_pack_scripts_dir_var = FakeSettingVar("scripts/关卡封装")
         app.switch_scripts_dir_var = FakeSettingVar("scripts/切换")
@@ -2901,7 +2900,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.root.geometry.return_value = "1600x900+40+50"
         app.interval_var = FakeSettingVar("125")
         app.repeat_var = FakeSettingVar("1")
-        app.backup_interval_var = FakeSettingVar("1h")
         app.sound_enabled_var = FakeSettingVar(True)
         app.mini_window_enabled_var = FakeSettingVar(True)
         app.execution_mini_enabled_var = FakeSettingVar(True)
@@ -2921,11 +2919,6 @@ class LastScriptRestoreTests(unittest.TestCase):
         app.activation_draft_signature = dict(app.saved_activation_signature)
         app._workflow_snapshot = Mock(return_value={})
         app.workflow_path = None
-        app.timed_backup_enabled_var = FakeSettingVar(False)
-        app.windows_startup_enabled_var = FakeSettingVar(False)
-        app.start_minimized_to_tray_var = FakeSettingVar(False)
-        app.startup_run_workflow_var = FakeSettingVar(False)
-        app.startup_workflow_path_var = FakeSettingVar("")
         app.level_scripts_dir_var = FakeSettingVar("scripts/关卡")
         app.level_pack_scripts_dir_var = FakeSettingVar("scripts/关卡封装")
         app.switch_scripts_dir_var = FakeSettingVar("scripts/切换")
@@ -3049,7 +3042,7 @@ class RecordedInputDialogTests(unittest.TestCase):
 
         self.assertEqual(dialog.listbox.size(), 2)
         self.assertEqual(dialog.summary_var.get(), "共 2 步")
-        self.assertIn("键盘按下：a", dialog.listbox.get(0))
+        self.assertIn("键盘按下：A", dialog.listbox.get(0))
         self.assertIn("延时 120 ms", dialog.listbox.get(1))
 
     def test_remove_and_accept_returns_remaining_steps(self):

@@ -1,47 +1,15 @@
 from __future__ import annotations
 
-from macroflow.input.wininput import (
-    WindowInfo, activate_window, enum_windows, get_cursor_pos,
-    get_monitor_rect_for_window, get_monitor_work_area_for_point,
-    get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect,
-    get_window_dpi,
-    force_english_input, get_foreground_window_info, get_window_rect,
-    is_current_process_window, is_window, is_window_process_foreground,
-    make_window_no_activate, send_button, send_move_absolute,
-    set_dark_titlebar, set_rounded_window, show_window,
-    show_window_no_activate,
-)
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
-from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
-from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
-from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
-from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
+from macroflow.input.wininput import WindowInfo, activate_window, enum_windows, get_cursor_pos, get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect, get_foreground_window_info, is_current_process_window, is_window, make_window_no_activate, set_rounded_window
+from macroflow.ui.dialogs.windows import WindowPicker
+from macroflow.core.storage import load_script, resolve_path
 import os
 import time
 import tkinter as tk
 import ttkbootstrap as ttk
 
-from .base import (
-    pad,
-    px,
-)
-from .constants import (
-    COLOR_SURFACE,
-)
+from .base import pad, px
+from .constants import COLOR_SURFACE
 
 class WindowBindingMixin:
     """目标窗口绑定、前置窗口与相对转向。"""
@@ -141,7 +109,7 @@ class WindowBindingMixin:
         )
         interval_var = getattr(self, "activation_interval_var", None)
         if interval_var is not None:
-            interval_var.set(str(interval))
+            interval_var.set(f"{int(interval) / 1000:.3f}".rstrip("0").rstrip("."))
         if enabled and signature:
             self._restore_saved_activation_window(signature)
         else:
@@ -158,11 +126,12 @@ class WindowBindingMixin:
             return
         current = int(self.script.settings.get("activation_window_interval_ms", 0))
         try:
-            interval = int(self.activation_interval_var.get())
-            if not 0 <= interval <= 86400000:
+            seconds = float(self.activation_interval_var.get())
+            if not 0 <= seconds <= 86400:
                 raise ValueError
+            interval = round(seconds * 1000)
         except (TypeError, ValueError):
-            self.activation_interval_var.set(str(current))
+            self.activation_interval_var.set(f"{current / 1000:.3f}".rstrip("0").rstrip("."))
             return
         if interval != current:
             self.script.settings["activation_window_interval_ms"] = interval

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
-    SCRIPT_START_TARGET_ID, recorded_input_steps, script_ref_repeat_count,
+    SCRIPT_START_TARGET_ID, recorded_input_steps, script_ref_repeat_count, key_sequence_parameters, key_sequence_steps,
 )
 from typing import Callable
 from pathlib import Path
@@ -62,8 +62,14 @@ class CoreMixin:
                  on_resolution_monitor_request: Callable[[], int | None] | None = None,
                  on_timing: Callable[[dict], None] | None = None,
                  on_heartbeat: Callable[[], None] | None = None,
+                 on_key_sequence_state: Callable[[bool, float], None] | None = None,
+                 on_key_sequence_countdown: Callable[[int], None] | None = None,
                  guard_settle_ms: int = GUARD_SETTLE_MS):
         self.on_heartbeat = on_heartbeat
+        self.on_key_sequence_state = on_key_sequence_state
+        self.on_key_sequence_countdown = on_key_sequence_countdown
+        self._key_sequence_clock = None
+        self._key_sequence_last_countdown = None
         self.on_status = on_status
         self.on_action_start: Callable[[dict], None] | None = None
         self.on_notice = on_notice
@@ -99,6 +105,7 @@ class CoreMixin:
         self._resume_event = threading.Event()
         self._resume_event.set()
         self._pause_started_at: float | None = None
+        self._total_pause_seconds = 0.0
         self.running = False
         self._held_keys: set[int] = set()
         self._held_buttons: set[str] = set()
@@ -144,6 +151,9 @@ class CoreMixin:
             self._stop_requested_at = time.perf_counter()
         self.stop_event.set()
         self._resume_event.set()
+        if getattr(self, '_ssjj_aim_lock', None) is not None:
+            from macroflow.execution.ssjj_aim import close_aim_lock
+            close_aim_lock(self)
     def reset(self) -> None:
         self.stop_event.clear()
         # 上一次播放的落点不该影响这一轮：新一轮的第一次点击总是照常发出。
@@ -158,6 +168,8 @@ class CoreMixin:
             self._resume_event.clear()
     def resume(self) -> None:
         if self.paused:
+            if self._pause_started_at is not None:
+                self._total_pause_seconds += max(0.0, time.perf_counter() - self._pause_started_at)
             elapsed = max(0.0, time.perf_counter() - max(
                 self._pause_started_at or 0.0, self._timeline._base_wall_time,
             ))
@@ -168,6 +180,7 @@ class CoreMixin:
         if self.on_heartbeat:
             self.on_heartbeat()
         if not self.paused:
+            self._report_key_sequence_countdown()
             return 0.0
         started = time.perf_counter()
         while self.paused and not self.stop_event.is_set():
@@ -176,7 +189,18 @@ class CoreMixin:
             self._resume_event.wait(0.1)
         if self.stop_event.is_set():
             raise PlaybackStopped()
+        self._report_key_sequence_countdown()
         return time.perf_counter() - started
+
+    def _report_key_sequence_countdown(self):
+        if self._key_sequence_clock is None or self.on_key_sequence_countdown is None or self.stop_event.is_set():
+            return
+        started, paused_at_start, cycle = self._key_sequence_clock
+        elapsed = time.perf_counter() - started - (self._total_pause_seconds - paused_at_start)
+        remaining = max(0, math.ceil(cycle - elapsed))
+        if remaining != self._key_sequence_last_countdown:
+            self._key_sequence_last_countdown = remaining
+            self.on_key_sequence_countdown(remaining)
     def _timeline_offset_ms(self, action: dict) -> float:
         """读取录制时间轴上的原始动作时刻。"""
         try:
@@ -583,6 +607,9 @@ class CoreMixin:
             try:
                 exit_script_scope()
             finally:
+                if getattr(self, '_ssjj_aim_lock', None) is not None:
+                    from macroflow.execution.ssjj_aim import close_aim_lock
+                    close_aim_lock(self)
                 self._release_all(hwnd)
                 cleanup_finished = time.perf_counter()
                 if self._stop_requested_at is not None:
@@ -714,7 +741,7 @@ class CoreMixin:
                     action, index, total, depth,
                     (time.perf_counter() - action_started) * 1000, waited_ms,
                 )
-                if action.get("type") in {"delay", "script_ref", "image_match"}:
+                if action.get("type") in {"delay", "script_ref", "image_match", "ssjj_wait_mobs_absent"}:
                     self._timeline.mark_boundary()
             except GuardJumpRequest as request:
                 self._timeline.rebase()
@@ -884,6 +911,45 @@ class CoreMixin:
             finally:
                 send_key(vk, False)
                 self._held_keys.discard(vk)
+        elif kind == "key_sequence":
+            keys, interval, cycle = key_sequence_parameters(action)
+            announced = False
+            try:
+                while True:
+                    self.wait_while_paused()
+                    if self.stop_event.is_set():
+                        raise PlaybackStopped()
+                    if not announced:
+                        if self.on_key_sequence_state:
+                            self.on_key_sequence_state(True, cycle)
+                        announced = True
+                    started = time.perf_counter()
+                    paused_at_start = self._total_pause_seconds
+                    self._key_sequence_clock = (started, paused_at_start, cycle) if cycle else None
+                    self._key_sequence_last_countdown = None
+                    self._report_key_sequence_countdown()
+                    previous_was_delay = False
+                    for index, step in enumerate(key_sequence_steps(keys)):
+                        # Explicit waits replace the automatic gap at their position.
+                        if interval and index and step["type"] != "delay" and not previous_was_delay:
+                            self._wait(interval)
+                        self.wait_while_paused()
+                        if self.stop_event.is_set():
+                            raise PlaybackStopped()
+                        self._execute_action(step, hwnd)
+                        previous_was_delay = step["type"] == "delay"
+                    # 从本轮开始计时；执行耗时包含在周期内，超时则直接开始下一轮。
+                    if cycle:
+                        elapsed = time.perf_counter() - started - (self._total_pause_seconds - paused_at_start)
+                        remaining_ms = round((cycle - elapsed) * 1000)
+                        self._wait(max(0, remaining_ms))
+                        self._poll_guards()
+                    else:
+                        break
+            finally:
+                self._key_sequence_clock = None
+                if announced and self.on_key_sequence_state:
+                    self.on_key_sequence_state(False, cycle)
         elif kind == "text":
             text = str(action.get("text", ""))
             char_delay = max(0, int(action.get("char_delay_ms", 10)))
@@ -1110,12 +1176,29 @@ class CoreMixin:
             if target_id:
                 return "action_id", target_id
             return "row", max(1, int(action.get("jump_row", 1)))
+        elif kind == "ssjj_aim":
+            from macroflow.execution.ssjj_aim import run_aim_action
+            # run_aim_action 返回“锁定是否已开启”，供面板/测试直接调用；
+            # 这里只负责执行，不能把它当成跳转结果（跳转结果是 (类型, 目标) 或 None）。
+            run_aim_action(self, action)
+            return None
+        elif kind == "ssjj_wait_mobs_absent":
+            from macroflow.execution.ssjj_pve import wait_mobs_absent
+            return wait_mobs_absent(self, action)
         elif kind == "ssjj_route":
             from macroflow.execution.ssjj_navigation import run_route_action
-            return run_route_action(self, action)
+            self._ssjj_aim_suspended = True
+            try:
+                return run_route_action(self, action)
+            finally:
+                self._ssjj_aim_suspended = False
         elif kind == "ssjj_recording":
             from macroflow.execution.ssjj_recording import run_recording_action
-            return run_recording_action(self, action)
+            self._ssjj_aim_suspended = True
+            try:
+                return run_recording_action(self, action, hwnd, script_stack, depth)
+            finally:
+                self._ssjj_aim_suspended = False
         elif kind == "python_script":
             from macroflow.execution.python_script import run_python_script
             return run_python_script(action.get("path", ""), self, hwnd, script_stack, depth,

@@ -14,6 +14,7 @@ from typing import TypeVar
 
 from macroflow.core.models import END_CURRENT_SCRIPT_LABEL, MacroScript, Workflow
 from macroflow.core.resolution import DEFAULT_RESOLUTION_STYLES
+from .client_mode import is_runner
 
 
 T = TypeVar("T", MacroScript, Workflow)
@@ -33,12 +34,11 @@ def app_dir() -> Path:
 
 BASE_DIR = app_dir()
 SCRIPTS_DIR = BASE_DIR / "scripts"
-# 快捷键脚本专用目录：快捷键绑定的执行脚本只能从这里选择。
+# 方向类别的默认脚本目录；快捷键支持全部脚本类别。
 DIRECTION_SCRIPTS_DIR = "scripts/方向"
 WORKFLOWS_DIR = BASE_DIR / "workflows"
 IMAGES_DIR = BASE_DIR / "images"
-SETTINGS_PATH = BASE_DIR / "app_settings.json"
-SCRIPT_BACKUPS_DIR = BASE_DIR / "backups" / "scripts"
+SETTINGS_PATH = BASE_DIR / ("runner_settings.json" if is_runner() else "app_settings.json")
 OVERWRITTEN_BACKUPS_DIR = BASE_DIR / "backups" / "overwritten"
 TEMPLATE_REGIONS_PATH = BASE_DIR / "template_regions.json"
 MODULE_SETTINGS_PATH = BASE_DIR / "module_settings.json"
@@ -46,7 +46,7 @@ MODULE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 
 def ensure_dirs() -> None:
-    for folder in (SCRIPTS_DIR, WORKFLOWS_DIR, IMAGES_DIR, SCRIPT_BACKUPS_DIR):
+    for folder in (SCRIPTS_DIR, WORKFLOWS_DIR, IMAGES_DIR):
         folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -73,35 +73,6 @@ def save_script(script: MacroScript, path: Path | None = None) -> Path:
     path = path or SCRIPTS_DIR / f"{safe_name(script.name, 'script')}.json"
     _write_json(path, script.to_dict())
     return path
-
-
-def script_backup_path(source: str | Path) -> Path:
-    """Return the single, stable backup destination for one script file."""
-    source_path = Path(source).resolve()
-    try:
-        relative = source_path.relative_to(SCRIPTS_DIR.resolve())
-        return SCRIPT_BACKUPS_DIR / relative
-    except ValueError:
-        digest = sha1(str(source_path).casefold().encode("utf-8")).hexdigest()[:12]
-        return SCRIPT_BACKUPS_DIR / "external" / f"{digest}_{source_path.name}"
-
-
-def backup_script(source: str | Path, snapshot: dict | None = None) -> Path:
-    """Overwrite a script's sole backup, optionally using an in-memory snapshot."""
-    source_path = Path(source).resolve()
-    target = script_backup_path(source_path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if snapshot is None:
-        handle, temporary = tempfile.mkstemp(dir=target.parent, suffix=".json")
-        os.close(handle)
-        try:
-            shutil.copy2(source_path, temporary)
-            os.replace(temporary, target)
-        finally:
-            Path(temporary).unlink(missing_ok=True)
-    else:
-        _write_json(target, snapshot)
-    return target
 
 
 def archive_overwritten_script(source: str | Path) -> Path | None:
@@ -324,6 +295,7 @@ def remap_hotkey_script_bindings(
 def load_app_settings() -> dict:
     defaults = {
         "sound_enabled": True,
+        "ssjj_aim_interval_ms": 2,
         "mini_window_enabled": True,
         "record_mode": "auto",
         "floating_notice_position": "顶部居中",
@@ -334,12 +306,6 @@ def load_app_settings() -> dict:
         "activation_window_draft_interval_ms": 0,
         "workflow_draft": None,
         "workflow_path": "",
-        "timed_backup_enabled": False,
-        "backup_interval": "1h",
-        "windows_startup_enabled": False,
-        "start_minimized_to_tray": False,
-        "startup_run_workflow": False,
-        "startup_workflow_path": "",
         # 上次关闭时脚本编辑页正在编辑的脚本（启动时自动恢复打开）。
         "last_script_path": "",
         # 上次关闭时编辑器的完整快照，包含尚未手动保存的录制动作和脚本设置。
@@ -358,13 +324,19 @@ def load_app_settings() -> dict:
             defaults.update(value)
             # activation_window(_enabled) 自 1.48 起改为脚本属性，不再全局保存。
             for obsolete_key in (
+                "ssjj_competitive_hotkey_vk",
                 "execution_mode", "dxdy_port", "target_relative_enabled",
                 "activation_window", "activation_window_enabled",
                 "backup_interval_minutes", "move_interval_ms",
+                "timed_backup_enabled", "backup_interval", "windows_startup_enabled",
+                "start_minimized_to_tray", "startup_run_workflow", "startup_workflow_path",
             ):
                 defaults.pop(obsolete_key, None)
     except (OSError, json.JSONDecodeError):
         pass
+    interval = defaults["ssjj_aim_interval_ms"]
+    if type(interval) is not int or not 1 <= interval <= 1000:
+        defaults["ssjj_aim_interval_ms"] = 2
     return defaults
 
 
@@ -445,7 +417,7 @@ def module_image_inventory(directory: str | Path, objects: dict[str, dict]) -> l
 # 新对象以 module:<uuid> 为独立身份，图片路径保存在 template 字段。同一图片可被
 # 多个不同名称、类别和行为的模块共用；旧图片路径 key 继续兼容。
 # 四类：切换模块 / 工作流全局模块 / 脚本全局模块 / 特殊模块。
-MODULE_CATEGORIES = ("switch", "workflow_global", "script_global", "special")
+MODULE_CATEGORIES = ("switch", "recognition", "workflow_global", "script_global", "special")
 MODULE_AFTER_ACTIONS = (
     "click_match",       # 点击成功识别的区域
     "click_custom",      # 点击自定义框选位置
@@ -459,14 +431,18 @@ DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS = 5000
 # 1 秒间隔对挂机足够灵敏，又不会让 CPU/截图开销堆在一起）。
 DEFAULT_MODULE_INTERVAL_MS = 1000
 DEFAULT_MODULE_TRIGGER_COOLDOWN_MS = 2000
+# 识别确认：首次识别结束后等待多久再做第二次识别。默认 5 秒，用户可按模块改。
+DEFAULT_MODULE_RECHECK_DELAY_MS = 5000
 DEFAULT_MODULE_OBJECT: dict = {
     "category": "switch",
     "enabled": True,                    # 仓库可用性：禁用后不能再插入新引用
     "region": [0, 0, 0, 0],            # [0,0,0,0] = 尚未设置区域 → 全屏识别
     "threshold": 0.85,
     "interval_ms": DEFAULT_MODULE_INTERVAL_MS,
+    "start_delay_ms": 0,               # 完整等待后才开始首次识别
     "cooldown_ms": DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
-    "start_delay_ms": 0,                # 进入模块后、开始识别前的延时（脚本全局模块 = 脚本开始后的等待）
+    "recheck_enabled": False,           # 首次识别结束后等设定时长，以再次识别结果执行动作
+    "recheck_delay_ms": DEFAULT_MODULE_RECHECK_DELAY_MS,  # 再次识别前的等待时长
     "fallback_module_key": "",         # 主模块等待期间同时识别的备用图片/文字模块
     "fallback_on_match": "continue",   # 备用命中后继续识别主模块或直接退出
     "fallback_click": False,            # 备用首次出现时点击备用命中位置
@@ -474,7 +450,6 @@ DEFAULT_MODULE_OBJECT: dict = {
     "wait_text_absent": False,         # OCR：目标文字存在时循环，消失后才完成
     "hold_enabled": False,             # 全局模块是否要求命中状态持续达到 hold_ms（默认不启用）
     "hold_ms": 1000,                   # 全局模块（检测型）「持续超过」语义（切换模块忽略）
-    "delay_ms": 0,                     # 识别成功后的延时 A
     "after_action": "click_match",
     "run_code_after_action": False,  # 主动作完成后，再执行 on_success_actions
     "click_point": [],                 # click_custom 用
@@ -531,6 +506,7 @@ def _normalize_object(value, key: str = ""):
         obj["category"] = "workflow_global"
     if obj.get("category") not in MODULE_CATEGORIES:
         obj["category"] = "switch"
+    obj["pure_action"] = obj.get("category") == "special"
     if not obj.get("pure_action"):
         # 旧仓库用图片路径作为主键；新仓库用独立 module:<id> 主键，图片只是属性。
         # 加载旧条目时补出 template，旧脚本引用仍可按原路径命中。
@@ -568,6 +544,16 @@ def _normalize_object(value, key: str = ""):
         obj["start_delay_ms"] = max(0, min(86400000, int(obj.get("start_delay_ms", 0))))
     except (TypeError, ValueError):
         obj["start_delay_ms"] = 0
+    obj.pop("delay_ms", None)
+    # 旧字段（固定 3 秒复查）已由 recheck_enabled + recheck_delay_ms 取代，加载时直接丢弃。
+    obj.pop("recheck_after_3s", None)
+    obj["recheck_enabled"] = bool(obj.get("recheck_enabled", False))
+    try:
+        obj["recheck_delay_ms"] = max(
+            1000, min(600000, int(obj.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS))),
+        )
+    except (TypeError, ValueError):
+        obj["recheck_delay_ms"] = DEFAULT_MODULE_RECHECK_DELAY_MS
     try:
         obj["hold_ms"] = max(0, min(60000, int(obj.get("hold_ms", 1000))))
     except (TypeError, ValueError):
@@ -582,10 +568,6 @@ def _normalize_object(value, key: str = ""):
     obj["wait_text_absent"] = bool(obj.get("wait_text_absent", False))
     obj["enabled"] = bool(obj.get("enabled", True))
     obj["hold_enabled"] = bool(obj.get("hold_enabled", False))
-    try:
-        obj["delay_ms"] = max(0, min(60000, int(obj.get("delay_ms", 0))))
-    except (TypeError, ValueError):
-        obj["delay_ms"] = 0
     if obj.get("after_action") not in MODULE_AFTER_ACTIONS:
         obj["after_action"] = "click_match"
     # 兼容旧对象：过去“执行代码段”是成功后动作中的互斥选项。新格式将它
@@ -661,14 +643,28 @@ def _normalize_object(value, key: str = ""):
         obj["timed_duration_ms"] = 30000
     if not isinstance(obj.get("timed_actions"), list):
         obj["timed_actions"] = []
-    if obj.get("recognize") == "number":
+    if obj.get("recognize") == "number" and obj["category"] != "recognition":
         # 数字读取只负责在脚本行里产出比较结果，不执行点击或模块代码段。
         obj.update({
-            "category": "switch", "template": "", "delay_ms": 0,
+            "category": "switch", "template": "",
             "after_action": "continue", "run_code_after_action": False,
             "on_success_actions": [], "run_code_on_timeout": False,
             "on_timeout_actions": [], "wait_text_absent": False,
         })
+    if obj["category"] == "recognition":
+        # A condition module never retains executable behavior, even after recategorizing.
+        if obj.get("recognize") not in ("image", "text"):
+            obj["recognize"] = "image"
+        obj.update({
+            "pure_action": False, "after_action": "continue", "click_point": [],
+            "run_code_after_action": False, "on_success_actions": [],
+            "run_code_on_timeout": False, "on_timeout_actions": [],
+            "fallback_module_key": "", "fallback_on_match": "continue", "fallback_click": False,
+            "second_match_template": "", "second_match_click_region": [],
+            "timed_detection": False, "timed_actions": [], "blocking": False,
+            "wait_text_absent": False, "hold_enabled": False,
+        })
+
     return obj
 
 

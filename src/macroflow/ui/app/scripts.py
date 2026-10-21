@@ -1,39 +1,14 @@
 from __future__ import annotations
 
-from macroflow.core.models import (
-    ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN,
-    DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS,
-    END_CURRENT_SCRIPT_LABEL, JUMP_TARGET_KEYS, NEXT_WORKFLOW_STEP_TARGET_ID,
-    RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
-    SCRIPT_START_TARGET_ID,
-    MacroScript, Workflow, clone_actions_with_new_ids,
-    ensure_action_ids, ensure_workflow_step_ids, is_global_script,
-    new_action_id,
-    recorded_input_steps,
-    script_ref_repeat_count, scroll_clicks, scroll_direction_label,
-)
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
-from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, GameSetupNoteDialog, JsonActionDialog, JumpActionDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScheduleDialog, ScrollDialog, ScrollSequenceDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
-from macroflow.ui.dialogs.app_dialogs import HotkeyScriptsDialog, ResolutionStylesDialog, ScriptDirectoriesDialog, ScriptRangeInsertDialog, WindowPicker, WorkflowBatchSettingsDialog, WorkflowRepeatDialog
-from macroflow.ui.dialogs.base import DurationVar, TIME_UNITS, Tooltip, key_to_vk, show_floating_notice, vk_to_key_name
-from macroflow.ui.dialogs.helpers import recorded_action_description, workflow_step_label
-from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog, TemplateRegionManagerDialog
+from macroflow.core.models import ACTION_ID_KEY, JUMP_TARGET_KEYS, MacroScript, clone_actions_with_new_ids, ensure_action_ids, is_global_script, new_action_id
+from macroflow.core.storage import archive_overwritten_script, available_script_path, display_path, load_script, script_category_for_path, registered_module_object, remap_hotkey_script_bindings, resolve_path, save_script
+from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, DurationDialog, JumpActionDialog, KeyActionDialog, KeySequenceDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, ScrollSequenceDialog, SetResolutionActionDialog, TurnActionDialog, edit_action
+from macroflow.ui.dialogs.app_dialogs import ScriptDirectoriesDialog, ScriptRangeInsertDialog
+from macroflow.ui.dialogs.windows import WindowPicker
+from macroflow.ui.dialogs.base import vk_to_key_name
+from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionManagerDialog
 from macroflow.ui.dialogs.recognition import GlobalDetectDialog, MultiConditionClickDialog, OcrCompareActionDialog, RowListConditionClickDialog, RowListDiagnosticResultDialog, RowRecognitionResultDialog
-from macroflow.input.input_guard import (
-    FocusInputGuard, InputCapturer, KeyCapturer, RESERVED_HOTKEY_VKS,
-)
+from macroflow.input.input_guard import InputCapturer
 from pathlib import Path
 import copy
 from tkinter import filedialog, messagebox, simpledialog
@@ -42,41 +17,17 @@ import threading
 import time
 import tkinter as tk
 
-from .base import (
-    pad,
-    script_category_key,
-    script_category_label,
-)
-from .constants import (
-    ACTION_TREE_COLUMNS,
-    COLOR_RED,
-    COLOR_SURFACE,
-    COLOR_TEXT,
-)
-from .script_edit import (
-    ActionEditHistory,
-    ActionRowIndex,
-    RowEdit,
-    action_id_of,
-    action_row_values,
-    module_objects_snapshot,
-    reconcile_action_rows,
-)
-from .startup import (
-    spawn_new_instance,
-)
-from .summaries import (
-    action_summary,
-    key_action_matches,
-    set_matching_key_action_delays,
-)
+from .base import pad, script_category_key, script_category_label
+from .constants import ACTION_TREE_COLUMNS, COLOR_RED, COLOR_SURFACE, COLOR_TEXT
+from .script_edit import ActionEditHistory, ActionRowIndex, RowEdit, action_id_of, action_row_values, module_objects_snapshot, reconcile_action_rows
+from .startup import instance_command, spawn_new_instance
+from .summaries import key_action_matches, set_matching_key_action_delays
+
+
+from macroflow.core.modules import module_action_for_key
 
 class ScriptsMixin:
-    """脚本持久化与动作列表：打开 / 保存 / 草稿 / 撤销 / 树操作。
-
-    行渲染与对齐规则在 ``script_edit``（纯业务，不碰 Tk）；这里只把结果落到
-    控件上：Treeview 只更新真正受影响的行，不再为单行编辑重建整个列表。
-    """
+    """Studio authoring behavior."""
 
     @property
     def _action_rows(self) -> ActionRowIndex:
@@ -122,11 +73,13 @@ class ScriptsMixin:
     def _refresh_action_segment_bar(self, _event=None) -> None:
         """动作列表选中一段时，在最左边画出那根实心竖条。"""
         self._refresh_row_segment_bar(self.action_tree, "action_segment_painted")
+
     def _reload_action_row_index(self) -> ActionRowIndex:
         """重读模块配置并重建行号表——只在打开 / 替换数据集时调用。"""
         index = ActionRowIndex(self.script.actions, module_objects_snapshot())
         self.action_row_index = index
         return index
+
     def rebuild_action_tree(self):
         """整表重建：打开 / 替换数据集，或撤销这类整体替换时使用。"""
         self._reset_row_segment_bar("action_segment_painted")
@@ -139,6 +92,7 @@ class ScriptsMixin:
             self.action_tree.insert("", "end", iid=str(row), values=values)
         self._autosize_tree_column(self.action_tree, "detail", 590, detail_texts)
         self._finish_action_tree_refresh()
+
     def _finish_action_tree_refresh(self):
         total = len(self.script.actions)
         self.record_count_var.set(f"{total} 个动作")
@@ -148,6 +102,7 @@ class ScriptsMixin:
             self.empty_action_hint.place_forget()
         self._sync_global_script_marker()
         self._update_action_edit_button()
+
     def _set_action_row(self, row: int) -> None:
         """按当前数据重画一行（行号、摘要、延时）。"""
         if not 0 <= row < len(self.script.actions):
@@ -164,16 +119,19 @@ class ScriptsMixin:
         for column, value in zip(column_names, values):
             if column != "mark":
                 self.action_tree.set(iid, column, value)
+
     def _refresh_action_rows(self, rows) -> None:
         """只重画受影响的行（默认：全部行——调用方应尽量给出小集合）。"""
         for row in sorted(set(rows)):
             self._set_action_row(row)
         self._finish_action_tree_refresh()
+
     def _refresh_one_action_row(self, row: int) -> None:
         """单行编辑后的刷新：数据行号没变，只重画这一行。"""
         self._action_rows.module_objects = module_objects_snapshot()
         self._set_action_row(row)
         self._finish_action_tree_refresh()
+
     def _sync_action_rows(self, old_ids: list[str]) -> None:
         """按动作 ID 对齐列表与数据：只重画变化点到末尾的那一段。
 
@@ -192,6 +150,7 @@ class ScriptsMixin:
             # 只有被替换的那一行内容变了。
             self._set_action_row(getattr(self, "_last_edited_row", 0))
         self._finish_action_tree_refresh()
+
     def _apply_row_edit(self, edit: RowEdit, old_count: int) -> None:
         """把 reconcile 的结果落到 Treeview 上。
 
@@ -212,6 +171,7 @@ class ScriptsMixin:
                 self.script.actions[new_row], new_row, self._action_rows,
             )
             self.action_tree.insert("", new_row, iid=str(new_row), values=values)
+
     def _sync_global_script_marker(self):
         # v1.68 起普通脚本可内嵌全局模块行（global_detect + jump_row），
         # 它们不代表全局脚本；只有类别为全局或带触发条件才标记为全局脚本。
@@ -221,6 +181,7 @@ class ScriptsMixin:
         marker = "◈ 旧全局触发脚本" if is_global else ""
         self.global_script_marker.configure(text=marker)
         self._refresh_global_trigger_section()
+
     def _refresh_global_trigger_section(self):
         """全局脚本显示"触发条件 + 语句体"区块；普通脚本隐藏。"""
         if not getattr(self, "trigger_section", None):
@@ -239,6 +200,7 @@ class ScriptsMixin:
                 self.clear_trigger_button.pack_forget()
         else:
             self.trigger_section.pack_forget()
+
     def _trigger_summary(self, trigger: dict) -> str:
         """触发条件的摘要文本（用于脚本编辑器的触发条件区块）。"""
         template = str(trigger.get("template", ""))
@@ -263,6 +225,7 @@ class ScriptsMixin:
         except (TypeError, ValueError):
             pass
         return " · ".join(parts)
+
     def _edit_global_trigger(self):
         trigger = dict(self.script.settings.get("trigger") or {})
         config = GlobalDetectDialog(self.root, trigger, require_click=False).show()
@@ -273,10 +236,12 @@ class ScriptsMixin:
         self._mark_dirty()
         self._sync_global_script_marker()
         self._set_status("触发条件已更新：识别成功后依次执行脚本内的所有动作", "success")
+
     def _clear_global_trigger(self):
         self.script.settings.pop("trigger", None)
         self._mark_dirty()
         self._sync_global_script_marker()
+
     def _reset_script_editor(self):
         """把脚本编辑器重置为空白新脚本（不清除撤销打开栈）。"""
         self.script = self._blank_script_with_activation_draft()
@@ -290,6 +255,7 @@ class ScriptsMixin:
         self.rebuild_action_tree()
         self._refresh_coordinate_scale_status()
         self._sync_activation_ui_from_script()
+
     def new_script(self):
         if self.dirty and not self._confirm_discard_unsaved_edits("新建脚本"):
             return
@@ -297,6 +263,7 @@ class ScriptsMixin:
         self.undo_open_stack = []
         self._update_undo_open_button()
         self._set_status("已新建脚本", "success")
+
     def close_script(self):
         """关闭当前脚本：保留一份快照供撤销打开恢复，然后清空编辑器。"""
         history = self._action_history
@@ -320,6 +287,7 @@ class ScriptsMixin:
         self._update_undo_open_button()
         self._set_status("已关闭脚本，可撤销打开", "success")
         self._log("关闭脚本，可撤销打开")
+
     def undo_open_script(self):
         """撤销上次的关闭/打开操作，恢复关闭前的脚本及其编辑状态。"""
         history = getattr(self, "undo_open_stack", [])
@@ -343,18 +311,18 @@ class ScriptsMixin:
         self._update_redo_button()
         self._update_undo_open_button()
         self._set_status("已撤销打开，恢复关闭前的脚本", "success")
+
     def _update_undo_open_button(self):
         button = getattr(self, "undo_open_button", None)
         if button is not None:
             button.configure(
                 state="normal" if getattr(self, "undo_open_stack", []) else "disabled",
             )
+
     def open_new_window(self):
         """Launch a second MacroFlow instance starting with a new script."""
         try:
-            args = [sys.executable]
-            if not getattr(sys, "frozen", False):
-                args.append(str(Path(__file__).resolve()))
+            args = instance_command()
             args.append("--new-script")
             spawn_new_instance(args)
         except Exception as exc:
@@ -362,6 +330,7 @@ class ScriptsMixin:
             return
         self._log("已新开一个 MacroFlow 窗口（新建脚本）。")
         self._set_status("已新开窗口", "success")
+
     def _show_action_context_menu(self, event):
         """动作列表右键菜单：从此行运行 / 单独执行这一行 / 循环执行选中的片段。"""
         row_id = self.action_tree.identify_row(event.y)
@@ -401,10 +370,15 @@ class ScriptsMixin:
                 label="⇪ 在新窗口打开引用的脚本",
                 command=lambda: self.open_referenced_script_in_new_window(action),
             )
+            menu.add_command(
+                label="✎ 在当前编辑器打开",
+                command=lambda: self._open_workflow_script_in_editor(action),
+            )
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
     def open_referenced_script_in_new_window(self, action: dict):
         """Launch a second MacroFlow window loading the referenced script."""
         ref_value = str(action.get("script", "")).strip()
@@ -416,9 +390,7 @@ class ScriptsMixin:
             self._notify("引用脚本不存在", f"找不到文件：{ref_value}")
             return
         try:
-            args = [sys.executable]
-            if not getattr(sys, "frozen", False):
-                args.append(str(Path(__file__).resolve()))
+            args = instance_command()
             args += ["--open-script", str(ref_path)]
             spawn_new_instance(args)
         except Exception as exc:
@@ -426,6 +398,7 @@ class ScriptsMixin:
             return
         self._log(f"已在新窗口打开引用的脚本：{ref_path}")
         self._set_status(f"已在新窗口打开 {ref_path.name}", "success")
+
     def run_single_action_with_count(self, index: int):
         """右键「单独执行此动作…」：先问次数（默认 1 次），再单独执行这一行动作。
 
@@ -438,6 +411,7 @@ class ScriptsMixin:
         if repeats is None:
             return
         self.run_current_script(start_index=index, single_action_repeats=repeats)
+
     def run_action_segment(self):
         """右键「▶ 循环执行片段…」：把选中的这一段动作循环执行指定次数。
 
@@ -455,6 +429,7 @@ class ScriptsMixin:
         if repeats is None:
             return
         self.run_current_script(segment=segment, segment_repeats=repeats)
+
     def _show_workflow_context_menu(self, event):
         """工作流表格右键菜单：执行这一行 / 循环执行选中的片段 / 打开它的脚本。"""
         row_id = self.workflow_tree.identify_row(event.y)
@@ -502,6 +477,7 @@ class ScriptsMixin:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
+
     def run_workflow_step_with_count(self, step: dict):
         """右键「单独执行此步骤…」：先问次数（默认 1 次），再单独跑这一行的脚本。
 
@@ -513,6 +489,7 @@ class ScriptsMixin:
         if repeats is None:
             return
         self.run_referenced_script_alone(step, repeats)
+
     def run_workflow_segment(self):
         """右键「▶ 循环执行片段…」：把选中的这一段步骤循环执行指定次数。
 
@@ -530,8 +507,9 @@ class ScriptsMixin:
         if repeats is None:
             return
         self.run_workflow(segment=segment, segment_repeats=repeats)
+
     def _open_workflow_script_in_editor(self, step: dict):
-        """Load a workflow step's script into the current script editor."""
+        """Load a referenced script into the current editor after confirming edits."""
         ref_value = str(step.get("script", "")).strip()
         ref_path = resolve_path(ref_value)
         if not ref_path.is_file():
@@ -539,11 +517,13 @@ class ScriptsMixin:
             return
         # 未保存修改的处理统一在 load_script_into_editor 里问一次（保存/放弃/取消）。
         self.load_script_into_editor(ref_path)
+
     def run_referenced_script_alone(self, ref: dict, repeats: int = 1):
         """单独运行一份被引用脚本（工作流右键「单独执行此步骤…」的入口）。"""
         return self._run_detection_entrypoint(
             self._run_referenced_script_alone_impl, ref, max(1, int(repeats)),
         )
+
     def _run_referenced_script_alone_impl(self, ref: dict, repeats: int = 1):
         """加载被引用脚本单独执行指定次数，不扣减工作流次数。
 
@@ -560,7 +540,7 @@ class ScriptsMixin:
         except Exception as exc:
             self._notify("无法加载脚本", f"脚本解析失败：{exc}")
             return
-        if self.recorder.running:
+        if self.recorder is not None and self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
@@ -628,11 +608,13 @@ class ScriptsMixin:
         self.worker.start()
         self._show_execution_mini()
         self._append_mini_step(f"单独执行测试：脚本 {script.name}，共 {repeats} 次。")
+
     def _load_startup_script(self, path: Path):
         if not path.is_file():
             self._notify("无法打开引用脚本", f"文件不存在：{path}")
             return
         self.load_script_into_editor(path)
+
     def _restore_editor_draft(self, draft: dict) -> bool:
         """Restore an editor snapshot captured during the previous shutdown."""
         raw_script = draft.get("script") if isinstance(draft, dict) else None
@@ -665,11 +647,13 @@ class ScriptsMixin:
         self._set_status(f"已恢复上次编辑状态：{script.name}", "success")
         self._log(f"已恢复上次关闭时的编辑状态：{script.name}")
         return True
+
     def _restore_last_editor_state(self) -> None:
         draft = self.app_settings.get("editor_draft")
         if isinstance(draft, dict) and self._restore_editor_draft(draft):
             return
         self._load_last_script()
+
     def _load_last_script(self):
         """启动时恢复上次关闭时脚本编辑页正在编辑的脚本。
 
@@ -684,57 +668,19 @@ class ScriptsMixin:
             self._log(f"上次编辑的脚本已不存在，跳过恢复：{raw}")
             return
         self.load_script_into_editor(path)
-    def _current_script_settings(self, recorded_screen: dict | None = None) -> dict:
-        settings = dict(self.script.settings)
-        configured = settings.get("activation_window_configured")
-        if configured is None:
-            configured = bool(self.activation_enabled_var.get() or self.saved_activation_signature)
-        settings.update({
-            "record_mode": "auto",
-            "activation_window_enabled": bool(self.activation_enabled_var.get()),
-            "activation_window": (
-                dict(self.saved_activation_signature) if self.saved_activation_signature else None
-            ),
-            "activation_window_configured": bool(configured),
-        })
-        if recorded_screen:
-            settings["recorded_screen"] = dict(recorded_screen)
-        else:
-            settings.setdefault("recorded_screen", dict(DEFAULT_RECORDED_SCREEN))
-        return settings
-    def _resolve_scripts_dir(self, var_name: str, default: str) -> Path:
-        var = getattr(self, var_name, None)
-        value = var.get().strip() if var is not None else default
-        path = Path(value)
-        return path if path.is_absolute() else BASE_DIR / path
-    def _level_scripts_dir(self) -> Path:
-        return self._resolve_scripts_dir("level_scripts_dir_var", "scripts/关卡")
-    def _level_pack_scripts_dir(self) -> Path:
-        return self._resolve_scripts_dir("level_pack_scripts_dir_var", "scripts/关卡封装")
-    def _switch_scripts_dir(self) -> Path:
-        return self._resolve_scripts_dir("switch_scripts_dir_var", "scripts/切换")
-    def _direction_scripts_dir(self) -> Path:
-        return self._resolve_scripts_dir("direction_scripts_dir_var", DIRECTION_SCRIPTS_DIR)
-    def _script_category_dir(self) -> Path:
-        var = getattr(self, "script_category_var", None)
-        label = var.get() if var is not None else "关卡"
-        if label == "关卡封装":
-            return self._level_pack_scripts_dir()
-        if label == "切换":
-            return self._switch_scripts_dir()
-        if label == "方向":
-            return self._direction_scripts_dir()
-        return self._level_scripts_dir()
+
     def _script_category_changed(self, _event=None):
         label = self.script_category_var.get()
         self.script.settings["category"] = script_category_key(label)
         self._mark_dirty()
         self._sync_global_script_marker()
         self._set_status(f"脚本类别已改为：{label}", "success")
+
     def _set_insert_position(self, above: bool):
         self._apply_insert_position(
             self.insert_position_var, self.insert_above_button, self.insert_below_button, above,
         )
+
     def open_template_region_manager(self):
         """打开统一的"模板区域"管理模块：查看/修改每个模板图片登记的搜索区域。
 
@@ -744,6 +690,7 @@ class ScriptsMixin:
         self.rebuild_action_tree()
         if getattr(self, "workflow_tree", None) is not None:
             self.rebuild_workflow_tree()
+
     def jump_to_module_reference(self, path: Path, action_index: int):
         """Open a script and select the referenced module row in the editor."""
         path = Path(path)
@@ -763,6 +710,7 @@ class ScriptsMixin:
             tree.see(row)
 
         self.root.after_idle(select_row)
+
     def _configure_script_directories(self):
         values = ScriptDirectoriesDialog(
             self.root,
@@ -787,6 +735,7 @@ class ScriptsMixin:
             f"关卡目录：{self._level_scripts_dir()}；关卡封装目录：{self._level_pack_scripts_dir()}；"
             f"切换目录：{self._switch_scripts_dir()}；方向目录：{self._direction_scripts_dir()}",
         )
+
     def open_script(self):
         initial_dir = self._script_category_dir()
         path = filedialog.askopenfilename(
@@ -795,6 +744,7 @@ class ScriptsMixin:
         )
         if path:
             self.load_script_into_editor(Path(path))
+
     def _confirm_discard_unsaved_edits(self, action: str) -> bool:
         """编辑器有未保存修改时，先问清楚怎么处理再继续。
 
@@ -818,6 +768,7 @@ class ScriptsMixin:
             # 保存失败（或用户在保存流程里取消）时不继续，避免改动被默默丢掉。
             return self.save_current_script() is not None
         return True
+
     def load_script_into_editor(self, path: Path) -> bool:
         if getattr(self, "dirty", False) and not self._confirm_discard_unsaved_edits(
             f"打开「{Path(path).stem}」",
@@ -855,6 +806,7 @@ class ScriptsMixin:
         except Exception as exc:
             self._notify("打开失败", str(exc))
             return False
+
     def save_current_script(self):
         recorder = getattr(self, "recorder", None)
         if recorder is not None and recorder.running:
@@ -936,14 +888,18 @@ class ScriptsMixin:
         except Exception as exc:
             self._notify("保存失败", str(exc))
             return None
+
     def refresh_script_files(self):
         pass
+
     def _selected_action_index(self) -> int | None:
         selected = self.action_tree.selection()
         return int(selected[0]) if selected else None
+
     def _clear_captured_search_query_kind(self, *_args):
         """Manual edits switch the search back to fuzzy cross-type matching."""
         self._key_search_query_kind = ""
+
     def _set_search_capture_buttons_state(self, state: str):
         button = getattr(self, "input_search_capture_button", None)
         if button is None:
@@ -952,6 +908,7 @@ class ScriptsMixin:
             button.configure(state=state)
         except tk.TclError:
             pass
+
     def start_input_search_capture(self):
         """Capture the next physical key or mouse button for input search."""
         if getattr(self, "_input_search_capturer", None) is not None:
@@ -978,6 +935,7 @@ class ScriptsMixin:
             self._set_search_capture_buttons_state("normal")
             self.key_search_match_var.set("无法捕获键鼠输入")
         return "break"
+
     def _apply_captured_search_input(self, kind: str, value):
         query_kind = str(kind).strip().casefold()
         if query_kind == "mouse":
@@ -991,9 +949,11 @@ class ScriptsMixin:
         self._key_search_query_kind = query_kind
         self._finish_search_capture()
         self._search_key_actions(1)
+
     def _cancel_search_capture(self):
         self._finish_search_capture()
         self.key_search_match_var.set("已取消键鼠检测")
+
     def _finish_search_capture(self):
         capturer = getattr(self, "_input_search_capturer", None)
         self._input_search_capturer = None
@@ -1003,6 +963,7 @@ class ScriptsMixin:
             except Exception:
                 pass
         self._set_search_capture_buttons_state("normal")
+
     def _search_key_actions(self, direction: int = 1):
         state = {
             "全部": "all", "按下": "down", "抬起": "up", "Press": "press",
@@ -1029,6 +990,7 @@ class ScriptsMixin:
             self.action_tree.focus(str(target))
             self.action_tree.see(str(target))
         return "break"
+
     def _clear_key_search(self):
         self._finish_search_capture()
         self.key_search_var.set("")
@@ -1036,6 +998,7 @@ class ScriptsMixin:
         self.key_search_state_var.set("全部")
         self.key_search_delay_var.set("0")
         self.key_search_match_var.set("")
+
     def _set_matching_key_action_delays(self):
         query = self.key_search_var.get().strip()
         if not query:
@@ -1073,6 +1036,7 @@ class ScriptsMixin:
             self.action_tree.focus(str(changed[0]))
             self.action_tree.see(str(changed[0]))
         return "break"
+
     def _select_all_actions(self, _event=None):
         """Select every action row when Ctrl+A is pressed in the script list."""
         rows = self.action_tree.get_children()
@@ -1081,18 +1045,22 @@ class ScriptsMixin:
             self.action_tree.focus(rows[0])
             self.action_tree.see(rows[0])
         return "break"
+
     def _update_undo_button(self):
         button = getattr(self, "undo_button", None)
         if button is not None:
             button.configure(state="normal" if self._has_undo_steps() else "disabled")
+
     def _update_redo_button(self):
         button = getattr(self, "redo_button", None)
         if button is not None:
             button.configure(state="normal" if self._has_redo_steps() else "disabled")
+
     def _clear_action_undo(self):
         self.action_edit_history = ActionEditHistory()
         self._update_undo_button()
         self._update_redo_button()
+
     def _checkpoint_action_edit(self, rows=None):
         """记录一次编辑前的动作列表。
 
@@ -1109,6 +1077,7 @@ class ScriptsMixin:
             # 新的编辑使“重做”历史失效：撤销之后改动作，重做栈作废。
             self._update_redo_button()
         self._update_undo_button()
+
     def _undo_redo_action_edit(self, redo: bool):
         """撤销/重做脚本编辑。
 
@@ -1134,6 +1103,7 @@ class ScriptsMixin:
         self._update_undo_button()
         self._update_redo_button()
         self._set_status("已重做上一次脚本编辑" if redo else "已撤销上一次脚本编辑", "success")
+
     def _insert_action(self, action: dict):
         index = self._selected_action_index()
         position_var = getattr(self, "insert_position_var", None)
@@ -1152,12 +1122,27 @@ class ScriptsMixin:
         self.action_tree.selection_set(str(insert_at))
         self.action_tree.see(str(insert_at))
         return insert_at
+
     def add_delay(self):
         value = DurationDialog(self.root, "插入延时", "延时时间：", 500).show()
         if value is not None:
             self._insert_action({"type": "delay", "ms": value, "delay_ms": 0})
+
+    def add_wait_mobs_absent(self):
+        value = DurationDialog(self.root, "等待小怪消失",
+                               "连续未检测到小怪才继续（含精英，不含 BOSS）：", 5000).show()
+        if value is not None:
+            self._insert_action({"type": "ssjj_wait_mobs_absent", "duration_ms": value, "delay_ms": 0})
+
+    def add_aim_lock(self):
+        from macroflow.ui.dialogs.ssjj_aim import AimActionDialog
+        action = AimActionDialog(self.root).show()
+        if action is not None:
+            self._insert_action(action)
+
     def add_rebind_window(self):
         self._insert_action({"type": "rebind_window", "delay_ms": 0})
+
     def add_activate_window(self):
         selected = WindowPicker(
             self.root, title="选择要前置的窗口", confirm_text="前置此窗口",
@@ -1172,20 +1157,54 @@ class ScriptsMixin:
                 },
                 "delay_ms": 0,
             })
+
     def add_jump(self):
         ensure_action_ids(self.script.actions)
         action = JumpActionDialog(self.root, actions=self.script.actions).show()
         if action:
             self._insert_action(action)
+
     def add_key(self):
         action = KeyActionDialog(self.root).show()
         if action:
             self._insert_action(action)
 
+    def add_key_sequence(self):
+        action = KeySequenceDialog(self.root).show()
+        if action:
+            self._insert_action(action)
+
     def open_ssjj_coordinates(self):
+        """用户自己要的浮窗：手动打开后执行结束不再收回。"""
+        self._ssjj_panel_auto_opened = False
+        self._ensure_ssjj_coordinate_panel()
+
+    def show_ssjj_panel_for_route(self):
+        """键鼠连续路线开始执行时自动显示游戏监测浮窗。
+
+        用户自己开着的浮窗保持原样；这次由执行自动打开的记下来，执行结束后收回。
+        """
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and panel.window.winfo_exists():
+            panel.show()
+            return
+        self._ensure_ssjj_coordinate_panel()
+        self._ssjj_panel_auto_opened = True
+
+    def close_ssjj_panel_after_run(self):
+        """执行结束：只收回这次由执行自动打开的浮窗，用户自己开的保持显示。"""
+        if not getattr(self, '_ssjj_panel_auto_opened', False):
+            return
+        self._ssjj_panel_auto_opened = False
+        panel = getattr(self, '_ssjj_coordinates', None)
+        if panel is not None and not panel.closed:
+            panel.close()
+
+    def _ensure_ssjj_coordinate_panel(self):
         from macroflow.ui.dialogs.ssjj_coordinates import SSJJCoordinatePanel
         panel = getattr(self, '_ssjj_coordinates', None)
         if panel is not None and panel.window.winfo_exists():
+            panel.show()
             return
         self._ssjj_coordinates = SSJJCoordinatePanel(self)
 
@@ -1211,6 +1230,7 @@ class ScriptsMixin:
         text = simpledialog.askstring("插入文本", "要输入的文本：", parent=self.root)
         if text is not None:
             self._insert_action({"type": "text", "text": text, "char_delay_ms": 15, "delay_ms": 0})
+
     def add_notice(self):
         text = simpledialog.askstring("添加浮动提醒", "提醒会显示 3 秒，脚本不会暂停。\n提醒文字：", parent=self.root)
         if text is not None and text.strip():
@@ -1218,30 +1238,37 @@ class ScriptsMixin:
                 "type": "notice", "text": text.strip(),
                 "duration_ms": 3000, "delay_ms": 0,
             })
+
     def add_mouse_move(self):
         action = MouseMoveDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_click(self):
         action = ClickDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_turn(self):
         action = TurnActionDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_repeat_click(self):
         action = RepeatClickDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_scroll(self):
         action = ScrollDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_scroll_sequence(self):
         action = ScrollSequenceDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_ocr_compare(self):
         ensure_action_ids(self.script.actions)
         action = OcrCompareActionDialog(
@@ -1249,10 +1276,12 @@ class ScriptsMixin:
         ).show()
         if action:
             self._insert_action(action)
+
     def add_multi_condition_click(self):
         action = MultiConditionClickDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def test_row_list_condition_click(self, action: dict, on_complete=None,
                                       cancel_event=None, source="screen"):
         """Run a one-shot, non-clicking diagnostic scan for a row-list action.
@@ -1327,6 +1356,7 @@ class ScriptsMixin:
                 )
 
         threading.Thread(target=run_diagnostic, daemon=True).start()
+
     def _macroflow_diagnostic_window_candidates(self) -> list[tk.Misc]:
         """Collect every Tk top-level owned by MacroFlow for a short hide cycle."""
         windows: list[tk.Misc] = []
@@ -1359,6 +1389,7 @@ class ScriptsMixin:
         for attribute in ("mini_window", "execution_notice_window", "cursor_tracking_mini"):
             add(getattr(self, attribute, None))
         return windows
+
     def _hide_macroflow_windows_for_diagnostic(self) -> list[tuple[tk.Misc, str]]:
         """Hide MacroFlow windows while leaving the bound external window untouched."""
         try:
@@ -1387,6 +1418,7 @@ class ScriptsMixin:
         except tk.TclError:
             pass
         return hidden_states
+
     def _restore_macroflow_windows_after_diagnostic(
             self, hidden_states: list[tuple[tk.Misc, str]]) -> None:
         """Restore exactly the MacroFlow windows that were visible before scanning."""
@@ -1407,6 +1439,7 @@ class ScriptsMixin:
             self.root.update_idletasks()
         except tk.TclError:
             pass
+
     def _finish_row_list_diagnostic(
             self, result_lines: list[str], error: Exception | None,
             hidden_states: list[tuple[tk.Misc, str]] | None, diagnostic_result=None,
@@ -1447,6 +1480,7 @@ class ScriptsMixin:
             RowListDiagnosticResultDialog(
                 self.root, list(result_lines), error,
             ).show()
+
     def add_row_list_condition_click(self):
         ensure_action_ids(self.script.actions)
         dialog = RowListConditionClickDialog(self.root, actions=self.script.actions)
@@ -1454,22 +1488,27 @@ class ScriptsMixin:
         action = dialog.show()
         if action:
             self._insert_action(action)
+
     def add_open_app(self):
         action = OpenAppDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_close_app(self):
         action = CloseAppDialog(self.root).show()
         if action:
             self._insert_action(action)
+
     def add_set_resolution(self):
         action = SetResolutionActionDialog(
             self.root, settings={"resolution_styles": self.resolution_styles},
         ).show()
         if action:
             self._insert_action(action)
+
     def add_block(self):
         self._insert_action({"type": "block", "delay_ms": 0})
+
     def add_global_detect(self):
         # 普通脚本内嵌全局模块行：播放到该行时启用全局检测，触发后跳转到脚本第 N 行。
         # 全局脚本的触发条件在"触发条件"区块配置，不能添加模块行。
@@ -1483,6 +1522,7 @@ class ScriptsMixin:
         action = GlobalDetectDialog(self.root, jump=True, actions=self.script.actions).show()
         if action:
             self._insert_action(action)
+
     def add_module(self):
         """打开模块选择窗口，把选中的模块对象 / 特殊动作插入脚本。
 
@@ -1531,6 +1571,7 @@ class ScriptsMixin:
             configured_actions.reverse()
         for action in configured_actions:
             self._insert_action(action)
+
     def edit_selected_action(self):
         index = self._selected_action_index()
         if index is None:
@@ -1554,6 +1595,7 @@ class ScriptsMixin:
             self._mark_dirty()
             self._refresh_one_action_row(index)
             self.action_tree.selection_set(str(index))
+
     def _update_action_edit_button(self, _event=None):
         button = getattr(self, "edit_action_button", None)
         if button is None:
@@ -1567,12 +1609,13 @@ class ScriptsMixin:
             )
         )
         button.configure(state="normal" if editable else "disabled")
+
     def delete_actions(self):
         selected = sorted((int(item) for item in self.action_tree.selection()), reverse=True)
         if not selected:
             self._notify("删除动作", "请先选择一行或多行动作。")
             return
-        next_selection = min(selected)
+        next_selection = max(0, min(selected) - 1)
         old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
         for index in selected:
@@ -1581,14 +1624,14 @@ class ScriptsMixin:
         self._mark_dirty()
         self._sync_action_rows(old_ids)
         if self.script.actions:
-            # The original next row shifts into the deleted row's position.
-            # When deleting the final row, keep the new final row selected.
+            # Prefer the previous row; deleting the first row selects its successor.
             next_selection = min(next_selection, len(self.script.actions) - 1)
             item = str(next_selection)
             self.action_tree.selection_set(item)
             self.action_tree.focus(item)
             self.action_tree.see(item)
         self._set_status(f"已删除 {len(selected)} 行动作，可使用撤销恢复", "success")
+
     def copy_selected_actions_down(self):
         selected = sorted({int(item) for item in self.action_tree.selection()})
         if not selected:
@@ -1611,6 +1654,7 @@ class ScriptsMixin:
             self.action_tree.selection_set(*copied_rows)
             self.action_tree.see(copied_rows[-1])
         self._set_status(f"已向下复制 {len(copies)} 行动作", "success")
+
     def _insert_script_position(self) -> int | None:
         """计算插入位置；未选中行且脚本已有动作时提示并返回 None。"""
         selected = sorted({int(item) for item in self.action_tree.selection()})
@@ -1622,6 +1666,7 @@ class ScriptsMixin:
         if position == "above":
             return selected[0] if selected else 0
         return min(len(self.script.actions), selected[-1] + 1) if selected else 0
+
     def _pick_script_files(self) -> list[Path] | None:
         """文件多选 + 校验每个文件都可解析为 MacroFlow 脚本。"""
         selected = filedialog.askopenfilenames(
@@ -1641,6 +1686,7 @@ class ScriptsMixin:
                 self._notify("无法插入脚本", f"{path.name}：{exc}")
                 return None
         return paths
+
     @staticmethod
     def _script_reference_action(path: Path) -> dict:
         ref_action = {
@@ -1652,10 +1698,12 @@ class ScriptsMixin:
         }
         ref_action[ACTION_ID_KEY] = new_action_id()
         return ref_action
+
     @staticmethod
     def _expanded_script_actions(path: Path) -> list[dict]:
         """逐行复制一个脚本，重建行 ID 并同步映射跳转引用。"""
         return clone_actions_with_new_ids(load_script(path).actions)
+
     def _insert_script_actions(self, insert_at: int, actions: list[dict]):
         old_ids = [action_id_of(item) for item in self.script.actions]
         self._checkpoint_action_edit()
@@ -1668,6 +1716,7 @@ class ScriptsMixin:
         if selected_rows:
             self.action_tree.selection_set(*selected_rows)
             self.action_tree.see(selected_rows[-1])
+
     def _insert_script(self, expanded: bool):
         """插入脚本：expanded=False 插入一行引用动作（实时读取原脚本），
         expanded=True 逐行复制到当前位置（插入后可单独修改）。"""
@@ -1773,6 +1822,7 @@ class ScriptsMixin:
         detail = (f"{path.name} 第 {start_row}–{end_row} 行，共 {len(actions)} 行"
                   f"插入到当前脚本第 {insert_at + 1} 行")
         self._notify("已插入脚本指定行", detail)
+
     def move_action(self, offset: int):
         """整体上移/下移选中的动作行。
 
@@ -1806,3 +1856,79 @@ class ScriptsMixin:
             self._set_status(
                 f"已整体{'上移' if offset < 0 else '下移'} {len(block)} 行动作", "success",
             )
+
+
+    def run_script_from_selected_action(self):
+        selected = sorted(int(item) for item in self.action_tree.selection())
+        if not selected:
+            self._notify("从选中行运行", "请先选择一行动作。")
+            return
+        self.run_current_script(start_index=selected[0], partial_run=True)
+
+    def run_module_object_test(self, module_key: str, repeats: int = 1):
+        """Run one saved module as a standalone live-reference action."""
+        return self._run_detection_entrypoint(
+            self._run_module_object_test_impl, module_key, max(1, int(repeats)),
+        )
+
+    def _run_module_object_test_impl(self, module_key: str, repeats: int = 1):
+        """Start a module-only run without changing the current script or workflow."""
+        module_obj = registered_module_object(str(module_key))
+        if module_obj is None:
+            self._notify("模块不存在", f"找不到模块：{module_key}")
+            return
+        if self.recorder is not None and self.recorder.running:
+            self.stop_recording()
+        if self.worker and self.worker.is_alive():
+            self._notify("正在运行", "已有脚本或工作流正在执行。")
+            return
+        self._cancel_workflow_recovery()
+        self._save_activation_interval()
+
+        category = str(module_obj.get("category") or "switch")
+        # 全局模块在独立测试时按普通识别动作执行一次完整识别/动作链；否则注册
+        # 为脚本守卫后会一直常驻，且已禁用模块会在注册阶段被过滤，无法诊断。
+        action_category = "special" if category == "special" else "switch"
+        action = module_action_for_key(module_key, action_category, module_obj)
+        name = str(module_obj.get("name") or "").strip() or Path(
+            str(module_obj.get("template") or module_key).replace("\\", "/"),
+        ).stem or "未命名模块"
+        repeats = max(1, int(repeats))
+
+        self._begin_detection_run()
+        self._ensure_detection_worker()
+        hwnd = self._bound_hwnd()
+        activation_enabled, activation_signature = self._activation_settings_from_script()
+        activation_hwnd = None
+        try:
+            activation_hwnd = self._execution_activation_hwnd(
+                hwnd, activation_enabled, activation_signature,
+            )
+        except RuntimeError:
+            self._log("前置窗口未打开，已跳过前置窗口，继续执行模块测试。")
+        focus_enabled = bool(self.focus_mode_enabled_var.get())
+        activate_target = bool(self.activate_target_enabled_var.get())
+        self.execution_focus_requested = focus_enabled
+        source_screen = dict(self.script.settings.get("recorded_screen", {})) or None
+        self.workflow_stop.clear()
+        self.execution_started_at = time.perf_counter()
+        self._set_execution_progress(
+            f"模块测试 · {name} · 共执行 {repeats} 次 · 正在准备 · F12 停止"
+        )
+        self.worker = threading.Thread(
+            target=self._run_script_worker,
+            args=([action], repeats, hwnd, activation_hwnd, source_screen,
+                  focus_enabled, activate_target, 0),
+            kwargs={
+                "trigger": {}, "script_name": f"模块测试：{name}",
+                "single_action": True,
+                "activation_interval_ms": int(self.script.settings.get("activation_window_interval_ms", 0)),
+            },
+            daemon=True,
+        )
+        self.worker.start()
+        self._sound("run_start")
+        self._hide_main_for_execution()
+        self._show_execution_mini()
+        self._append_mini_step(f"独立测试模块 {name}，共 {repeats} 次。")
+

@@ -138,6 +138,11 @@ Module management and selection support keyword filtering within category tabs. 
 
 Recognition settings separate the target condition (present / absent) from the wait rule (try once / wait with a deadline / wait indefinitely). To delay the first recognition, edit the module reference in the script and set the pre-recognition wait in seconds (5 = 5 seconds). Polling, cooldown, confirmation and fallback options are under advanced recognition settings; collapsing them preserves their values.
 
+Every running key sequence shows a live countdown to its next cycle in a compact, semitransparent, click-through notice at the bottom left. The countdown resets each cycle and freezes while paused. On stop, an ending notice appears and disappears automatically. The notice does not take focus. Press the same hotkey again to stop its script; F12 remains the emergency stop.
+
+When adding or editing a hotkey binding, choose a script category first, then select a script from that category. All four categories and their configured directories are supported. Each option shows its directory to distinguish scripts with the same name.
+
+**Key sequence**: choose “组合按键” in the Add Action menu and enter ASCII letters and digits such as `2v3e6e4v4e`. Keys are pressed individually in order, with a configurable interval in ms (default 50). Uppercase and lowercase letters use the same key. This action has its own cycle interval in seconds (default 20), measured from the first key of each cycle, and repeats until manually stopped (F12). If a sequence takes longer than the interval, the next cycle starts immediately after it finishes, without overlapping.
 ## Usage limits
 
 - Track sampling interval: at least 10 ms. Image polling: at least 50 ms. Recording limit: 200,000 actions.

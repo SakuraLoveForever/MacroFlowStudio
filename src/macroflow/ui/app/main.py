@@ -5,32 +5,29 @@
 """
 from __future__ import annotations
 
-from .execution import ExecutionMixin
-from .global_detect import GlobalDetectMixin
-from .guards import GuardsMixin
+from .controller import ExecutionController
 from .helpers import HelpersMixin
 from .hotkeys import HotkeysMixin
 from .recording import RecordingMixin
-from .recovery import RecoveryMixin
 from .scripts import ScriptsMixin
 from .shell import ShellMixin
-from .tray import TrayMixin
-from .window_binding import WindowBindingMixin
 from .workflow import WorkflowMixin
 
 
 class MacroFlowApp(
     ShellMixin,
     HelpersMixin,
-    GlobalDetectMixin,
-    GuardsMixin,
-    TrayMixin,
-    WindowBindingMixin,
     RecordingMixin,
-    RecoveryMixin,
     ScriptsMixin,
-    ExecutionMixin,
     WorkflowMixin,
     HotkeysMixin,
+    ExecutionController,
 ):
     """主窗口：各功能按分节拆成 mixin，方法之间通过 self 调用。"""
+
+    def _initialize_authoring_state(self):
+        from macroflow.input.recorder import MacroRecorder
+        self.recorder = MacroRecorder(self._record_action_callback)
+
+    def _finish_client_capture(self):
+        self._finish_search_capture()

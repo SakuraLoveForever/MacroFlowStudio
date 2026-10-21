@@ -288,31 +288,3 @@ class ProcessDetectionTests(unittest.TestCase):
             self.assertIsNone(app._evaluate_one_guard(guard, None, None, 3))
             self.assertIsNone(app._evaluate_one_guard(guard, None, None, 4))
             self.assertIsNotNone(app._evaluate_one_guard(guard, None, None, 6))
-
-
-class ProcessPickerTests(unittest.TestCase):
-    def test_process_picker_is_readonly_and_refreshes_on_open(self):
-        from unittest.mock import Mock, patch
-        from macroflow.ui.dialogs.module_objects import TemplateRegionFormDialog
-        form = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
-        form.process_name_var = Mock()
-        form.process_name_var.get.return_value = "saved.exe"
-        with patch('macroflow.ui.dialogs.module_objects.ttk.Combobox') as combo, \
-             patch('macroflow.ui.dialogs.module_objects.ttk.Button') as button:
-            form._process_picker_row(Mock())
-        self.assertEqual(combo.call_args.kwargs["state"], "readonly")
-        self.assertEqual(combo.call_args.kwargs["postcommand"], form._refresh_process_choices)
-        self.assertEqual(button.call_args.kwargs["command"], form._pick_process)
-
-    def test_process_choices_refresh_and_keep_saved_stopped_target(self):
-        from unittest.mock import Mock, patch
-        from macroflow.ui.dialogs.module_objects import TemplateRegionFormDialog
-        form = TemplateRegionFormDialog.__new__(TemplateRegionFormDialog)
-        form.process_name_var = Mock()
-        form.process_name_var.get.return_value = "saved.exe"
-        form.process_name_combo = Mock()
-        with patch('macroflow.ui.dialogs.module_objects.running_process_names', create=True,
-                   return_value=["game.exe", "python.exe"]):
-            form._refresh_process_choices()
-        self.assertEqual(form.process_name_combo.configure.call_args.kwargs["values"],
-                         ["game.exe", "python.exe", "saved.exe"])

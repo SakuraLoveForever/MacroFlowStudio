@@ -15,7 +15,7 @@ from ctypes import wintypes
 
 JUMP_CURRENT_SCRIPT_LAST_RESULT = "jump_current_script_last"
 INPUT_ACTION_KINDS = frozenset({
-    "key", "key_press", "text",
+    "key", "key_press", "key_sequence", "text",
     "mouse_button", "mouse_move", "click", "repeat_click", "scroll", "scroll_sequence", "turn",
 })
 MAX_SCRIPT_REF_DEPTH = 16

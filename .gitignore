@@ -11,7 +11,7 @@ backups/
 # ---- 打包产物与运行时数据（含 EXE、脚本副本、日志） ----
 dist/
 build/
-paddle_models/
+MacroFlowRunner_latest_win64/
 
 # ---- Python 缓存 ----
 __pycache__/
@@ -22,6 +22,7 @@ __pycache__/
 # ---- 依赖环境 / 测试目录 ----
 .deps/
 _meitest/
+/tmp*/
 .dsh-image-bridge/
 .worktrees/
 
@@ -31,6 +32,7 @@ _meitest/
 
 # ---- 本地配置（含绑定窗口路径、游戏信息等私人数据） ----
 app_settings.json
+process_names.json
 template_regions.json
 
 # ---- 日志与构建输出 ----
@@ -51,3 +53,29 @@ _modlens_test.json
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# ---- 仅限本地：锁头 / BOSS 锁定实现、界面、测试及研究资料 ----
+# 不得强制添加或上传；忽略规则不清除历史，含相关历史的分支禁止推送。
+/src/macroflow/execution/ssjj_aim*.py
+/src/macroflow/execution/ssjj_competitive.py
+/src/macroflow/execution/ssjj_pve.py
+/src/macroflow/execution/ssjj_enemy_*.py
+/src/macroflow/execution/ssjj_projection.py
+/src/macroflow/ui/dialogs/ssjj_aim.py
+/src/macroflow/ui/dialogs/ssjj_coordinates.py
+/src/macroflow/ui/dialogs/ssjj_enemy_*.py
+/tests/test_ssjj_aim*.py
+/tests/test_ssjj_competitive.py
+/tests/test_ssjj_back_button.py
+/tests/test_ssjj_moving_aim.py
+/tests/test_ssjj_body_center.py
+/tests/test_ssjj_enemy*.py
+/tests/test_ssjj_pve_research.py
+/tests/test_ssjj_panel_open.py
+/tests/test_ssjj_status.py
+/tools/research_ssjj_pve.py
+/docs/ssjj-aim-lock.md
+/docs/ssjj-competitive-reuse.md
+/docs/research/ssjj-pve/*
+/研究/*
+/.tmp/*

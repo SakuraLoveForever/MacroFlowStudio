@@ -31,6 +31,8 @@ from tests.helpers.core import (  # noqa: E402
 
 from macroflow.core import storage  # noqa: E402
 from macroflow.core.models import ACTION_ID_KEY, MacroScript, Workflow  # noqa: E402
+from macroflow.ui.app.runtime.workflow import RuntimeWorkflowMixin
+from macroflow.ui.app.runtime.helpers import RuntimeHelpersMixin
 from macroflow.ui.app.helpers import HelpersMixin  # noqa: E402
 from macroflow.ui.app.scripts import ScriptsMixin  # noqa: E402
 from macroflow.ui.app.workflow import WorkflowMixin  # noqa: E402
@@ -68,7 +70,7 @@ _BOUND_METHODS = (
 
 def _bound_methods() -> dict:
     methods = {}
-    for mixin in (HelpersMixin, ScriptsMixin, WorkflowMixin):
+    for mixin in (RuntimeHelpersMixin, RuntimeWorkflowMixin, HelpersMixin, ScriptsMixin, WorkflowMixin):
         for name in _BOUND_METHODS:
             function = getattr(mixin, name, None)
             if function is None:
@@ -179,7 +181,6 @@ class IsolatedStorageMixin(unittest.TestCase):
             ("WORKFLOWS_DIR", "workflows"),
             ("IMAGES_DIR", "images"),
             ("SETTINGS_PATH", "app_settings.json"),
-            ("SCRIPT_BACKUPS_DIR", os.path.join("backups", "scripts")),
             ("OVERWRITTEN_BACKUPS_DIR", os.path.join("backups", "overwritten")),
             ("TEMPLATE_REGIONS_PATH", "template_regions.json"),
             ("MODULE_SETTINGS_PATH", "module_settings.json"),

@@ -39,7 +39,19 @@ from .base import (
     MODULE_RESULT_OPTIONS,
     RESTART_USE_DEFAULT_ROW_LABEL,
     px,
+    vk_to_key_name,
 )
+
+
+def key_display_name(action: dict) -> str:
+    """按键步骤的显示名：录到的 name 优先，没有就由虚键码换算，避免露出 87 这种数字。"""
+    name = str(action.get("name") or "").strip()
+    if name:
+        return name.upper()
+    try:
+        return vk_to_key_name(int(action.get("vk")))
+    except (TypeError, ValueError):
+        return str(action.get("vk") or "未知")
 
 
 def parse_named_region(value) -> list[int]:
@@ -150,7 +162,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         "block": "阻塞",
         "activate_window": "前置窗口", "module_ref": "模块引用",
     }
-    button_names = {"left": "左键", "right": "右键", "middle": "中键"}
+    button_names = {"left": "左键", "right": "右键", "middle": "中键", "x1": "后侧键", "x2": "前侧键"}
     clip = lambda text, limit=20: (  # noqa: E731
         s if len(s := str(text).replace("\n", " ").strip()) <= limit
         else s[:limit] + "…"
@@ -180,7 +192,7 @@ def image_jump_target_options(actions: list[dict]) -> list[tuple[str, str]]:
         if kind == "delay":
             detail = f"等 {int(action.get('ms', 0))} ms"
         elif kind in {"key", "key_press"}:
-            key_name = str(action.get("name") or action.get("vk") or "未知")
+            key_name = key_display_name(action)
             detail = ("按下 " if action.get("down") else "松开 ") + key_name if kind == "key" else f"敲击 {key_name}"
         elif kind == "text":
             detail = "输入 " + clip(action.get("text", ""), 16)
@@ -529,7 +541,7 @@ def recorded_action_description(action: dict) -> str:
             return f"游戏转向：ΔX={action.get('dx', 0)}，ΔY={action.get('dy', 0)}（相对轨迹）"
         return f"鼠标移动到：({action.get('x', 0)}, {action.get('y', 0)})（桌面坐标）"
     if kind == "mouse_button":
-        button_names = {"left": "左键", "right": "右键", "middle": "中键"}
+        button_names = {"left": "左键", "right": "右键", "middle": "中键", "x1": "后侧键", "x2": "前侧键"}
         button = button_names.get(str(action.get("button", "left")), str(action.get("button", "left")))
         state = "按下" if action.get("down") else "松开"
         return f"{button}{state}：({action.get('x', 0)}, {action.get('y', 0)})"
@@ -538,9 +550,9 @@ def recorded_action_description(action: dict) -> str:
                 f"位置=({action.get('x', 0)}, {action.get('y', 0)})")
     if kind == "key":
         state = "按下" if action.get("down") else "松开"
-        return f"键盘{state}：{action.get('name', action.get('vk', '未知'))}"
+        return f"键盘{state}：{key_display_name(action)}"
     if kind == "key_press":
-        return f"敲击按键：{action.get('name', action.get('vk', '未知'))}"
+        return f"敲击按键：{key_display_name(action)}"
     return segment_row_label(action)
 
 

@@ -33,6 +33,23 @@ foreach ($Item in $Items) {
     }
 }
 
+$RunnerDir = Join-Path $Stage "MacroFlowRunner"
+$RunnerItems = @(
+    (Join-Path $RunnerDir "MacroFlowRunner.exe"),
+    (Join-Path $RunnerDir "_internal"),
+    (Join-Path $RunnerDir "rapidocr_ocr"),
+    (Join-Path $Stage "README.md"),
+    (Join-Path $Stage "CHANGELOG.md"),
+    (Join-Path $RunnerDir "docs"),
+    (Join-Path $RunnerDir "examples")
+)
+foreach ($Item in $RunnerItems) {
+    if (-not (Test-Path -LiteralPath $Item)) { throw "执行端打包内容缺失：$Item" }
+}
+Compress-Archive -LiteralPath $RunnerItems `
+    -DestinationPath (Join-Path $ProjectDir "MacroFlowRunner_latest_win64.zip") `
+    -CompressionLevel Optimal -Force
+
 # -Force 覆盖旧包；多 Path 条目保持 zip 根目录结构（exe/文档在根，rapidocr_ocr/ 为目录）
 Compress-Archive -LiteralPath $Items -DestinationPath $Zip -CompressionLevel Optimal -Force
 

@@ -170,3 +170,38 @@ def _set_windows_gui_subsystem(path):
 
 
 _set_windows_gui_subsystem(exe.name)
+
+# The execution client uses an unpacked runtime: no onefile extraction on start.
+# Collect into a build-only folder so subsequent builds never erase user imports.
+runner_analysis = Analysis(
+    ['src/macroflow/ui/app/runner_main.py'],
+    pathex=[str(Path(SPECPATH).resolve() / 'src')],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[
+        'pip', 'networkx', 'hf_xet',
+        # OCR 推理栈外置：RapidOCR 与 ONNX Runtime 从 exe 同级目录按需加载。
+        'paddle', 'paddleocr', 'paddlex',
+        'rapidocr', 'onnxruntime',
+    ],
+    noarchive=False,
+    optimize=0,
+)
+
+runner_analysis.binaries = _drop_root_duplicates(runner_analysis.binaries)
+runner_pyz = PYZ(runner_analysis.pure)
+runner_exe = EXE(
+    runner_pyz, runner_analysis.scripts, [], exclude_binaries=True,
+    name='MacroFlowRunner', debug=False, bootloader_ignore_signals=False,
+    strip=False, upx=True, console=True, disable_windowed_traceback=False,
+    uac_admin=True,
+)
+_set_windows_gui_subsystem(runner_exe.name)
+runner_collect = COLLECT(
+    runner_exe, runner_analysis.binaries, runner_analysis.datas, strip=False, upx=True,
+    name='_runner_build',
+)

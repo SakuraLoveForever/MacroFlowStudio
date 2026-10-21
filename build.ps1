@@ -63,6 +63,7 @@ $ExistingBuildHash = if (Test-Path -LiteralPath $BuildStamp) {
 }
 $CanReuseExecutable = (-not $Clean) -and
   (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\MacroFlowStudio.exe")) -and
+  (Test-Path -LiteralPath (Join-Path $ProjectDir "dist\MacroFlowRunner\MacroFlowRunner.exe")) -and
   ($ExistingBuildHash -eq $BuildInputHash)
 
 if ($CanReuseExecutable) {
@@ -82,6 +83,20 @@ if ($CanReuseExecutable) {
   if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
   }
+  $RunnerStage = Join-Path $ProjectDir "dist\_runner_build"
+  $RunnerDir = Join-Path $ProjectDir "dist\MacroFlowRunner"
+  New-Item -ItemType Directory -Force -Path $RunnerDir | Out-Null
+  # Only replace managed runtime files; scripts, imports, settings and logs stay.
+  $RunnerRuntime = Join-Path $RunnerDir "_internal"
+  $ResolvedRuntime = [IO.Path]::GetFullPath($RunnerRuntime)
+  if ($ResolvedRuntime -ne [IO.Path]::GetFullPath((Join-Path $ProjectDir "dist\MacroFlowRunner\_internal"))) {
+    throw "Unsafe runner runtime path: $ResolvedRuntime"
+  }
+  if (Test-Path -LiteralPath $RunnerRuntime) {
+    Remove-Item -LiteralPath $RunnerRuntime -Recurse -Force
+  }
+  Copy-Item -LiteralPath (Join-Path $RunnerStage "MacroFlowRunner.exe") -Destination $RunnerDir -Force
+  Copy-Item -LiteralPath (Join-Path $RunnerStage "_internal") -Destination $RunnerDir -Recurse -Force
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $BuildStamp) | Out-Null
   Set-Content -LiteralPath $BuildStamp -Value $BuildInputHash -NoNewline -Encoding ASCII
 }
@@ -131,7 +146,25 @@ if (-not (Get-ChildItem -LiteralPath (Join-Path $OcrTarget "onnxruntime\capi") `
 
 Write-Host "Build complete: $ProjectDir\dist\MacroFlowStudio.exe (+ rapidocr_ocr/ 外置 OCR 组件)"
 
-foreach ($ClientDir in @((Join-Path $ProjectDir "dist"))) {
+$RunnerDir = Join-Path $ProjectDir "dist\MacroFlowRunner"
+$RunnerOcr = Join-Path $RunnerDir "rapidocr_ocr"
+if ([IO.Path]::GetFullPath($RunnerOcr) -ne [IO.Path]::GetFullPath((Join-Path $ProjectDir "dist\MacroFlowRunner\rapidocr_ocr"))) {
+  throw "Unsafe runner OCR path: $RunnerOcr"
+}
+if (Test-Path -LiteralPath $RunnerOcr) {
+  Remove-Item -LiteralPath $RunnerOcr -Recurse -Force
+}
+Copy-Item -LiteralPath $OcrTarget -Destination $RunnerDir -Recurse -Force
+foreach ($Marker in $OcrMarkers) {
+  if (-not (Test-Path -LiteralPath (Join-Path $RunnerOcr $Marker))) {
+    throw "Runner OCR component missing: $Marker"
+  }
+}
+Copy-Item -LiteralPath (Join-Path $ProjectDir "README.md") -Destination $RunnerDir -Force
+Copy-Item -LiteralPath (Join-Path $ProjectDir "CHANGELOG.md") -Destination $RunnerDir -Force
+Write-Host "Runner complete: $RunnerDir\MacroFlowRunner.exe (+ _internal/ + rapidocr_ocr/)"
+
+foreach ($ClientDir in @((Join-Path $ProjectDir "dist"), $RunnerDir)) {
   New-Item -ItemType Directory -Force -Path (Join-Path $ClientDir "docs") | Out-Null
   New-Item -ItemType Directory -Force -Path (Join-Path $ClientDir "examples\python") | Out-Null
   Copy-Item -LiteralPath (Join-Path $ProjectDir "docs\python-scripts.md") -Destination (Join-Path $ClientDir "docs") -Force

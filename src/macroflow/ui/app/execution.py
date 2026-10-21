@@ -1,26 +1,10 @@
 from __future__ import annotations
 
-from macroflow.execution.player import (
-    JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
-    AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
-    JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
-    screen_template_scale,
-)
-from macroflow.execution.detection_worker import DetectionEvaluation, DetectionWorker
-from macroflow.core.storage import registered_module_object
+from macroflow.execution.player import AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest, JumpToCurrentScriptLastAction, PlaybackStopped
+from macroflow.execution.detection_worker import DetectionWorker
 from pathlib import Path
 from macroflow.core.display_power import allow_display_sleep, keep_display_awake
-from macroflow.input.wininput import (
-    WindowInfo, activate_window, enum_windows, get_cursor_pos,
-    get_monitor_rect_for_window, get_monitor_work_area_for_point,
-    get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect,
-    get_window_dpi,
-    force_english_input, get_foreground_window_info, get_window_rect,
-    is_current_process_window, is_window, is_window_process_foreground,
-    make_window_no_activate, send_button, send_move_absolute,
-    set_dark_titlebar, set_rounded_window, show_window,
-    show_window_no_activate,
-)
+from macroflow.input.wininput import get_monitor_work_area_for_window, get_primary_screen_rect, force_english_input, is_window, is_window_process_foreground, make_window_no_activate, set_rounded_window
 import sys
 import threading
 import time
@@ -28,17 +12,8 @@ import tkinter as tk
 import traceback
 import ttkbootstrap as ttk
 
-from .base import (
-    floating_notice_xy,
-    pad,
-    px,
-)
-from .constants import (
-    FLOATING_NOTICE_HEIGHT,
-    FLOATING_NOTICE_WIDTH,
-)
-from macroflow.ui.dialogs.segments import module_action_for_key
-
+from .base import floating_notice_xy, pad, px
+from .constants import FLOATING_NOTICE_HEIGHT, FLOATING_NOTICE_WIDTH, FONT_FAMILY
 from .summaries import action_summary
 from macroflow.input.foreground_guard import minimize_listed_foreground
 from macroflow.input.wininput import activate_window
@@ -118,10 +93,12 @@ class ExecutionMixin:
                 if self.workflow_stop.is_set():
                     self._leave_focus_mode()
                     return
+                self._pause_workflow_plugins(False)
                 self.player.resume()
                 message = "执行已继续，键鼠已锁定。" if self.execution_focus_requested else "执行已继续。"
             else:
                 self.player.pause()
+                self._pause_workflow_plugins(True)
                 if self.execution_focus_requested and self.input_guard.active:
                     if not self.input_guard.set_paused(True):
                         self._log("暂停时无法解除强制专注输入锁，已停止执行。")
@@ -183,6 +160,10 @@ class ExecutionMixin:
                 guard.set_before_input(None)
                 guard.release()
     def _set_execution_progress(self, text: str) -> None:
+        if getattr(self, "workflow_segment", None) is not None:
+            total = self.workflow_segment_total_rounds
+            current = total - self.workflow_segment_rounds_remaining + 1
+            text = f"循环第 {current}/{total} 次 · {text}"
         self.execution_progress_text = text
         if getattr(self, "mini_mode", "") == "execution":
             self.mini_count_var.set(self._compact_mini_text(text))
@@ -211,6 +192,11 @@ class ExecutionMixin:
         detail = " ".join(str(detail).replace("\n", "↵").split())
         text = f"{script} · 第 {row}/{total} 行\n{kind}：{detail}"
         self._ui(self._set_current_execution_action, text)
+        if action.get("type") == "ssjj_recording":
+            # 键鼠连续路线一开始执行就把游戏监测浮窗放出来；执行端没有浮窗界面时跳过。
+            show_panel = getattr(self, "show_ssjj_panel_for_route", None)
+            if show_panel is not None:
+                self._ui(show_panel)
 
     def _set_current_execution_action(self, text: str) -> None:
         self.current_execution_action_text = text
@@ -221,6 +207,8 @@ class ExecutionMixin:
     def _begin_detection_run(self) -> None:
         if player := getattr(self, "player", None):
             player.on_action_start = self._on_action_start
+        from .plugins_runtime import arm_interval_plugins
+        arm_interval_plugins(self)
         self._set_current_execution_action("正在准备当前动作")
         self._detection_run_id = getattr(self, "_detection_run_id", 0) + 1
         self._detection_request = None
@@ -244,12 +232,6 @@ class ExecutionMixin:
             self._cancel_workflow_recovery()
             self._shutdown_detection_worker()
             raise
-    def run_script_from_selected_action(self):
-        selected = sorted(int(item) for item in self.action_tree.selection())
-        if not selected:
-            self._notify("从选中行运行", "请先选择一行动作。")
-            return
-        self.run_current_script(start_index=selected[0], partial_run=True)
     def run_current_script(self, start_index: int = 0,
                            single_action_repeats: int | None = None,
                            segment: tuple[int, int] | None = None,
@@ -261,78 +243,13 @@ class ExecutionMixin:
             segment=segment, segment_repeats=segment_repeats, partial_run=partial_run,
         )
 
-    def run_module_object_test(self, module_key: str, repeats: int = 1):
-        """Run one saved module as a standalone live-reference action."""
-        return self._run_detection_entrypoint(
-            self._run_module_object_test_impl, module_key, max(1, int(repeats)),
-        )
 
-    def _run_module_object_test_impl(self, module_key: str, repeats: int = 1):
-        """Start a module-only run without changing the current script or workflow."""
-        module_obj = registered_module_object(str(module_key))
-        if module_obj is None:
-            self._notify("模块不存在", f"找不到模块：{module_key}")
-            return
-        if self.recorder.running:
-            self.stop_recording()
-        if self.worker and self.worker.is_alive():
-            self._notify("正在运行", "已有脚本或工作流正在执行。")
-            return
-        self._cancel_workflow_recovery()
-        self._save_activation_interval()
-
-        category = str(module_obj.get("category") or "switch")
-        # 全局模块在独立测试时按普通识别动作执行一次完整识别/动作链；否则注册
-        # 为脚本守卫后会一直常驻，且已禁用模块会在注册阶段被过滤，无法诊断。
-        action_category = "special" if category == "special" else "switch"
-        action = module_action_for_key(module_key, action_category, module_obj)
-        name = str(module_obj.get("name") or "").strip() or Path(
-            str(module_obj.get("template") or module_key).replace("\\", "/"),
-        ).stem or "未命名模块"
-        repeats = max(1, int(repeats))
-
-        self._begin_detection_run()
-        self._ensure_detection_worker()
-        hwnd = self._bound_hwnd()
-        activation_enabled, activation_signature = self._activation_settings_from_script()
-        activation_hwnd = None
-        try:
-            activation_hwnd = self._execution_activation_hwnd(
-                hwnd, activation_enabled, activation_signature,
-            )
-        except RuntimeError:
-            self._log("前置窗口未打开，已跳过前置窗口，继续执行模块测试。")
-        focus_enabled = bool(self.focus_mode_enabled_var.get())
-        activate_target = bool(self.activate_target_enabled_var.get())
-        self.execution_focus_requested = focus_enabled
-        source_screen = dict(self.script.settings.get("recorded_screen", {})) or None
-        self.workflow_stop.clear()
-        self.execution_started_at = time.perf_counter()
-        self._set_execution_progress(
-            f"模块测试 · {name} · 共执行 {repeats} 次 · 正在准备 · F12 停止"
-        )
-        self.worker = threading.Thread(
-            target=self._run_script_worker,
-            args=([action], repeats, hwnd, activation_hwnd, source_screen,
-                  focus_enabled, activate_target, 0),
-            kwargs={
-                "trigger": {}, "script_name": f"模块测试：{name}",
-                "single_action": True,
-                "activation_interval_ms": int(self.script.settings.get("activation_window_interval_ms", 0)),
-            },
-            daemon=True,
-        )
-        self.worker.start()
-        self._sound("run_start")
-        self._hide_main_for_execution()
-        self._show_execution_mini()
-        self._append_mini_step(f"独立测试模块 {name}，共 {repeats} 次。")
     def _run_current_script_impl(self, start_index: int = 0,
                                  single_action_repeats: int | None = None,
                                  segment: tuple[int, int] | None = None,
                                  segment_repeats: int = 1,
                                  partial_run: bool = False):
-        if self.recorder.running:
+        if self.recorder is not None and self.recorder.running:
             self.stop_recording()
         if self.worker and self.worker.is_alive():
             self._notify("正在运行", "已有脚本或工作流正在执行。")
@@ -606,62 +523,89 @@ class ExecutionMixin:
         self._show_execution_notice(f"{title}：{text}", duration_ms)
     def _player_notice_callback(self, text: str, duration_ms: int):
         self._ui(self._show_execution_notice, text, duration_ms)
-    def _show_execution_notice(self, text: str, duration_ms: int):
+    def _show_execution_notice(self, text: str, duration_ms: int, *, position: str | None = None, passive: bool = False):
         try:
             keep_main_hidden = self.root.state() == "withdrawn" or self.main_hidden_for_execution
         except (AttributeError, tk.TclError):
             keep_main_hidden = False
-        try:
-            position = self.floating_notice_position_var.get()
-        except (AttributeError, tk.TclError):
-            position = "顶部居中"
+        if position is None:
+            try:
+                position = self.floating_notice_position_var.get()
+            except (AttributeError, tk.TclError):
+                position = "顶部居中"
         area = get_monitor_work_area_for_window(self._app_window_hwnd()) \
             or get_primary_screen_rect()
+        self._execution_notice_passive = passive
         existing = self.execution_notice_window
         if existing is not None and existing.winfo_exists():
+            make_window_no_activate(existing.winfo_id(), click_through=False)
             self.execution_notice_label.configure(text=text)
+            existing.update_idletasks()
+            width, height = (
+                (self.execution_notice_label.winfo_reqwidth(), self.execution_notice_label.winfo_reqheight())
+                if passive else (px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT))
+            )
             x, y = floating_notice_xy(
                 position, area["width"], area["height"],
-                px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT),
+                width, height,
             )
             x += area["left"]
             y += area["top"]
-            existing.geometry(f"{px(FLOATING_NOTICE_WIDTH)}x{px(FLOATING_NOTICE_HEIGHT)}+{x}+{y}")
+            existing.geometry(f"{width}x{height}+{x}+{y}")
+            existing.attributes("-alpha", 0.95 if passive else 1.0)
             if self.execution_notice_after_id is not None:
                 existing.after_cancel(self.execution_notice_after_id)
+                self.execution_notice_after_id = None
             existing.deiconify()
             existing.lift()
+            existing.update_idletasks()
+            set_rounded_window(existing.winfo_id(), px(6))
+            if passive:
+                existing.after_idle(lambda: self._enable_notice_click_through(existing))
             if keep_main_hidden:
                 self.root.withdraw()
-            self.execution_notice_after_id = existing.after(
-                duration_ms, lambda window=existing: self._close_execution_notice(window),
-            )
+            if duration_ms > 0:
+                self.execution_notice_after_id = existing.after(
+                    duration_ms, lambda window=existing: self._close_execution_notice(window),
+                )
             return
         notice = tk.Toplevel(self.root)
         self.execution_notice_window = notice
         notice.withdraw()
         notice.overrideredirect(True)
         notice.attributes("-topmost", True)
-        notice.configure(background="#263541")
-        width, height = px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT)
+        notice.attributes("-alpha", 0.95 if passive else 1.0)
+        notice.configure(background="#101820")
+        self.execution_notice_label = tk.Label(
+            notice, text=text, foreground="#FFFFFF", background="#101820",
+            font=(FONT_FAMILY, 12, "bold"), wraplength=px(328), justify="left",
+            anchor="w", padx=px(10), pady=px(6), takefocus=False,
+        )
+        self.execution_notice_label.pack(fill="both", expand=True)
+        notice.update_idletasks()
+        width, height = (
+            (self.execution_notice_label.winfo_reqwidth(), self.execution_notice_label.winfo_reqheight())
+            if passive else (px(FLOATING_NOTICE_WIDTH), px(FLOATING_NOTICE_HEIGHT))
+        )
         x, y = floating_notice_xy(position, area["width"], area["height"], width, height)
         notice.geometry(f"{width}x{height}+{x + area['left']}+{y + area['top']}")
-        set_rounded_window(notice.winfo_id(), px(10))
-        frame = ttk.Frame(notice, padding=pad(12, 10), style="Surface.TFrame")
-        frame.pack(fill="both", expand=True)
-        self.execution_notice_label = ttk.Label(
-            frame, text=text, style="MiniText.TLabel", wraplength=px(330), justify="left",
-        )
-        self.execution_notice_label.pack(anchor="w", fill="both", expand=True)
-        notice.update_idletasks()
-        make_window_no_activate(notice.winfo_id())
+        make_window_no_activate(notice.winfo_id(), click_through=False)
         notice.deiconify()
         notice.lift()
+        notice.update_idletasks()
+        set_rounded_window(notice.winfo_id(), px(6))
+        if passive:
+            # WS_EX_TRANSPARENT 会影响子控件绘制顺序，映射并绘制文字后再启用。
+            notice.after_idle(lambda: self._enable_notice_click_through(notice))
         if keep_main_hidden:
             self.root.withdraw()
-        self.execution_notice_after_id = notice.after(
-            duration_ms, lambda window=notice: self._close_execution_notice(window),
-        )
+        if duration_ms > 0:
+            self.execution_notice_after_id = notice.after(
+                duration_ms, lambda window=notice: self._close_execution_notice(window),
+            )
+    def _enable_notice_click_through(self, notice):
+        if notice is self.execution_notice_window and self._execution_notice_passive:
+            make_window_no_activate(notice.winfo_id(), click_through=True)
     def _close_execution_notice(self, notice):
         if notice is not self.execution_notice_window:
             return
@@ -682,18 +626,18 @@ class ExecutionMixin:
         self._sound("error")
         self._notify(title, str(exc), 6000)
     def stop_all(self, from_ui: bool = False):
+        from .plugins_runtime import stop_interval_plugins
+        stop_interval_plugins(self)
         self._cancel_workflow_recovery()
         panel = getattr(self, '_ssjj_coordinates', None)
         if panel is not None and panel.monitor.status()[2]:
             panel.save()
-        if self.recorder.running:
+        if self.recorder is not None and self.recorder.running:
             self.stop_recording(discard_recent=from_ui, sound=False)
         self.workflow_stop.set()
         self.player.stop()
         self._refresh_execution_pause_controls()
-        hotkey_player = getattr(self, "hotkey_player", None)
-        if hotkey_player is not None:
-            hotkey_player.stop()
+        self._stop_hotkey_script()
         self.workflow_restart_requested = False
         self._clear_global_detect_cooldowns()
         self._clear_global_guards()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from macroflow.core.modules import module_reference_binding, action_with_live_module_binding, module_action_for_key
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
@@ -43,39 +44,8 @@ from .helpers import (
 )
 
 
-def module_reference_binding(key: str, obj: dict | None = None) -> dict:
-    """Return the stable image/module binding carried by inserted actions."""
-    obj = obj if obj is not None else (registered_module_object(key) or {})
-    raw_region = obj.get("region", [])
-    region = []
-    if isinstance(raw_region, (list, tuple)) and len(raw_region) == 4:
-        try:
-            parts = [int(part) for part in raw_region]
-        except (TypeError, ValueError):
-            parts = []
-        if len(parts) == 4 and parts[2] > 0 and parts[3] > 0:
-            region = parts
-    return {
-        "template": str(obj.get("template") or key),
-        "module_key": key,
-        "module_ref": True,
-        "module_category": str(obj.get("category") or "switch"),
-        "region_mode": "template",
-        "region": region,
-    }
 
 
-def action_with_live_module_binding(action: dict | None) -> dict:
-    """Refresh editable action fields from its current module object."""
-    updated = dict(action or {})
-    if not updated.get("module_ref"):
-        return updated
-    key = str(updated.get("module_key", "")).strip()
-    obj = registered_module_object(key) if key else None
-    if obj is None:
-        return updated
-    updated.update(module_reference_binding(key, obj))
-    return updated
 
 
 def choose_module_binding(parent, categories: tuple[str, ...]) -> dict | None:
@@ -105,32 +75,6 @@ def module_display_name(module_key: str, module_obj: dict | None = None) -> str:
     return Path(key.replace("\\", "/")).stem or "未命名模块"
 
 
-def module_action_for_key(key: str, category: str, obj: dict | None = None) -> dict:
-    """Build the live-reference action stored when a module is inserted."""
-    if category == "special":
-        return {
-            "type": "end_current_script"
-            if key == END_CURRENT_SCRIPT_LABEL
-            else "restart_workflow"
-        }
-    obj = obj if obj is not None else (registered_module_object(key) or {})
-    binding = module_reference_binding(key, obj)
-    if category in ("workflow_global", "script_global", "global"):
-        return {
-            "type": "global_detect", **binding,
-            "module_category": (
-                "workflow_global" if category == "global" else category
-            ), "delay_ms": 0,
-        }
-    action = {
-        "type": "image_match", **binding,
-        "module_category": "switch", "delay_ms": 0,
-        "on_found": "continue", "on_timeout": "continue",
-    }
-    if obj.get("recognize") == "number":
-        # 数字模块插入脚本时由行编辑框补比较值；相等默认跳转，失败默认继续下一行。
-        action["on_found"] = "jump"
-    return action
 
 
 class RecordedInputDialog(ModalDialog):
@@ -180,6 +124,9 @@ class RecordedInputDialog(ModalDialog):
         rows = ttk.Frame(body)
         rows.pack(fill="x", pady=pad(10, 0))
         ttk.Button(rows, text="重新录制…", command=self._record_again).pack(side="left")
+        ttk.Button(rows, text="插入按键", command=lambda: self._insert_step("key")).pack(side="left", padx=pad(8, 0))
+        ttk.Button(rows, text="插入鼠标", command=lambda: self._insert_step("mouse_button")).pack(side="left", padx=pad(8, 0))
+        ttk.Button(rows, text="插入延时", command=self._insert_delay).pack(side="left", padx=pad(8, 0))
         ttk.Button(rows, text="编辑", command=self._edit_selected).pack(side="left", padx=pad(8, 0))
         ttk.Button(rows, text="移除", command=self._remove_selected).pack(side="left", padx=pad(8, 0))
         ttk.Button(rows, text="上移", command=lambda: self._move_selected(-1)).pack(side="left", padx=pad(8, 0))
@@ -233,6 +180,55 @@ class RecordedInputDialog(ModalDialog):
             self.steps[index] = updated
             self._reload()
             self.listbox.selection_set(index)
+
+    def _insert_offset(self) -> float:
+        """新步骤在选中行之后，默认延时 500 ms。"""
+        selection = self._selection()
+        if not selection:
+            last = self.steps[-1] if self.steps else {}
+            return float(last.get("recorded_at_ms", 0) or 0) + 500
+        index = selection[-1]
+        previous = float(self.steps[index].get("recorded_at_ms", 0) or 0)
+        return previous + 500
+
+    def _place_step(self, step: dict):
+        selection = self._selection()
+        index = selection[-1] + 1 if selection else len(self.steps)
+        previous = float(self.steps[index - 1].get("recorded_at_ms", 0) or 0) if index else 0
+        # Explicit waits rebase the playback clock themselves; shifting their
+        # successors as well would apply the delay twice.
+        duration = (0 if step.get("type") == "delay" else
+                    max(0, float(step.get("recorded_at_ms", 0)) - previous))
+        for following in self.steps[index:]:
+            if "recorded_at_ms" in following:
+                following["recorded_at_ms"] += duration
+            if "pulse_started_at_ms" in following:
+                following["pulse_started_at_ms"] += duration
+        self.steps.insert(index, step)
+        self._reload()
+        self.listbox.selection_clear(0, "end")
+        self.listbox.selection_set(index)
+        self.listbox.see(index)
+
+    def _insert_step(self, kind: str):
+        from .recorded_steps import RecordedStepDialog
+        at = self._insert_offset()
+        if kind == "key":
+            template = {"type": "key", "vk": 87, "name": "W", "down": True,
+                        "recorded_at_ms": at, "delay_ms": 0}
+        else:
+            template = {"type": "mouse_button", "button": "left", "down": True,
+                        "recorded_at_ms": at, "delay_ms": 0}
+        step = RecordedStepDialog(self, template, delay_ms=500).show()
+        if step is not None:
+            self._place_step(step)
+
+    def _insert_delay(self):
+        from .recorded_steps import DelayInsertDialog
+        result = DelayInsertDialog(self, duration_ms=500).show()
+        if result is not None:
+            self._place_step({"type": "delay", "ms": result["duration_ms"],
+                              "recorded_at_ms": self._insert_offset() - 500, "delay_ms": 0})
 
     def _remove_selected(self):
         selection = self._selection()
@@ -350,7 +346,7 @@ class SegmentEditorMixin:
 
     def _add_segment_item(self, segment_attr="segment", listbox_attr="segment_listbox"):
         from .app_dialogs import (ScriptRefDialog)
-        from .actions import (ClickDialog, CloseAppDialog, KeyActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, TextActionDialog)
+        from .actions import (ClickDialog, CloseAppDialog, KeyActionDialog, KeySequenceDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, TextActionDialog)
         menu = tk.Menu(self, tearoff=0)
         target = (segment_attr, listbox_attr)
         menu.add_command(label="延时", command=lambda: self._add_segment_delay(*target))
@@ -359,6 +355,7 @@ class SegmentEditorMixin:
             command=lambda: self._record_segment_actions(*target),
         )
         menu.add_command(label="键盘", command=lambda: self._add_segment_dialog(KeyActionDialog, *target))
+        menu.add_command(label="组合按键", command=lambda: self._add_segment_dialog(KeySequenceDialog, *target))
         menu.add_command(label="文本", command=lambda: self._add_segment_dialog(TextActionDialog, *target))
         menu.add_command(label="点击", command=lambda: self._add_segment_dialog(ClickDialog, *target))
         menu.add_command(label="连续点击", command=lambda: self._add_segment_dialog(RepeatClickDialog, *target))
@@ -436,7 +433,7 @@ class SegmentEditorMixin:
         self._append_segment({"type": "jump_current_script_last"}, segment_attr, listbox_attr)
 
     def _add_segment_activate_window(self, segment_attr="segment", listbox_attr="segment_listbox"):
-        from .app_dialogs import (WindowPicker)
+        from macroflow.ui.dialogs.windows import WindowPicker
         selected = WindowPicker(self).show()
         if selected:
             self._append_segment({

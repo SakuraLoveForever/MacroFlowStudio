@@ -16,15 +16,13 @@ import unittest
 from unittest.mock import Mock, call, patch
 from macroflow.core.models import ACTION_ID_KEY, DEFAULT_RECORDED_SCREEN, DEFAULT_WORKFLOW_REPEAT_INTERVAL_MS, MacroScript, Workflow, clone_actions_with_new_ids, ensure_action_ids, is_global_script
 from macroflow.core.resolution import DEFAULT_RESOLUTION_STYLES, build_resolution_action, normalize_resolution_styles, resolve_resolution_style
-from macroflow.core.storage import available_script_path, backup_script, display_path, load_app_settings, load_module_images_dir, load_module_objects, load_script, load_workflow, migrate_workflow_templates, module_image_inventory, registered_module_object, remap_hotkey_script_bindings, save_app_settings, save_module_images_dir, save_module_objects, save_script, save_workflow
+from macroflow.core.storage import available_script_path, display_path, load_app_settings, load_module_images_dir, load_module_objects, load_script, load_workflow, migrate_workflow_templates, module_image_inventory, registered_module_object, remap_hotkey_script_bindings, save_app_settings, save_module_images_dir, save_module_objects, save_script, save_workflow
 from macroflow.execution.player import MacroPlayer
 import macroflow.input.wininput as wininput_module
 from macroflow.input.wininput import WindowInfo, set_display_scaling_for_window
-from macroflow.ui.app.constants import BACKUP_INTERVAL_CHOICES, BACKUP_INTERVAL_MS
 from macroflow.ui.app.main import MacroFlowApp
-from macroflow.ui.app.startup import windows_startup_command
 from macroflow.ui.app.summaries import action_summary
-import macroflow.ui.dialogs as dialog_module
+import macroflow.ui.dialogs.actions as macroflow_ui_dialogs_actions
 from macroflow.ui.dialogs.actions import SetResolutionActionDialog
 from macroflow.ui.dialogs.app_dialogs import CoordinateFlashDialog
 from macroflow.ui.dialogs.base import activate_main_after_modal, drag_selection_region, restore_modal_after_overlay, selectable_target_windows
@@ -234,29 +232,6 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(bindings[2]["script"], "scripts/方向/其他方向.json")
             self.assertEqual(bindings[3]["script"], "scripts/关卡/原方向.json")
 
-    def test_script_backup_overwrites_one_stable_copy(self):
-        with tempfile.TemporaryDirectory() as folder:
-            base = Path(folder)
-            scripts = base / "scripts"
-            backups = base / "backups"
-            scripts.mkdir()
-            source = scripts / "领取.json"
-            source.write_text('{"version": 1}', encoding="utf-8")
-            with patch("macroflow.core.storage.SCRIPTS_DIR", scripts), patch("macroflow.core.storage.SCRIPT_BACKUPS_DIR", backups):
-                first = backup_script(source)
-                source.write_text('{"version": 2}', encoding="utf-8")
-                second = backup_script(source)
-            self.assertEqual(first, second)
-            self.assertEqual(second.read_text(encoding="utf-8"), '{"version": 2}')
-            self.assertEqual(list(backups.rglob("*.json")), [second])
-
-    def test_source_startup_command_quotes_python_and_app(self):
-        with patch("sys.frozen", False, create=True):
-            command = windows_startup_command()
-        self.assertIn(Path(os.sys.executable).name, command)
-        # 源码模式下指向包入口 __main__.py（拆分前是单文件 app.py）。
-        self.assertIn(str(Path("macroflow") / "ui" / "app" / "__main__.py"), command)
-
     def test_workflow_round_trip(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "flow.json"
@@ -289,8 +264,7 @@ class StorageTests(unittest.TestCase):
             with patch("macroflow.core.storage.BASE_DIR", base), \
                  patch("macroflow.core.storage.WORKFLOWS_DIR", base / "workflows"), \
                  patch("macroflow.core.storage.SCRIPTS_DIR", base / "scripts"), \
-                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"), \
-                 patch("macroflow.core.storage.SCRIPT_BACKUPS_DIR", base / "backups" / "scripts"):
+                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"):
                 migrated = migrate_workflow_templates()
                 # 幂等：第二次调用不再迁移。
                 second = migrate_workflow_templates()
@@ -319,8 +293,7 @@ class StorageTests(unittest.TestCase):
             with patch("macroflow.core.storage.BASE_DIR", base), \
                  patch("macroflow.core.storage.WORKFLOWS_DIR", base / "workflows"), \
                  patch("macroflow.core.storage.SCRIPTS_DIR", base / "scripts"), \
-                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"), \
-                 patch("macroflow.core.storage.SCRIPT_BACKUPS_DIR", base / "backups" / "scripts"):
+                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"):
                 migrated = migrate_workflow_templates()
             self.assertEqual(migrated, 1)
             self.assertTrue((base / "workflows" / "新模板.json").is_file())
@@ -332,8 +305,7 @@ class StorageTests(unittest.TestCase):
             with patch("macroflow.core.storage.BASE_DIR", base), \
                  patch("macroflow.core.storage.WORKFLOWS_DIR", base / "workflows"), \
                  patch("macroflow.core.storage.SCRIPTS_DIR", base / "scripts"), \
-                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"), \
-                 patch("macroflow.core.storage.SCRIPT_BACKUPS_DIR", base / "backups" / "scripts"):
+                 patch("macroflow.core.storage.IMAGES_DIR", base / "images"):
                 self.assertEqual(migrate_workflow_templates(), 0)  # 无旧文件
         with tempfile.TemporaryDirectory() as empty:
             with patch("macroflow.core.storage.BASE_DIR", Path(empty)):
@@ -385,7 +357,7 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(loaded["activation_window_draft_enabled"])
             self.assertEqual(loaded["activation_window_draft"]["title"], "最近前置窗口")
             self.assertNotIn("execution_mode", loaded)
-            self.assertEqual(loaded["backup_interval"], "1周")
+            self.assertNotIn("backup_interval", loaded)
             self.assertNotIn("backup_interval_minutes", loaded)
 
     def test_last_script_path_defaults_to_empty(self):
@@ -398,12 +370,6 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(loaded["last_script_path"], "")
         self.assertEqual(loaded["main_window_geometry"], "")
         self.assertIsNone(loaded["editor_draft"])
-
-    def test_backup_interval_is_limited_to_three_fixed_choices(self):
-        self.assertEqual(BACKUP_INTERVAL_CHOICES, ("1h", "1天", "1周"))
-        self.assertEqual(BACKUP_INTERVAL_MS["1h"], 3_600_000)
-        self.assertEqual(BACKUP_INTERVAL_MS["1天"], 86_400_000)
-        self.assertEqual(BACKUP_INTERVAL_MS["1周"], 604_800_000)
 
     def test_from_dict_migrates_legacy_global_detect_action_to_trigger(self):
         # 旧脚本：全局检测是一条动作。迁移后进入 settings["trigger"]，动作被移除。
@@ -1096,7 +1062,7 @@ class ResolutionActionTests(unittest.TestCase):
         dialog.destroy.assert_called_once()
 
     def test_resolution_dialog_uses_content_fit_for_long_window_details(self):
-        source = inspect.getsource(dialog_module.SetResolutionActionDialog)
+        source = inspect.getsource(macroflow_ui_dialogs_actions.SetResolutionActionDialog)
 
         self.assertIn("fit_window_to_content(", source)
 

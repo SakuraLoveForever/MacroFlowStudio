@@ -5,8 +5,8 @@ from macroflow.core.image_match import (
     stabilize_row_offsets,
 )
 from macroflow.core.storage import (
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, load_script, registered_module_object,
-    registered_template_region, resolve_path,
+    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_RECHECK_DELAY_MS, load_script,
+    registered_module_object, registered_template_region, resolve_path,
 )
 from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
@@ -44,6 +44,18 @@ from .control import (
 
 class ImageMixin:
     """识图动作：等待命中、超时分支、备用模块与二次识别。"""
+
+    def _recognize_module(self, obj, probe):
+        result = probe()
+        if obj and obj.get("recheck_enabled"):
+            delay_ms = max(0, int(obj.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS)))
+            self._trace(
+                f"首次识别结束，等待 {delay_ms / 1000:g} 秒后再次识别，以复查结果执行。",
+                module_detail=True,
+            )
+            self._wait(delay_ms)
+            result = probe()
+        return result
 
     def _execute_timed_detection(self, action, obj, template, region, hwnd, script_stack, depth):
         condition = obj.get("timed_condition", "absent")
@@ -117,25 +129,31 @@ class ImageMixin:
                 )
             elif str(module_obj.get("template", "")).strip():
                 template = resolve_path(str(module_obj["template"]))
+        if module_obj is not None and module_obj.get("category") == "recognition":
+            # Reuse the condition-only image/OCR probe; never dispatch module actions.
+            if self.stop_event.is_set():
+                raise PlaybackStopped()
+            try:
+                matched = self._match_fallback_module(module_obj, hwnd) is not None
+            except CAPTURE_ERRORS as exc:
+                self._note_capture_failure(exc)
+                matched = False
+            return self._module_result_route(
+                action, module_obj, succeeded=matched, hwnd=hwnd,
+                script_stack=script_stack, depth=depth,
+            )
+        if module_obj is not None and module_obj.get("pure_action"):
+            return self._module_result_route(action, module_obj, succeeded=False,
+                                             result_label="纯动作模块不能识图")
         if module_obj is not None:
-            # 模块对象自带的「进入模块前延时」：引用该模块的每一行都先等这段
-            # 再开始识别；与模块对象的「延时」（识别成功后、执行动作前）不同。
-            start_delay_ms = max(0, int(module_obj.get("start_delay_ms", 0) or 0))
-            if start_delay_ms:
-                start_label = (
-                    str(module_obj.get("name") or "").strip()
-                    or Path(template).name or "模块"
-                )
-                self._trace(
-                    f"模块 {start_label} 进入前延时 {start_delay_ms} ms",
-                    module_detail=True,
-                )
-                self._wait(start_delay_ms)
+            start_delay = max(0, int(module_obj.get("start_delay_ms", 0)))
+            if start_delay:
+                self._trace(f"模块识别前强制等待 {start_delay} ms", module_detail=True)
+                self._wait(start_delay)
         if module_obj is not None and module_obj.get("recognize") == "none":
             module_label = str(module_obj.get("name") or "无需识图模块")
             self._status(f"无需识图，直接执行模块：{module_label}")
             self._trace(f"模块 {module_label} 无需识图，直接执行", module_detail=True)
-            self._wait(max(0, int(module_obj.get("delay_ms", 0))))
             result = self._after_module_success(
                 module_obj, {}, hwnd, script_stack, depth,
             )
@@ -335,7 +353,9 @@ class ImageMixin:
                 if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
                     raise PlaybackStopped()
                 try:
-                    recognized, ocr_matches = recognize_region_with_boxes(recognition_region)
+                    recognized, ocr_matches = self._recognize_module(
+                        module_obj, lambda: recognize_region_with_boxes(recognition_region),
+                    )
                 except CAPTURE_ERRORS as exc:
                     self._note_capture_failure(exc)
                     capture_failed = True
@@ -365,7 +385,6 @@ class ImageMixin:
                         self._status(
                             f"识别文字命中，循环点击直到消失：{recognized[:40] or '（无文字）'}"
                         )
-                    self._wait(max(0, int(module_obj.get("delay_ms", 0))))
                     result = self._after_module_success(
                         module_obj, match, hwnd, script_stack, depth,
                     )
@@ -400,8 +419,10 @@ class ImageMixin:
             else:
                 # 主模板始终在自己的区域检测；备用激活后两者同时检测（各自区域）。
                 try:
-                    match = find_template(template, threshold, recognition_region,
-                                          scale=self._template_scale())
+                    match = self._recognize_module(module_obj, lambda: find_template(
+                        template, threshold, recognition_region,
+                        scale=self._template_scale(),
+                    ))
                 except CAPTURE_ERRORS as exc:
                     self._note_capture_failure(exc)
                     capture_failed = True
@@ -417,7 +438,6 @@ class ImageMixin:
                     show_overlay(
                         match["x"], match["y"], match["width"], match["height"],
                     )
-                    self._wait(max(0, int(module_obj.get("delay_ms", 0))))
                     result = self._after_module_success(
                         module_obj, match, hwnd, script_stack, depth,
                     )
@@ -633,14 +653,10 @@ class ImageMixin:
             self._wait(interval_ms)
 
         found_delay = max(0, int(
-            module_obj.get("delay_ms", 0) if module_obj is not None
+            0 if module_obj is not None
             else action.get("found_delay_ms", 0)
         ))
-        delay_overlay = (
-            module_obj is not None and found_delay > 0 and match
-            and all(key in match for key in ("x", "y", "width", "height"))
-        )
-        if not text_module and not delay_overlay:
+        if not text_module:
             show_overlay(match["x"], match["y"], match["width"], match["height"])
         if text_module:
             self._status(f"识别文字命中：{recognized[:40]}")
@@ -654,17 +670,7 @@ class ImageMixin:
                 f"({match['center_x']}, {match['center_y']})",
                 3500,
             )
-        remaining_delay = found_delay
-        while delay_overlay and remaining_delay > 0:
-            show_overlay(
-                match["x"], match["y"], match["width"], match["height"],
-                label=f"{math.ceil(remaining_delay / 1000)}s",
-            )
-            wait_ms = min(1000, remaining_delay)
-            self._wait(wait_ms)
-            remaining_delay -= wait_ms
-        if not delay_overlay:
-            self._wait(found_delay)
+        self._wait(found_delay)
         if module_obj is not None:
             # 实时引用：动作 B 由模块对象决定（点击识别区域/自定义/继续/二次识别/代码段）。
             result = self._after_module_success(module_obj, match, hwnd,

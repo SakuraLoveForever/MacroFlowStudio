@@ -25,7 +25,10 @@ from macroflow.core.storage import resolve_path
 from macroflow.execution.player import MacroPlayer
 from macroflow.execution.player.base import get_playback_screen_rect, screen_template_scale
 from macroflow.ui.app.summaries import action_summary
-import macroflow.ui.dialogs as dialog_module
+import macroflow.ui.dialogs.helpers as macroflow_ui_dialogs_helpers
+import macroflow.ui.dialogs.module_objects as macroflow_ui_dialogs_module_objects
+import macroflow.ui.dialogs.recognition as macroflow_ui_dialogs_recognition
+import macroflow.ui.dialogs.segments as macroflow_ui_dialogs_segments
 from macroflow.ui.dialogs.actions import ClickDialog, CloseAppDialog, JumpActionDialog, MouseMoveDialog, OpenAppDialog, RepeatClickDialog, ScrollDialog, ScrollSequenceDialog, TextActionDialog, edit_action
 from macroflow.ui.dialogs.base import show_floating_notice
 from macroflow.ui.dialogs.helpers import image_action_option_defaults, image_click_target_defaults, image_found_jump_target_options, image_jump_target_options, image_timeout_option_defaults, image_timeout_option_label, image_timeout_option_value, segment_row_label
@@ -1329,7 +1332,7 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.result["not_equal_jump_action_id"], "aid2")
 
     def test_multi_condition_click_dialog_saves_three_selectable_conditions(self):
-        form_class = getattr(dialog_module, "MultiConditionClickDialog", None)
+        form_class = getattr(macroflow_ui_dialogs_recognition, "MultiConditionClickDialog", None)
         self.assertIsNotNone(form_class, "缺少固定三条件多条件识图点击配置窗口")
         form = form_class.__new__(form_class)
         form.master = Mock()
@@ -1408,7 +1411,7 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.result["failure_actions"][0]["text"], "多条件没命中")
 
     def test_multi_condition_fields_follow_type_and_ocr_mode(self):
-        states = getattr(dialog_module, "multi_condition_field_states", None)
+        states = getattr(macroflow_ui_dialogs_helpers, "multi_condition_field_states", None)
         self.assertIsNotNone(states, "缺少多条件输入控件状态规则")
         self.assertEqual(states("image", "text"), {
             "image": True, "ocr_mode": False, "ocr_text": False,
@@ -1424,7 +1427,7 @@ class OcrTests(unittest.TestCase):
         })
 
     def test_row_list_condition_fields_follow_selected_type(self):
-        states = getattr(dialog_module, "row_list_condition_field_states", None)
+        states = getattr(macroflow_ui_dialogs_helpers, "row_list_condition_field_states", None)
         self.assertIsNotNone(states, "缺少列表逐行条件输入控件状态规则")
         self.assertEqual(states("image"), {
             "module": True, "text": False, "match_mode": False,
@@ -1440,13 +1443,13 @@ class OcrTests(unittest.TestCase):
         })
 
     def test_module_display_name_does_not_show_stable_module_id(self):
-        display_name = getattr(dialog_module, "module_display_name", None)
+        display_name = getattr(macroflow_ui_dialogs_segments, "module_display_name", None)
         self.assertIsNotNone(display_name, "缺少模块显示名称解析函数")
         with package_patch('dialogs', 'registered_module_object', return_value={'name': '右侧条件模块', 'template': 'images/right.png'}):
             self.assertEqual(display_name("module:68ce87a9d03541d7a9abc4a817e794d9"), "右侧条件模块")
 
     def test_row_list_condition_module_selection_displays_name_but_keeps_stable_key(self):
-        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        form_class = getattr(macroflow_ui_dialogs_recognition, "RowListConditionClickDialog", None)
         self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
         form = form_class.__new__(form_class)
         form.condition_field_widgets = {"right": {}}
@@ -1462,7 +1465,7 @@ class OcrTests(unittest.TestCase):
         form.right_module_name.set.assert_called_once_with("右侧条件模块")
 
     def _row_list_dialog_form(self):
-        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        form_class = getattr(macroflow_ui_dialogs_recognition, "RowListConditionClickDialog", None)
         self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
         form = form_class.__new__(form_class)
         form.master = Mock()
@@ -1575,11 +1578,11 @@ class OcrTests(unittest.TestCase):
         ttkbootstrap.style.Style()
         try:
             for dialog_class, kwargs in (
-                (dialog_module.RowListConditionClickDialog, {"action": {}, "actions": []}),
-                (dialog_module.ImageActionDialog, {"action": {}, "actions": []}),
-                (dialog_module.OcrActionDialog, {"action": {}, "actions": []}),
-                (dialog_module.OcrCompareActionDialog, {"action": {}, "actions": []}),
-                (dialog_module.MultiConditionClickDialog, {"action": {}}),
+                (macroflow_ui_dialogs_recognition.RowListConditionClickDialog, {"action": {}, "actions": []}),
+                (macroflow_ui_dialogs_recognition.ImageActionDialog, {"action": {}, "actions": []}),
+                (macroflow_ui_dialogs_recognition.OcrActionDialog, {"action": {}, "actions": []}),
+                (macroflow_ui_dialogs_recognition.OcrCompareActionDialog, {"action": {}, "actions": []}),
+                (macroflow_ui_dialogs_recognition.MultiConditionClickDialog, {"action": {}}),
             ):
                 dialog = dialog_class(root, **kwargs)
                 try:
@@ -1615,14 +1618,14 @@ class OcrTests(unittest.TestCase):
         module_obj = {"name": "示例模块", "template": "images/demo.png", "blocking": True}
         cases = (
             (
-                dialog_module.ModuleReferenceDelayDialog,
+                macroflow_ui_dialogs_module_objects.ModuleReferenceDelayDialog,
                 {"action": {
                     "type": "image_match", "module_ref": True,
                     "module_key": "module:demo", "template": "images/demo.png",
                     "on_found": "continue", "on_timeout": "continue",
                 }, "actions": []},
             ),
-            (dialog_module.GlobalDetectDialog, {"action": None, "jump": True}),
+            (macroflow_ui_dialogs_recognition.GlobalDetectDialog, {"action": None, "jump": True}),
         )
         try:
             for dialog_class, kwargs in cases:
@@ -1635,7 +1638,7 @@ class OcrTests(unittest.TestCase):
                         f"{dialog_class.__name__} 未使用可滚动表单",
                     )
                     descendants = list(self._dialog_descendants(dialog))
-                    ttk_module = dialog_module.ttk
+                    ttk_module = macroflow_ui_dialogs_recognition.ttk
                     self.assertTrue(
                         any(isinstance(widget, ttk_module.Scrollbar) for widget in descendants),
                         f"{dialog_class.__name__} 缺少滚动条",
@@ -1660,7 +1663,7 @@ class OcrTests(unittest.TestCase):
             "ImageActionDialog", "OcrActionDialog", "OcrCompareActionDialog",
             "MultiConditionClickDialog", "RowListConditionClickDialog",
         ):
-            dialog_class = getattr(dialog_module, name)
+            dialog_class = getattr(macroflow_ui_dialogs_recognition, name)
             self.assertTrue(
                 hasattr(dialog_class, "_build_failure_segment_controls"),
                 f"{name} 缺少“失败后执行代码段”入口",
@@ -1738,11 +1741,11 @@ class OcrTests(unittest.TestCase):
 
     def test_row_list_coordinate_parser_rejects_empty_components_and_accepts_signed_origin(self):
         with self.assertRaises(ValueError):
-            dialog_module.RowListConditionClickDialog._parse_region(
+            macroflow_ui_dialogs_recognition.RowListConditionClickDialog._parse_region(
                 "100,,200,160,340", "列表区域",
             )
         self.assertEqual(
-            dialog_module.RowListConditionClickDialog._parse_region(
+            macroflow_ui_dialogs_recognition.RowListConditionClickDialog._parse_region(
                 "-320,+180,160,340", "列表区域",
             ),
             [-320, 180, 160, 340],
@@ -1791,7 +1794,7 @@ class OcrTests(unittest.TestCase):
                 form.destroy.assert_not_called()
 
     def test_multi_condition_click_dialog_has_scrollable_form(self):
-        form_class = getattr(dialog_module, "MultiConditionClickDialog", None)
+        form_class = getattr(macroflow_ui_dialogs_recognition, "MultiConditionClickDialog", None)
         self.assertIsNotNone(form_class, "缺少固定三条件多条件识图点击配置窗口")
         init_source = inspect.getsource(form_class.__init__)
         scroll_source = inspect.getsource(form_class._scroll_form)
@@ -1802,7 +1805,7 @@ class OcrTests(unittest.TestCase):
         self.assertIn("yview_scroll", scroll_source)
 
     def test_row_list_condition_click_dialog_has_scrollable_form(self):
-        form_class = getattr(dialog_module, "RowListConditionClickDialog", None)
+        form_class = getattr(macroflow_ui_dialogs_recognition, "RowListConditionClickDialog", None)
         self.assertIsNotNone(form_class, "缺少列表逐行条件点击配置窗口")
         init_source = inspect.getsource(form_class.__init__)
         self.assertIn("tk.Canvas", init_source)

@@ -4,18 +4,23 @@ import unittest
 import struct
 import threading
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from tests.helpers.core import add_src_to_path
 
-from macroflow.execution.ssjj_state import PlayerState, SSJJReader
+from macroflow.execution import ssjj_navigation
+from macroflow.execution.ssjj_state import (
+    GameNotForeground, GameUnavailable, PlayerState, SSJJReader,
+)
+from macroflow.execution.player import MacroPlayer
 from macroflow.execution.ssjj_navigation import (
     Route, steering, record_route, RouteContext,
 )
 
 
 def state(x=0, y=0, z=0, yaw=0, map_id=100001, dead=False):
-    return PlayerState(map_id, (x, y, z), yaw, dead, True, 1)
+    return PlayerState(map_id, (x, y, z), yaw, dead, True, 1, 0)
 
 
 class RouteTests(unittest.TestCase):
@@ -70,6 +75,122 @@ class StateLayoutTests(unittest.TestCase):
         for address, size in [(0, 8), (0x10000, 0), (0x10000, 8_000_001)]:
             with self.assertRaisesRegex(RuntimeError, '范围'):
                 reader.read(address, size)
+
+    def test_absent_player_or_map_reports_not_in_match(self):
+        # 大厅/加载中没有本人角色或房间数据：报“没进对局”，而不是底层的“无效内存范围”。
+        reader = SSJJReader.__new__(SSJJReader)
+        reader.ui = 1
+        reader.contexts = 1
+        reader.static = lambda klass: 0
+        reader.fields = lambda klass: {'MyPlayerEntity': 0, '_sharedInstance': 0}
+        reader.ptr = lambda address: 0
+        with self.assertRaisesRegex(RuntimeError, '尚未进入对局'):
+            reader.snapshot()
+        with self.assertRaisesRegex(RuntimeError, '尚未进入对局'):
+            reader.map_id()
+        with self.assertRaisesRegex(RuntimeError, '尚未进入对局'):
+            reader.components(0)
+
+    def test_destroying_entities_are_skipped_instead_of_raising(self):
+        # 生成/销毁中的实体组件数组或对象头为空：跳过，不能读地址 0 报错。
+        reader = SSJJReader.__new__(SSJJReader)
+        reader.field = lambda obj, name: 0x20000
+        reader.ptr = lambda address: 0
+        self.assertEqual(reader.components(0x10000), [])
+        self.assertEqual(reader.classname(0), '')
+        reader.ptr = lambda address: 0x30000 if address == 0x20000 else (
+            2 if address == 0x30018 else 0)
+        reader.read = lambda address, size: struct.pack('<QQ', 0x40000, 0)
+        self.assertEqual(reader.components(0x10000), [])
+
+    def test_snapshot_retries_transient_read_failures(self):
+        # 进图/重生瞬间实体指针会短暂失效：重试几次，不要一帧失败就停整段跑图。
+        reader = SSJJReader.__new__(SSJJReader)
+        calls = []
+
+        def snapshot(**kwargs):
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError('无效的游戏内存范围')
+            return state(1, 2, 3)
+
+        reader.snapshot = snapshot
+        with patch('macroflow.execution.ssjj_state.time.sleep'):
+            value = reader.snapshot_stable()
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(value.position, (1, 2, 3))
+
+    def test_snapshot_stable_reports_attempts_when_reads_keep_failing(self):
+        reader = SSJJReader.__new__(SSJJReader)
+        reader.snapshot = Mock(side_effect=RuntimeError('无效的游戏内存范围'))
+        with patch('macroflow.execution.ssjj_state.time.sleep'):
+            with self.assertRaisesRegex(RuntimeError, '已重试 2 次'):
+                reader.snapshot_stable(attempts=2)
+        self.assertEqual(reader.snapshot.call_count, 2)
+
+
+class ForegroundTests(unittest.TestCase):
+    """前置窗口常绑定启动器；跑图前应自己把战斗端窗口切到前台。"""
+
+    def reader(self, foreground):
+        reader = SSJJReader.__new__(SSJJReader)
+        reader.pid = 42
+        reader.user = SimpleNamespace(
+            GetForegroundWindow=lambda: 1,
+            IsWindowVisible=lambda hwnd: True,
+            GetTopWindow=lambda hwnd: 0,
+            EnumChildWindows=lambda hwnd, callback, data: True,
+            GetWindowRect=lambda hwnd, rect: False,
+            GetWindowThreadProcessId=lambda hwnd, ref: setattr(
+                ref._obj, 'value', foreground['pid']))
+        return reader
+
+    def window(self, name='SSJJ_BattleClient_Unity.exe', size=(800, 600)):
+        from macroflow.input.wininput import WindowInfo
+        return WindowInfo(99, '生死狙击微端战斗', 'UnityWndClass',
+                          f'E:\\SSJJ-4399\\MicroClient64\\{name}', (0, 0, *size), size)
+
+    def test_foreground_check_activates_the_battle_window(self):
+        foreground = {'pid': 7}
+        reader = self.reader(foreground)
+        seen = []
+
+        def activate(hwnd):
+            seen.append(hwnd)
+            foreground['pid'] = 42
+            return True
+
+        with patch('macroflow.input.wininput.enum_windows', return_value=[self.window()]), \
+                patch('macroflow.input.wininput.activate_window', side_effect=activate):
+            reader.require_foreground()
+        self.assertEqual(seen, [99])
+
+    def test_launcher_window_is_not_used_as_the_game_window(self):
+        foreground = {'pid': 7}
+        reader = self.reader(foreground)
+        with patch('macroflow.input.wininput.enum_windows',
+                   return_value=[self.window('MicroClient.exe')]), \
+                patch('macroflow.input.wininput.activate_window') as activate:
+            with self.assertRaisesRegex(RuntimeError, '游戏不在前台'):
+                reader.require_foreground()
+        activate.assert_not_called()
+
+    def test_failed_activation_explains_and_recording_never_steals_focus(self):
+        foreground = {'pid': 7}
+        reader = self.reader(foreground)
+        with patch('macroflow.input.wininput.enum_windows', return_value=[self.window()]), \
+                patch('macroflow.input.wininput.activate_window', return_value=False) as activate:
+            with self.assertRaisesRegex(RuntimeError, '点一下游戏画面'):
+                reader.require_foreground(activate=False)
+            activate.assert_not_called()
+            with self.assertRaisesRegex(RuntimeError, '已尝试切到游戏窗口'):
+                reader.require_foreground()
+
+    def test_game_in_foreground_skips_activation(self):
+        reader = self.reader({'pid': 42})
+        with patch('macroflow.input.wininput.activate_window') as activate:
+            reader.require_foreground()
+        activate.assert_not_called()
 
 
 class InputBoundaryTests(unittest.TestCase):
@@ -142,6 +263,8 @@ class InputBoundaryTests(unittest.TestCase):
 
     def test_continuous_forward_sends_one_down_and_turns_while_held(self):
         context = self.context()
+        trace = []
+        context.player.on_log = trace.append
         with patch('macroflow.input.wininput.send_key') as key, patch(
             'macroflow.input.wininput.send_move_relative'
         ) as move:
@@ -153,7 +276,35 @@ class InputBoundaryTests(unittest.TestCase):
             self.assertIn(87, context.player._held_keys)
             context.release()
             self.assertEqual(key.call_args.args, (87, False))
+        context.close()
         self.assertEqual(context.player._held_keys, set())
+        self.assertEqual(sum('W 按下已提交' in line for line in trace), 1)
+        self.assertEqual(sum('W 松开' in line for line in trace), 1)
+
+    def test_blocked_input_trace_cannot_block_watchdog_release_or_run_in_watchdog(self):
+        context = self.context()
+        released = threading.Event()
+        messages, threads, observed = [], [], []
+
+        def trace(message):
+            messages.append(message)
+            threads.append(threading.current_thread())
+            if 'W 按下' in message:
+                observed.append(released.wait(.4))
+
+        def send(vk, down):
+            if not down:
+                released.set()
+
+        context.player.on_log = trace
+        with patch('macroflow.input.wininput.send_key', side_effect=send):
+            context.move(forward=True)
+            self.assertFalse(context.forward)
+            context.checkpoint()
+        self.assertEqual(observed, [True])
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(all(thread is threading.main_thread() for thread in threads))
+        self.assertIn('W 松开', messages[-1])
 
     def test_pause_releases_before_waiting_for_resume(self):
         player = self.player()
@@ -168,6 +319,19 @@ class InputBoundaryTests(unittest.TestCase):
             context.checkpoint()
             self.assertEqual(key.call_args.args, (87, False))
         self.assertEqual(player._held_keys, set())
+
+    def test_vertical_input_uses_the_same_validated_boundary(self):
+        context = self.context()
+        with patch('macroflow.input.wininput.send_move_relative') as move:
+            context.move(dy=-16)
+            move.assert_called_once_with(0, -16)
+            for value in (True, .5, 32768):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    context.move(dy=value)
+            context.reader.foreground = False
+            with self.assertRaisesRegex(RuntimeError, '前台'):
+                context.move(dy=16)
+            self.assertEqual(move.call_count, 1)
 
     def test_guard_releases_before_handler_and_settle_wait(self):
         player = self.player()
@@ -234,6 +398,59 @@ class FakeReader:
     def snapshot(self):
         return self.sample
 
+    def snapshot_stable(self):
+        return self.snapshot()
+
     def require_foreground(self):
         if not self.foreground:
-            raise RuntimeError('游戏必须在前台')
+            raise GameNotForeground('游戏必须在前台')
+
+
+class CoordinateRouteUnavailableTests(unittest.TestCase):
+    """坐标跑图碰上「不在这一局游戏里」时跳过，而不是让整条脚本异常收尾。"""
+
+    def player(self):
+        player = MacroPlayer()
+        self.logs = []
+        player.on_log = self.logs.append
+        return player
+
+    def test_the_route_is_skipped_when_the_game_is_not_in_the_foreground(self):
+        class Reader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def require_foreground(self, *, activate=True):
+                raise GameNotForeground('游戏不在前台：请点一下游戏画面后重试')
+
+        player = self.player()
+        with patch.object(ssjj_navigation, 'SSJJReader', Reader):
+            result = ssjj_navigation.run_route_action(
+                player, {'map_id': 100001, 'points': [(0, 0, 0), (300, 0, 0)]})
+        self.assertIsNone(result)
+        self.assertTrue(any('跳过坐标跑图' in message for message in self.logs))
+
+    def test_a_map_change_mid_route_skips_the_remaining_path(self):
+        class Reader:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def require_foreground(self, *, activate=True):
+                return None
+
+        def follow(context, route, **kwargs):
+            raise GameUnavailable('地图已变化，停止跑图')
+
+        player = self.player()
+        with patch.object(ssjj_navigation, 'SSJJReader', Reader), \
+                patch.object(ssjj_navigation, 'follow_route', side_effect=follow):
+            result = ssjj_navigation.run_route_action(
+                player, {'map_id': 100001, 'points': [(0, 0, 0), (300, 0, 0)]})
+        self.assertIsNone(result)
+        self.assertTrue(any('坐标跑图中断' in message for message in self.logs))

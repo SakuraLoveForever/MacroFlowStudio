@@ -1,0 +1,94 @@
+void __fastcall fcn.004a5180(int param_1,int param_2)
+
+{
+    int iVar1;
+
+    iVar1 = *0xbb1b9c;
+    if (*0xbb1b80 == NULL) {
+        if (*0xbb1b9c != 0) {
+            *(*0xbb1b9c + 0x300) = param_1;
+            *(iVar1 + 0x304) = param_2;
+            *(iVar1 + 0x308) = 0xffffffff;
+            *(iVar1 + 0x30c) = 0;
+            *(iVar1 + 0x310) = 0;
+        }
+    }
+    else if ((param_1 != *0xbb1ea8) || (param_2 != *0xb9456c)) {
+        *0xb9456c = param_2;
+        *0xbb1ea8 = param_1;
+        if (param_1 - 0x61U < 0x1a) {
+            (**0xbb1b80)(param_1 + -0x20,param_2);
+            return;
+        }
+        if (9 < param_1 - 0x30U) {
+            if (param_1 - 0x11aU < 0xc) {
+                (**0xbb1b80)(param_1 + -0xaa,param_2);
+                return;
+            }
+            if (param_1 < 0x112) {
+                if (param_1 == 0x111) {
+                    (**0xbb1b80)(0x26,param_2);
+                    return;
+                }
+    //switch table (25 cases) at 0x4a5340
+                switch(param_1) {
+                case 8:
+                    (**0xbb1b80)(8,param_2);
+                    return;
+                case 9:
+                    (**0xbb1b80)(9,param_2);
+                    return;
+                case 0xd:
+                    (**0xbb1b80)(0xd,param_2);
+                    return;
+                case 0x1b:
+                    (**0xbb1b80)(0x1b,param_2);
+                    return;
+                case 0x20:
+                    (**0xbb1b80)(0x20,param_2);
+                    return;
+                }
+            }
+            else {
+    //switch table (52 cases) at 0x4a5374
+                switch(param_1) {
+                case 0x112:
+                    (**0xbb1b80)(0x28,param_2);
+                    return;
+                case 0x113:
+                    (**0xbb1b80)(0x25,param_2);
+                    return;
+                case 0x114:
+                    (**0xbb1b80)(0x27,param_2);
+                    return;
+                case 0x12d:
+                    (**0xbb1b80)(0x14,param_2);
+                    return;
+                case 0x12f:
+                case 0x130:
+                    (**0xbb1b80)(0xa0,param_2);
+                    return;
+                case 0x131:
+                case 0x132:
+                    (**0xbb1b80)(0xa2,param_2);
+                    return;
+                case 0x133:
+                case 0x134:
+                    (**0xbb1b80)(0xa4,param_2);
+                    return;
+                case 0x143:
+                    (**0xbb1b80)(1,param_2);
+                    return;
+                case 0x144:
+                    (**0xbb1b80)(2,param_2);
+                    return;
+                case 0x145:
+                    param_1 = 4;
+                }
+            }
+        }
+        (**0xbb1b80)(param_1,param_2);
+        return;
+    }
+    return;
+}

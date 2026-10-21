@@ -374,20 +374,83 @@ class ScreenRegionPicker:
         self._restore_windows()
 
 
-class ScreenProcessPicker(ScreenRegionPicker):
-    """Live process picker with a click-through tip and scoped input listeners."""
+class ScreenProcessPicker:
+    """Pick a live process without unmapping the application's modal windows."""
 
     def __init__(self, owner, main, on_result, tip_text: str = "",
                  hidden_windows: list | None = None, full_path: bool = False):
-        super().__init__(owner, main, on_result, tip_text, hidden_windows)
+        self.owner = owner
+        self.main = main
+        self.on_result = on_result
+        self.tip_text = tip_text
+        self.overlay = None
+        self.hidden_windows = list(dict.fromkeys(
+            window for window in [*(hidden_windows or []), main, owner]
+            if window is not None
+        ))
+        self.hidden_settings: list[tuple[tk.Misc, float, bool]] = []
         self.full_path = full_path
         self.events = SimpleQueue()
         self.mouse_listener = None
         self.keyboard_listener = None
+        self.start_id = None
         self.poll_id = None
+        self._started = False
         self._closed = False
 
+    def start(self):
+        if self._started or self._closed:
+            return
+        self._started = True
+        try:
+            for window in self.hidden_windows:
+                if window.state() in ("normal", "zoomed"):
+                    self.hidden_settings.append((
+                        window, float(window.attributes("-alpha")),
+                        bool(window.attributes("-disabled")),
+                    ))
+            if self.owner is not None:
+                self.owner.grab_release()
+            # Tk remaps transient children and rebuilds their native wrappers
+            # when a withdrawn parent returns. Keep the entire chain mapped.
+            # Windows alpha-zero layered windows also pass mouse hit testing.
+            for window, _alpha, _disabled in reversed(self.hidden_settings):
+                # Keep disabled separate: combining the first alpha/style change
+                # with it makes Tk skip EnableWindow (WmAttributesCmd).
+                window.attributes("-disabled", True)
+                window.attributes("-alpha", 0.0)
+            self.main.update_idletasks()
+            self.start_id = self.main.after(100, self._show_overlay)
+        except Exception as exc:
+            self.close()
+            show_floating_notice(self.owner, "无法选取进程", str(exc))
+
+    def _restore_windows(self):
+        windows, self.hidden_settings = self.hidden_settings, []
+        for window, alpha, disabled in windows:
+            try:
+                window.attributes("-alpha", alpha)
+                window.attributes("-disabled", disabled)
+            except tk.TclError:
+                pass
+        if self.owner is not None:
+            try:
+                self.owner.lift()
+                self.owner.focus_force()
+                self.owner.grab_set()
+            except tk.TclError:
+                pass
+
+    def _destroy_overlay(self):
+        overlay, self.overlay = self.overlay, None
+        if overlay is not None:
+            try:
+                overlay.destroy()
+            except tk.TclError:
+                pass
+
     def _show_overlay(self):
+        self.start_id = None
         if self._closed:
             return
         try:
@@ -488,13 +551,15 @@ class ScreenProcessPicker(ScreenRegionPicker):
                     listener.stop()
                 except (OSError, RuntimeError):
                     pass
-        if self.poll_id is not None:
-            try:
-                self.main.after_cancel(self.poll_id)
-            except tk.TclError:
-                pass
-            self.poll_id = None
-        super().close()
+        for timer in (self.start_id, self.poll_id):
+            if timer is not None:
+                try:
+                    self.main.after_cancel(timer)
+                except tk.TclError:
+                    pass
+        self.start_id = self.poll_id = None
+        self._destroy_overlay()
+        self._restore_windows()
 
 
 class ScreenOffsetPicker(ScreenRegionPicker):

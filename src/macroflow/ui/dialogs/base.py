@@ -245,10 +245,9 @@ def restore_modal_after_overlay(dialog, main, previous_main_state: str) -> bool:
         show_window_no_activate(int(main.winfo_id()))
     except (TypeError, ValueError, tk.TclError):
         pass
-    try:
-        dialog.transient(main)
-    except tk.TclError:
-        pass
+    # ModalDialog already established the transient owner at creation. On
+    # Windows, setting it again (even unchanged) destroys/recreates the native
+    # wrapper via Tk's UpdateWrapper; keep it intact while restoring contents.
     try:
         dialog.deiconify()
         dialog.update_idletasks()
@@ -458,7 +457,7 @@ def key_to_vk(text: str) -> tuple[int, str]:
     # 单个字符优先于纯数字：按键捕获得到的数字键（如 "0" = VK 0x30）
     # 必须按字符解析，而不是当作十进制虚键码 0-9（VK 0 是空键）。
     if len(value) == 1:
-        vk = ctypes.windll.user32.VkKeyScanW(value) & 0xFF
+        vk = ctypes.windll.user32.VkKeyScanW(ctypes.c_wchar(value)) & 0xFF
         if vk == 0xFF:
             raise ValueError(f"无法识别按键：{text}")
         return vk, value
@@ -724,6 +723,7 @@ class Tooltip:
 
 CATEGORY_LABELS = {
     "switch": "切换模块",
+    "recognition": "识图",
     "workflow_global": "工作流全局模块",
     "script_global": "脚本全局模块",
     "special": "特殊模块",

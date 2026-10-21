@@ -1923,8 +1923,8 @@ class WorkflowResolutionTests(unittest.TestCase):
                     ):
                         setattr(app, name, Mock())
                     app._ui = lambda callback, *args: callback(*args)
-                    with patch("macroflow.ui.app.workflow.keep_display_awake", return_value=True), \
-                         patch("macroflow.ui.app.workflow.allow_display_sleep"):
+                    with patch("macroflow.ui.app.runtime.workflow.keep_display_awake", return_value=True), \
+                         patch("macroflow.ui.app.runtime.workflow.allow_display_sleep"):
                         app._run_workflow_worker(steps, None, None, False, start_index=1)
                     self.assertEqual(events, [start, "play", finish])
                     app._handle_worker_error.assert_not_called()
@@ -2158,7 +2158,7 @@ class ActivationWindowToggleTests(unittest.TestCase):
 
     def test_sidebar_activation_interval_is_saved_with_script(self):
         app = self._app()
-        app.activation_interval_var = FakeVar("350")
+        app.activation_interval_var = FakeVar("0.35")
 
         app._save_activation_interval()
 
@@ -2166,7 +2166,19 @@ class ActivationWindowToggleTests(unittest.TestCase):
         self.assertEqual(app.activation_draft_interval_ms, 350)
         app.script.settings["activation_window_interval_ms"] = 700
         app._sync_activation_ui_from_script()
-        self.assertEqual(app.activation_interval_var.get(), "700")
+        self.assertEqual(app.activation_interval_var.get(), "0.7")
+
+    def test_activation_interval_accepts_seconds_and_rejects_invalid_values(self):
+        app = self._app()
+        app.activation_interval_var = FakeVar("3")
+        app._save_activation_interval()
+        self.assertEqual(app.script.settings["activation_window_interval_ms"], 3000)
+        for value in ("-1", "86401", "nan", "inf", "abc", ""):
+            with self.subTest(value=value):
+                app.activation_interval_var.set(value)
+                app._save_activation_interval()
+                self.assertEqual(app.activation_interval_var.get(), "3")
+                self.assertEqual(app.script.settings["activation_window_interval_ms"], 3000)
 
     def test_workflow_step_uses_its_own_script_prewindow(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2499,6 +2511,67 @@ class WorkflowSegmentTests(unittest.TestCase):
             "循环执行片段：工作流第 1-2 行" in call.args[0]
             for call in app._append_mini_step.call_args_list
         ))
+
+    def test_restart_in_second_round_stays_inside_original_segment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            steps = []
+            for name in ("outside_before", "first", "last", "outside_after"):
+                path = Path(folder) / f"{name}.json"
+                save_script(MacroScript(name=name, actions=[{"type": "delay", "ms": 1}]), path)
+                steps.append({"script": str(path), "repeats": 5, "enabled": True})
+            app = self._app(steps)
+            app.workflow = Workflow(steps=steps)
+            app.workflow_test_mode_active = False
+            app.player = Mock()
+            app.player.stop_event = threading.Event()
+            app.player.stop.side_effect = app.player.stop_event.set
+            app.player.reset.side_effect = app.player.stop_event.clear
+            app._enter_focus_mode = Mock()
+            app._leave_focus_mode = Mock()
+            app._handle_worker_error = Mock()
+            app._finish_execution_visibility = Mock()
+            app._poll_workflow_stop_for_restart_workflow = Mock()
+            app._ui = lambda callback, *args: callback(*args)
+            app.mini_mode = "execution"
+            app.mini_count_var = Mock()
+            app._set_execution_progress = MacroFlowApp._set_execution_progress.__get__(app)
+            played = []
+            counts = []
+
+            def play(*_args, **kwargs):
+                played.append(kwargs["script_name"])
+                kwargs["on_repeat"](1, 1)
+                counts.append(app.mini_count_var.set.call_args.args[0])
+                if len(played) == 4:
+                    app._on_restart_workflow_request({"restart_workflow_target_row": 3})
+
+            app.player.play.side_effect = play
+            app._run_workflow_worker(
+                steps, None, None, False, start_index=1, segment_end=2, segment_repeats=3,
+            )
+            self.assertEqual(app.workflow_segment, (1, 2))
+            self.assertEqual(app.workflow_segment_rounds_remaining, 2)
+            with patch("threading.Thread") as thread_class:
+                app._launch_workflow_restart()
+            thread_options = thread_class.call_args.kwargs
+            app._run_workflow_worker(*thread_options["args"], **thread_options["kwargs"])
+
+            self.assertEqual(played, ["first", "last", "first", "last", "last", "first", "last"])
+            self.assertEqual(
+                [text.split(" | ")[0] for text in counts],
+                ["循环第 1/3 次"] * 2 + ["循环第 2/3 次"] * 3 + ["循环第 3/3 次"] * 2,
+            )
+            app._handle_worker_error.assert_not_called()
+            self.assertIsNone(app.workflow_segment)
+            app._set_execution_progress("当前脚本 · 当前第 1/2 次")
+            self.assertNotIn("循环第", app.mini_count_var.set.call_args.args[0])
+            self.assertEqual([step["repeats"] for step in steps], [5] * 4)
+            self.assertTrue(all(
+                call.kwargs["on_repeat_complete"] is None
+                for call in app.player.play.call_args_list
+            ))
+            resumes = [call.kwargs["resume_action_index"] for call in app.player.play.call_args_list]
+            self.assertEqual(resumes, [None] * 4 + [0, None, None])
 
     def test_both_lists_carry_the_segment_bar_column(self):
         # 两个列表最左边都要有那根实心竖条所在的列，并且选中一变就重画。

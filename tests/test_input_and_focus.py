@@ -19,7 +19,7 @@ import macroflow.input.wininput as wininput_module
 from macroflow.input.input_guard import FocusInputGuard, InputCapturer, KBDLLHOOKSTRUCT, KeyCapturer, LLKHF_INJECTED, LLMHF_INJECTED, MSLLHOOKSTRUCT, MouseCapturer, RESERVED_HOTKEY_VKS, VK_ESCAPE, VK_F8, VK_F12, VK_F9, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_RBUTTONDOWN, should_block_keyboard, should_block_mouse
 from macroflow.input.wininput import DWMWA_WINDOW_CORNER_PREFERENCE, MACROFLOW_INPUT_TAG, WindowInfo, activate_window, force_english_input, is_cursor_near_window_center, resolve_window_signature, send_move_relative, set_dark_titlebar, set_input_dispatcher, show_window, show_window_no_activate
 from macroflow.ui.app.main import MacroFlowApp
-from macroflow.ui.app.hotkeys import keyboard
+from macroflow.ui.app.runtime.hotkeys import keyboard
 from macroflow.ui.dialogs.actions import KeyActionDialog
 from macroflow.ui.dialogs.base import KEY_HINT_CAPTURING, key_to_vk, vk_to_key_name
 from tests.helpers.patches import package_patch
@@ -428,7 +428,7 @@ class KeyCaptureTests(unittest.TestCase):
         with patch("macroflow.ui.dialogs.actions.ModalDialog.__init__", return_value=None), \
              patch("tkinter.StringVar", side_effect=lambda **_: Mock()), \
              package_patch('dialogs', 'duration_var', return_value=Mock()), \
-             patch.multiple("macroflow.ui.dialogs.ttk", **{
+             patch.multiple("macroflow.ui.dialogs.base.ttk", **{
                  name: Mock(return_value=Mock()) for name in widgets
              }):
             dialog = KeyActionDialog(object())
@@ -623,7 +623,7 @@ class FocusModeTests(unittest.TestCase):
         app._ui = lambda callback, *args: callback(*args)
         app.run_workflow = Mock()
         app._log = Mock()
-        with patch("macroflow.ui.app.hotkeys.keyboard.Listener", return_value=Mock(running=True)) as factory:
+        with patch("macroflow.ui.app.runtime.hotkeys.keyboard.Listener", return_value=Mock(running=True)) as factory:
             app._start_hotkeys()
         press = factory.call_args.kwargs["on_press"]
         release = factory.call_args.kwargs["on_release"]
@@ -689,7 +689,7 @@ class FocusModeTests(unittest.TestCase):
         app.toggle_record = Mock()
         listener = Mock(running=True)
 
-        with patch("macroflow.ui.app.hotkeys.keyboard.Listener", return_value=listener) as factory:
+        with patch("macroflow.ui.app.runtime.hotkeys.keyboard.Listener", return_value=listener) as factory:
             app._start_hotkeys()
         on_press = factory.call_args.kwargs["on_press"]
         on_release = factory.call_args.kwargs["on_release"]
@@ -750,7 +750,7 @@ class FocusModeTests(unittest.TestCase):
         app.input_guard = Mock()
         app.recorder = None
         app._apply_hotkey_bindings()
-        app.input_guard.set_hotkeys.assert_called_once_with({VK_F8})
+        app.input_guard.set_hotkeys.assert_called_once_with({0x75, VK_F8, 0x05, 0x06})
 
     def test_disabled_focus_switches_english_when_checked(self):
         app = MacroFlowApp.__new__(MacroFlowApp)

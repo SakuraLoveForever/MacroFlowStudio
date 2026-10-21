@@ -1,0 +1,22 @@
+ulong fcn.18001fcc0(int64_t arg1)
+
+{
+    char cVar1;
+    ulong uVar2;
+    uchar uStackX_8;
+
+    if ((-1 < arg1) && (arg1 < 0x100)) {
+        uStackX_8 = arg1;
+        cVar1 = func_0x000180024790(uStackX_8);
+        if (cVar1 != '\0') {
+            return 0xffff8000;
+        }
+    }
+    if (*0x18005b110 == NULL) {
+        uVar2 = 0;
+    }
+    else {
+        uVar2 = (**0x18005b110)(arg1 & 0xffffffff);
+    }
+    return uVar2;
+}

@@ -1,0 +1,307 @@
+{
+  "date": "2026-10-14",
+  "method": "REA 6.4.0 (rea CLI) + Ghidra 12.1.4 engine + Capstone 5.0.7 linear/targeted disassembly over an existing authenticated runtime memory image; no target execution, no modification of originals",
+  "rea": {
+    "cli": "rea@6.4.0",
+    "node": "24.19.0",
+    "host": "win32 x64",
+    "ghidra_install_dir": "E:/dev/my_projects/Vibe Coding/Macro/.deps/ssjj709-analysis/tools/ghidra_12.1.4_PUBLIC",
+    "java_home": "E:/PyCharm 2025.1/jbr (JBR 21.0.6+9)",
+    "doctor": "healthy=false only for missing engine env before setup; node/host healthy. Ghidra 12.1.4 satisfied the provider requirement (application.java.min=21).",
+    "note": "Ghidra auto-analysis was launched on a scoped 7.7 MB segment (VA 0x400000-0xBA0000) but the project database was not persisted before the headless process was terminated at its interactive prompt. All findings below therefore rest on the REA-authenticated image plus targeted Capstone disassembly, not on retained Ghidra Evidence IDs."
+  },
+  "samples": [
+    {
+      "name": "original_exe",
+      "path": "E:/dev/my_projects/Vibe Coding/Macro/研究/挂机脚本/ZeusTool.exe",
+      "size": 27881984,
+      "sha256": "039f71465f44e5cab51476e2b63cfb9b71098f83fbbe54648efa6fd003d75579",
+      "identity_match": "identical to the hash recorded in docs/research/zeustool/evidence/manifest.json",
+      "pe": "PE32 (machine 0x014C), 10 sections; .text/.rdata/.data/.fptable/.yandf/.hfasd/INIT0 all RawSize=0 -> VMProtect-style packing; payload in INIT1/INIT2/.rsrc"
+    },
+    {
+      "name": "runtime_loaded_image",
+      "path": "C:/Users/10524/AppData/Local/Temp/zeustool-static-research/ZeusTool-loaded-image.bin",
+      "size": 54145024,
+      "sha256": "f46897374cffa45f108be883ab0ec98dc66662db79b2c14d1986a06e4dfa1dc4",
+      "hash_reverified_this_session": true,
+      "image_base": "0x400000",
+      "address_space": "0x400000-0x37A3000, mapping linear (file_offset = VA - 0x400000), no unmapped hole >= 32 KB",
+      "note": "Historical snapshot captured 2026-10-10; mutable globals in it are not universal defaults."
+    }
+  ],
+  "script_engine": {
+    "conclusion": "Stock Lua 5.4.8 embedded as a static library via the C API. Not LuaJIT, not sol2, not a custom DSL, not Python/PyInstaller/Nuitka, not .NET.",
+    "evidence": [
+      {"kind": "observation", "va": "0xb268dc", "value": "$LuaVersion: Lua 5.4.8  Copyright (C) 1994-2025 Lua.org, PUC-Rio $", "meaning": "luaL_checkversion_ version banner, unmodified upstream text"},
+      {"kind": "observation", "va": "0xb92dbc", "value": "version mismatch: app. needs %f, Lua core provides %f"},
+      {"kind": "observation", "va": "0xb92d70", "value": "PANIC: unprotected error in call to Lua API (%s)"},
+      {"kind": "observation", "va": "0xb928f0", "value": "luaopen_%s", "meaning": "lua_loadlib/ll_require naming for C modules -> lua.c/lauxlib.c loadlib path"},
+      {"kind": "observation", "va": "0xb929f8", "value": "LUA_PATH"},
+      {"kind": "observation", "va": "0xb927fc", "value": "lua_debug> ", "meaning": "io.read debug prompt from liolib.c; confirms the shipped Lua standard library"},
+      {"kind": "observation", "va": "0xb91938", "value": "Lua 5.4", "meaning": "compared in luaB_openlibs for the _VERSION global"},
+      {"kind": "negative", "query": "luajit|LuaJIT|sol2|sol::|IL2CPP|il2cpp|Py_|python3|nuitka|Angelscript|quickjs|duktape", "result": "0 occurrences each in the loaded image"},
+      {"kind": "observation", "va_range": "0xa48504-0xa489d4", "value": "74 distinct mi_* API name strings", "sample": ["mi_start", "mi_shutdown", "mi_addPoint", "mi_clearPath", "mi_startPath", "mi_stopPath", "mi_goto", "mi_isRunning", "mi_getPathIdx", "mi_getPos", "mi_run"]}
+    ],
+    "lua_core_anchor_functions": [
+      {"va": "0x45ce00", "mapped_function": "luaL_gsub(s, p, r)", "xref": "called by ll_require at 0x45ace8"},
+      {"va": "0x45cefa", "mapped_function": "luaL_error / luaL_where path", "evidence": "pushes 0xb92d70 PANIC text"},
+      {"va": "0x45d100", "mapped_function": "luaL_checkversion_(L, ver, sz)", "evidence": "pushes 0xb92dbc version mismatch"},
+      {"va": "0x45a6d0", "mapped_function": "lua_callk(stdcall)", "evidence": "3rd arg compared to 2 in ll_require; two distinct call sites"},
+      {"va": "0x45a460", "mapped_function": "io read/debug prompt routine", "evidence": "pushes 0xb927fc 'lua_debug> ' at 0x45a46a and 0x45a555"},
+      {"va": "0x45ad18/0x45ad37", "mapped_function": "luaopen_%s symbol construction in ll_require", "evidence": "push 0xb928f0 twice"}
+    ]
+  },
+  "script_execution_model": {
+    "conclusion": "Scripts are external Lua 5.4 source files loaded and run by the host application. They execute as ordinary blocking Lua code; there is no coroutine scheduler and no bytecode-only path. All timing is achieved by a native sleep that blocks the calling thread.",
+    "evidence": [
+      {"kind": "observation", "artifact": "研究/QQ群726610956/2026-10-13-跑图研究/群跑图原件/工业1.txt", "value": "mi_start() / for waited=1,150 do x,y,z = mi_getPos() ... end / mi_run(\"jiacheng.txt\") / mi_addPoint(x,y,z,flag) / mi_startPath() / while mi_isRunning() do ... end / mi_shutdown()"},
+      {"kind": "observation", "va": "0xa3fbf0", "value": "embedded Lua template: \"mi_start()\\n--  require(\\\"input\\\")  这一句没有用。但是必须存在\\nsleep(94);\\nlocal x, y, z = 0, 0, 0\\nfor waited = 1, 150 do\\n    x, y, z = mi_getPos()\\n...mi_run(\\\"jiacheng.txt\\\")\\nmi_clearPath()\\n\\n\\nmi_startPath()\\nwhile mi_isRunning() do\\n    sleep(100)\\nend\\nmi_shutdown()\"", "consumer": "referenced at 0x4c6025 inside the route-export routine (0x4c5d60), which also references the format string at 0xa3fe18"},
+      {"kind": "observation", "va": "0xa3fe18", "value": "mi_addPoint(%.2f, %.2f, %.2f, %d )%s\r\n", "xref": "0x4c613b"},
+      {"kind": "observation", "va": "0xa3fcdd", "value": "mi_run(\"jiacheng.txt\")", "meaning": "sibling-script include is expressed in Lua source text, so mi_run is a script-level include/eval"},
+      {"kind": "observation", "before": "0x5c", "value": "\\x5c = backslash; the loaded image contains no literal '.lua' or '.txt' path-extension strings, so script paths are built from config/dialog values rather than fixed constants"},
+      {"kind": "inference", "confidence": "high", "statement": "The '' blocks in the template and the 'if x == 0 and y == 0 then else end' no-op are generation artifacts of the exporter, not branches of a separate interpreter."}
+    ],
+    "sleep_semantics": {
+      "conclusion": "input.sleep(ms) / input.delay(ms) call a host function (0x693fe0) that calls the imported Windows Sleep directly. enableDebug wraps it with two extra toggles.",
+      "disassembly_0x693fe0": [
+        "push ebp; mov ebp,esp; push esi; mov esi,[ebp+8]",
+        "test esi,esi; jns 0x693ff4; mov eax,esi; cdq; mov esi,eax; xor esi,edx; sub esi,edx   ; abs(ms)",
+        "mov al,[0xb8afcc]; test al,al; je 0x694018",
+        "push 1; call dword ptr [0xa3dc00]    ; debug toggle A",
+        "push esi; call dword ptr [0xa3d554]  ; Sleep(ms)",
+        "push 1; call dword ptr [0xa3dc04]    ; debug toggle B",
+        "0x694018: push esi; call dword ptr [0xa3d554]; ret"
+      ],
+      "script_api_mapping": [
+        {"lua_name": "sleep", "string_va": "0xa431f4"},
+        {"lua_name": "delay", "string_va": "0xa431fc"}
+      ],
+      "implication": "A Lua script that calls sleep(1000) in a loop blocks its own thread for real wall-clock time. Route progress and stuck detection therefore advance concurrently on other host threads, which is why the sample polls mi_isRunning()/mi_getPos() instead of driving movement itself."
+    }
+  },
+  "lua_module_registration": {
+    "conclusion": "Lua C functions are registered per-module by a stack-local table of {name-address, function-address} pairs that is walked with lua_pushcclosure + lua_setfield. This mechanism is fully recovered for the 'input' module (50 entries).",
+    "register_function": {
+      "va": "0x4e4de0",
+      "signature": "int luaopen_input_module(lua_State* L)  // lua_CFunction: L at [ebp+8], returns 1",
+      "structure": [
+        "prologue: push ebp / mov ebp,esp / sub esp,0x198",
+        "body: mov dword ptr [ebp-0x198], <nameVA> ; mov dword ptr [ebp-0x194], <funcVA> ; ... 8-byte stride",
+        "0x4e5194: push 0 ; push [ebp+eax-0x194]  (function pointer)",
+        "0x4e519e: call 0x44f6d0              ; lua_pushcclosure(L, fn, 0)",
+        "0x4e51a5: call 0x44fc60              ; lua_setfield(L, -2, name)",
+        "0x4e51b0: load next name; test esi,esi; jne 0x4e5194 ; loop until null name",
+        "epilogue: mov eax,1 ; mov esp,ebp ; pop ebp ; ret"
+      ]
+    },
+    "input_module_table": [
+      {"name": "kd", "va": "0xa431a0", "func": "0x4e09d0", "long_name": "keyDown"},
+      {"name": "ku", "va": "0xa431a4", "func": "0x4e0c30", "long_name": "keyUp"},
+      {"name": "kp", "va": "0xa431a8", "func": "0x4e0b30", "long_name": "keyPress"},
+      {"name": "combo", "va": "0xa431ac", "func": "0x4ded10", "long_name": "comboKey"},
+      {"name": "mld", "va": "0xa431b4", "func": "0x4e3fe0", "long_name": "mouseLeftDown"},
+      {"name": "mlu", "va": "0xa431b8", "func": "0x4e4000", "long_name": "mouseLeftUp"},
+      {"name": "mlc", "va": "0xa431bc", "func": "0x4e3fb0", "long_name": "mouseLeftClick"},
+      {"name": "mrd", "va": "0xa431c0", "func": "0x4e41a0", "long_name": "mouseRightDown"},
+      {"name": "mru", "va": "0xa431c4", "func": "0x4e41c0", "long_name": "mouseRightUp"},
+      {"name": "mrc", "va": "0xa431c8", "func": "0x4e4170", "long_name": "mouseRightClick"},
+      {"name": "mmd", "va": "0xa431cc", "func": "0x4e4050", "long_name": "mouseMiddleDown"},
+      {"name": "mmu", "va": "0xa431d0", "func": "0x4e40e0", "long_name": "mouseMiddleUp"},
+      {"name": "mmc", "va": "0xa431d4", "func": "0x4e4020", "long_name": "mouseMiddleClick"},
+      {"name": "mms", "va": "0xa431d8", "func": "0x4e4260", "long_name": "mouseWheel"},
+      {"name": "mmv", "va": "0xa431dc", "func": "0x4e4070", "long_name": "mouseMoveV"},
+      {"name": "mmh", "va": "0xa431e0", "func": "0x4e4100", "long_name": "mouseMoveH"},
+      {"name": "mset", "va": "0xa431e4", "func": "0x4e41e0", "long_name": "setMousePos"},
+      {"name": "mget", "va": "0xa431ec", "func": "0x4e3f70", "long_name": "getMousePos"},
+      {"name": "sleep", "va": "0xa431f4", "func": "0x4e4cf0"},
+      {"name": "delay", "va": "0xa431fc", "func": "0x4e4cf0"},
+      {"name": "enableDebug", "va": "0xa43204", "func": "0x4dee90"},
+      {"name": "getDebug", "va": "0xa43178", "func": "0x4def30"},
+      {"name": "allocConsole", "va": "0xa43184", "func": "0x4deb70"},
+      {"name": "freeConsole", "va": "0xa43194", "func": "0x4deee0"},
+      {"name": "allocateConsole", "va": "0xa43210", "func": "0x4deb70"},
+      {"name": "keyDown", "va": "0xa43220", "func": "0x4e09d0"},
+      {"name": "keyUp", "va": "0xa43228", "func": "0x4e0c30"},
+      {"name": "keyPress", "va": "0xa43230", "func": "0x4e0b30"},
+      {"name": "comboKey", "va": "0xa4323c", "func": "0x4ded10"},
+      {"name": "mouseLeftDown", "va": "0xa43248", "func": "0x4e3fe0"},
+      {"name": "mouseLeftUp", "va": "0xa43258", "func": "0x4e4000"},
+      {"name": "mouseLeftClick", "va": "0xa43264", "func": "0x4e3fb0"},
+      {"name": "mouseRightDown", "va": "0xa43274", "func": "0x4e41a0"},
+      {"name": "mouseRightUp", "va": "0xa43284", "func": "0x4e41c0"},
+      {"name": "mouseRightClick", "va": "0xa43294", "func": "0x4e4170"},
+      {"name": "mouseMiddleDown", "va": "0xa432a4", "func": "0x4e4050"},
+      {"name": "mouseMiddleUp", "va": "0xa432b4", "func": "0x4e40e0"},
+      {"name": "mouseMiddleClick", "va": "0xa432c4", "func": "0x4e4020"},
+      {"name": "mouseWheel", "va": "0xa432d8", "func": "0x4e4260"},
+      {"name": "mouseMoveH", "va": "0xa432e4", "func": "0x4e4100"},
+      {"name": "mouseMoveV", "va": "0xa432f0", "func": "0x4e4070"},
+      {"name": "setMousePos", "va": "0xa432fc", "func": "0x4e41e0"},
+      {"name": "getMousePos", "va": "0xa43308", "func": "0x4e3f70"},
+      {"name": "findPic", "va": "0xa43314", "func": "0x4e4390"},
+      {"name": "findPicb64", "va": "0xa4331c", "func": "0x4e4740"},
+      {"name": "getColor", "va": "0xa43328", "func": "0x4e42d0"},
+      {"name": "oldsc (module/table name)", "va": "0xa43170", "func": "0x4e4b30"},
+      {"name": "debug (table name)", "va": "0xa42e20", "func": "0x4dee90 (-0x188) and 0x4dee90 again at -0xcc)"}
+    ],
+    "argument_validation_evidence": [
+      {"va": "0xa43108", "value": "sleep: 需要1个参数(毫秒)", "used_by": "0x4e4d05"},
+      {"va": "0xa43124", "value": "sleep: 参数必须是数字", "used_by": "0x4e4d26"},
+      {"va": "0xa42f7c", "value": "keyDown-family argument error string", "used_by": "0x4e09e9 / keyDown"},
+      {"va": "0xa42fcc", "value": "keyPress-family argument error string", "used_by": "0x4e0b49 / keyPress"}
+    ],
+    "help_html_cross_check": {
+      "artifact": "研究/挂机脚本/help.html",
+      "result": "The documented public names match the long-name half of the recovered table exactly: kd/ku/kp/combo, mld/mlu/mlc/mrd/mru/mrc/mmd/mmu/mmc, mms, mmh/mmv/mset/mget, sleep, findPic, getColor, debug/enableDebug/getDebug, allocConsole/freeConsole, allocateConsole. This independently corroborates the disassembled table."
+    },
+    "mi_module_status": {
+      "conclusion": "The mi_* namespace (74 functions) is confirmed as the script-facing API by name and by usage in real scripts, but its Lua binding call site was NOT located in the unpacked image.",
+      "bounded_search": [
+        {"query": "immediate/dword references to the 74 mi_* name VAs (0xa48504-0xa489d4)", "result": "no aligned luaL_Reg pair table; the only references found are {name, func} pointer pairs where the func half lands in the SQLite text region 0xa4ea20-0xa50138, i.e. a false-positive heuristic, and unaligned single-byte coincidences"},
+        {"query": "mov dword ptr [ebp-disp], 0xa4xxxx  (the pattern used by the recovered input-module table) across the whole image", "result": "117 hits, 29 clusters; only one cluster is a real registration table (0x4e4dec-0x4e5178, the input module). No mi_* cluster exists."},
+        {"query": "hash-based dispatch (djb2 / fnv1a / crc32 of each mi_* name as a stored dword)", "result": "1/74, 0/74, 3/74 matches, and those matches are unaligned inside unrelated data -> hypothesis not supported"},
+        {"query": "call rel32 sites targeting 0x4e4de0 (input-module register fn) and its helpers 0x44f6d0/0x44fc60", "result": "0 sites -> the registration functions are reached through stored function pointers, so a grep-style xref sweep cannot follow them"}
+      ],
+      "inference": "The mi_* bindings are most likely installed by a registration routine whose table lives in a VMProtect-virtualized region or is constructed at runtime, and/or the names at 0xa48504+ are the error-report argument strings ('%s[%d]: %s' at 0xa48a0c) for the mi_ implementations rather than a literal luaL_Reg table.",
+      "confidence": "medium",
+      "impact": "Does not change the execution model. It only leaves the exact Lua-binding call site unnamed."
+    }
+  },
+  "mi_api_surface": {
+    "source": "0xa48504-0xa489d4 in the loaded image; 74 names",
+    "route_control": ["mi_start", "mi_shutdown", "mi_addPoint", "mi_clearPath", "mi_startPath", "mi_stopPath", "mi_goto", "mi_isRunning", "mi_getPathIdx", "mi_getPos", "mi_isDead", "mi_run"],
+    "combat": ["mi_startFire", "mi_stopFire", "mi_setAutoFire", "mi_attackTo", "mi_stopAttack", "mi_setAutoAttack", "mi_hasEnemy", "mi_enemyCount", "mi_nearestDist", "mi_hasBoss", "mi_isEnemyClear", "mi_setEnemyDist", "mi_setEnemyClearWait", "mi_playerCount"],
+    "stuck_handling": ["mi_setStuckEnabled", "mi_setStuckParams", "mi_isStuckPending", "mi_clearStuckPending", "mi_setHoldPos", "mi_showAim", "mi_setCombatEnabled", "mi_setPowerEEnabled", "mi_setAutoReloadEnabled"],
+    "input_queues": ["mi_keySeqAdd", "mi_keySeqMouse", "mi_keySeqClear", "mi_keySeqCount", "mi_keySeqCooldown", "mi_forceKeySeq", "mi_bossKeySeqAdd", "mi_bossKeySeqMouse", "mi_bossKeySeqClear", "mi_bossKeySeqCount", "mi_bossKeySeqCooldown", "mi_forceBossKeySeq", "mi_keyDown", "mi_keyUp", "mi_mouseDown", "mi_mouseUp", "mi_scroll"],
+    "graph_navigation": ["mi_setGraphMode", "mi_isGraphMode", "mi_loadGraph", "mi_loadGraphStr", "mi_graphLoaded", "mi_setGraphGoal", "mi_setGraphGoalNode", "mi_stopGraphGoal", "mi_graphIsArrived", "mi_graphNodeCount", "mi_graphRouteNodeCount", "mi_getBossNode", "mi_getExitNode", "mi_hasExit"],
+    "targeting": ["mi_getTarget", "mi_targetType", "mi_targetCount", "mi_targetBegin", "mi_getSecondTarget", "mi_targetDist", "mi_targetDetectPwd", "mi_getMoveObjectCount"],
+    "supporting_native_strings": [
+      {"va": "0xa48448", "value": "navgraph.json"},
+      {"va": "0xa48458", "value": "graph file not found"},
+      {"va": "0xa48470", "value": "MiniInject2026"},
+      {"va": "0xa484e8", "value": "file not found: %s"},
+      {"va": "0xa484fc", "value": "%s: %s"},
+      {"va": "0xa48a0c", "value": "%s[%d]: %s"}
+    ]
+  },
+  "file_access": {
+    "question": "Does ZeusTool read the game's files?",
+    "conclusion": "No evidence of reading the game's Unity asset files. It reads its own config/data/script files, and obtains game state through shared memory rather than from game files.",
+    "negative_evidence": {
+      "query": "image-wide search for game/engine artefact names",
+      "patterns_zero_hits": [".assets", ".bundle", ".resS", ".resource", "resources.assets", "Assembly-CSharp", "UnityPlayer", "mono-2.0", ".dll", ".dat", ".bin", ".db", ".log", ".ini", ".json", ".png", ".exe", ".txt", ".lua", "Microsoft YaHei"],
+      "note": "Even the literal strings '.txt', '.json' and '.dll' have zero occurrences, and no code references to any file-extension string were found. This is characteristic of VMProtect-virtualized code plus paths assembled at runtime, so it is bounded negative evidence for the UNPACKED region only, not proof that no file is ever opened."
+    },
+    "positive_evidence": [
+      {"kind": "observation", "va": "0xa48448", "value": "navgraph.json", "xref": "0x4e1c33", "meaning": "the graph-navigation data is loaded from a JSON file by the host application"},
+      {"kind": "observation", "va": "0xa48458", "value": "graph file not found", "xref": "0x4e1c5b", "meaning": "the load path is opened and its failure is reported"},
+      {"kind": "observation", "va": "0xa484e8", "value": "file not found: %s", "xref": "0x4e318f"},
+      {"kind": "observation", "va": "0xa484a0", "value": "GameConfig", "xrefs": ["0x4e2149", "0x4e2183", "0x4e252d", "0x4e255a", "0x4e2572"]},
+      {"kind": "observation", "va": "0xa484ac", "value": "Max_GoldBox", "xref": "0x4e2599"},
+      {"kind": "observation", "va": "0xa484b8", "value": "OpenBox_Weapon", "xref": "0x4e25be", "meaning": "GameConfig/Max_GoldBox/OpenBox_Weapon form a config key namespace read by the host"},
+      {"kind": "observation", "va": "0xa6d5bc", "value": "%s.%04d%02d%02d.log", "xrefs": ["0x6b1ea3", "0x6b1f26", "0x6b1fc3"], "meaning": "dated log file writer"},
+      {"kind": "observation", "va": "0xa3fcdd", "value": "mi_run(\"jiacheng.txt\")", "meaning": "sibling-script references use bare .txt names"},
+      {"kind": "observation", "artifact": "研究/挂机脚本/极速关卡自动坐标.json + 主线*/ 关卡切换/ 核心数据/ 王者乱斗/ *.png", "meaning": "the shipped directory layout pairs a coordinate JSON with folders of per-state PNG templates, loaded by name"},
+      {"kind": "observation", "va": "0x693fe0", "value": "sleep() wrapper calling imported Sleep", "meaning": "the host is a normal Win32 process with a normal import table, i.e. capable of ordinary file I/O"}
+    ],
+    "what_it_reads": [
+      {"target": "host's own scripts", "detail": "Lua .txt sources from the host directory (工业1.txt, jiacheng.txt, 公用指令集.txt)"},
+      {"target": "host's own graph/config data", "detail": "navgraph.json, GameConfig keys, 极速关卡自动坐标.json, ssjj_scs.ini"},
+      {"target": "host's own template images", "detail": "PNG template folders used with findPic/getColor; the scripts carry state folders, not the game's assets"},
+      {"target": "game runtime state", "detail": "via shared memory mapped buffer written by the injected plugin64.dll - this is memory, not files"}
+    ],
+    "what_it_does_not_read": [
+      "Unity asset bundles (.assets/.bundle/.resS) - no artefact names present and no asset-format parsing evidence",
+      "Assembly-CSharp.dll / Mono assemblies from disk - the Mono APIs (mono_image_open_from_data_full, mono_assembly_load_from_full) load assemblies from a MEMORY BUFFER, and no plaintext CLR metadata was found in the image (consistent with the prior session's finding)",
+      "game executables - no such path or import"
+    ],
+    "inference": {
+      "confidence": "high",
+      "statement": "Game-state acquisition is screen-template matching (findPic/getColor over captured frames, using FindPic.dll/libpng.dll/libjpg.dll) plus injected-plugin shared memory. It is a black-box external controller, not a game-file parser."
+    }
+  },
+  "recorder_dsl_layer": {
+    "conclusion": "The main EXE embeds a complete intermediate-representation layer for the recorder's compressed notation (_MLD{}/_MDLY{}/func-end), including code generation back into executable script text. This is a THIRD linguistic layer, below the Lua layer.",
+    "emit_templates": [
+      {"va": "0xa5bdb8", "value": "_MDLY{%d}\r\n鼠标中键按下\r\n_MMD{1}\r\n"},
+      {"va": "0xa5bddc", "value": "_MDLY{%d}\r\n鼠标中键抬起\r\n_MMU{1}\r\n"},
+      {"va": "0xa5be00", "value": "_MDLY{%d}\r\n鼠标左键按下\r\n_MLD{1}\r\n"},
+      {"va": "0xa5be24", "value": "_MDLY{%d}\r\n鼠标左键抬起\r\n_MLU{1}\r\n"},
+      {"va": "0xa5be48", "value": "_MDLY{%d}\r\n_MMX{%u}\r\n"},
+      {"va": "0xa5be60", "value": "_MMX{%u}\r\n"},
+      {"va": "0xa5be78", "value": "_MDLY{%d}\r\n鼠标中间滚动\r\n_MMS{%s}\r\n"},
+      {"va": "0xa5be9c", "value": "_MDLY{%d}\r\n鼠标右键按下\r\n_MRD{1}\r\n"},
+      {"va": "0xa5bec0", "value": "_MDLY{%d}\r\n鼠标右键抬起\r\n_MRU{1}\r\n"},
+      {"va": "0xa5beec", "value": "_MDLY{%d}\r\n鼠标向%s移动\r\n_MMH{%d}\r\n"},
+      {"va": "0xa5bf18", "value": "_MDLY{%d}\r\n鼠标向%s移动\r\n_MMV{%d}\r\n"},
+      {"va": "0xa5bf5c", "value": "_MDLY{%d}\r\n%s\r\n%s{%d}\r\n"},
+      {"va": "0xa5bfec", "value": "%s{%s}\r\n"},
+      {"va": "0xa5c0d0", "value": "0\r\n_MSDT{0}\r\n\r\n\r\n"},
+      {"va": "0xa3e688", "value": "b'\\x07Z\\x88'"},
+      {"va": "0xa3e6a4", "value": "_mthrd_AutoPassE{1}\r\nfunc PassEB8DA04CC7()\r\n"},
+      {"va": "0xa3e6d4", "value": "E{499}F{499}\r\n"},
+      {"va": "0xa3e6f4", "value": "end\r\n\r\nfunc mthrd_AutoPassE()\r\n_PassEB8DA04CC7{99999}\r\nend\r\n"},
+      {"va": "0xa3e734", "value": "_MCDD{70}"}
+    ],
+    "parse_regexes": [
+      {"va": "0xa5bf7c", "value": "(.*?)\\{([-\\d]+)\\}"},
+      {"va": "0xa3e754", "value": "([A-Z0-9]*4[A-Z0-9]*)\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e77c", "value": "([A-Z0-9]*6[A-Z0-9]*)\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e7a4", "value": "([A-Z0-9]*X[A-Z0-9]*)\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e7e0", "value": "_MMS\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e808", "value": "_MMD\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e830", "value": "_MMU\\{([0-9+-.]+)\\}"},
+      {"va": "0xa3e864", "value": "([A-Z0-9]*2[A-Z0-9]*\\{[0-9+-.]+\\})"}
+    ],
+    "marker_templates": [
+      {"va": "0xa3e742", "value": "<--$1--$2-->"},
+      {"va": "0xa3e7ce", "value": "<--MMS--$1-->"},
+      {"va": "0xa3e7f6", "value": "<--MMD--$1-->"},
+      {"va": "0xa3e81e", "value": "<--MMU--$1-->"}
+    ],
+    "semantics": [
+      "A recorded timeline is normalised into <--TOKEN--value--> markers (regex substitution), then regenerated as _MDLY{delta} + _TOKEN{n} text: absolute timing is rebuilt as a delay followed by the action, and {1} is a 1-tick hold rather than a 1 ms hold.",
+      "The generator also emits real script structure: 'func <Name>()' bodies, 'end', and wrapper functions that invoke another function as a macro (_PassEB8DA04CC7{99999}).",
+      "The same compressed notation survives into hand-edited shared libraries (研究/公用指令集.txt uses func/end plus _MLD{10}_MLU{400}E{500} and _来回走{99999}), which is why the notation had to be understood by the client too.",
+      "Not resolved: which character class each of the 2/4/6/X regexes selects. The digit discriminating among four regexes is confirmed as data, but its meaning (key-class vs variant) is not established."
+    ]
+  },
+  "cross_layer_model": {
+    "layers": [
+      {"layer": 1, "name": "Lua script layer", "evidence_type": "observation", "detail": "External Lua 5.4 .txt sources; ordinary blocking Lua; sleep() burns real time on the script thread; scripts poll mi_* accessors and call mi_startPath/mi_shutdown rather than steering the character themselves"},
+      {"layer": 2, "name": "Lua binding layer", "evidence_type": "observation for input module / inference for mi_*", "detail": "Per-module {name,func} registration via lua_pushcclosure + lua_setfield, proven for input (50 entries) and debug; mi_* binding site not located"},
+      {"layer": 3, "name": "Host native runtime", "evidence_type": "observation (prior session, same image hash)", "detail": "Main loop 0x4a1550 reads a status block from a mapped buffer and calls route advance 0x4a5f80; arrival tolerance = planar distance < 50.0 game units; command publish 0x4a4ac0 writes a 0x78-byte command block to mapped +0x110 with flags +0x100/+0x104; stuck monitor 0x4a71d0"},
+      {"layer": 4, "name": "Process bridge", "evidence_type": "observation (prior session)", "detail": "CreateFileMappingW/MapViewOfFile shared buffer + RegisterWindowMessageW('ZeusMessage') + ssjj_input_ready_%u event; plugin64.dll hooks user32/win32u so the game reads synthetic key/mouse state"},
+      {"layer": 5, "name": "Game (Unity SSJJ)", "evidence_type": "observation (prior session)", "detail": "Injected plugin64.dll returns scripted key state from GetAsyncKeyState/GetKeyState/GetKeyboardState/NtUserGetRawInputData inside the game process; also carries Mono injection symbols (mono_get_root_domain, mono_runtime_invoke, CMonoInject)"}
+    ],
+    "control_flow": "Lua script thread: mi_* -> host state/route structures -> native runtime loop thread (coordinate feedback, 50-unit arrival test) -> 0x78-byte command block in mapped memory -> plugin64.dll in game process -> hooked input readers / Mono calls",
+    "open_unknowns": [
+      "Exact mi_* Lua binding call site and whether any single dispatch table exists",
+      "Byte-level layout of the 0x78-byte command block and the mapped status block",
+      "How target yaw/pitch is derived game-side (prior analysis established arrival is planar-distance only)",
+      "Whether every input branch is fully isolated from real user input (prior analysis found real input can be OR'ed in)"
+    ]
+  },
+  "verification": {
+    "original_exe_hash_recomputed": "039f71465f44e5cab51476e2b63cfb9b71098f83fbbe54648efa6fd003d75579 (unchanged this session)",
+    "runtime_image_hash_recomputed": "f46897374cffa45f108be883ab0ec98dc66662db79b2c14d1986a06e4dfa1dc4 (matches prior manifest)",
+    "prior_native_layer_addresses_reverified": {
+      "method": "independent Capstone disassembly of each VA in the same image; checked for a real MSVC prologue (push ebp / mov ebp,esp / and esp,-16) and for the specific operands the prior report claimed",
+      "results": [
+        {"va": "0x4a1550", "prior_name": "runtime_loop", "observed": "sub esp,0x188 plus stack cookie mov eax,[0xb91300] / xor eax,esp", "verdict": "real function"},
+        {"va": "0x4a2aa0", "prior_name": "append_runtime_point", "observed": "movss xmm0,[ebp+8]; mov eax,[ebp+0x14]", "verdict": "real function, args match"},
+        {"va": "0x4a2b50", "prior_name": "start_runtime_path", "observed": "immediately reads [0xbb1bb8] and [0xbb1bbc]", "verdict": "real function, globals match"},
+        {"va": "0x4a3390", "prior_name": "read_cached_position", "observed": "movsd xmm0,[0xbb1c30]; cvtpd2ps xmm0,xmm0; movss [eax],xmm0", "verdict": "real function, matches prior description verbatim"},
+        {"va": "0x4a4ac0", "prior_name": "publish_move_command", "observed": "mov dword ptr [eax+0x100], 1", "verdict": "real function, flag offset matches"},
+        {"va": "0x4a5f80", "prior_name": "advance_runtime_path", "observed": "standard prologue + mov esi,[edx+4]", "verdict": "real function"},
+        {"va": "0x4a71d0", "prior_name": "stuck_monitor", "observed": "cmp byte ptr [0xb94369],0", "verdict": "real function, mutable-param region matches"},
+        {"va": "0x4c5d60", "prior_name": "route export", "observed": "SEH frame push -1 / push 0xa12098; references template 0xa3fbf0 and format 0xa3fe18", "verdict": "real function, template link confirmed"}
+      ],
+      "conclusion": "The cross-layer model in this report may treat the prior native-layer findings as trustworthy; two independent checks (coordinates and command publish) matched verbatim."
+    },
+    "no_target_execution": true,
+    "no_original_modified": true,
+    "tools_used": {"rea": "6.4.0", "capstone": "5.0.7 (from prior research python-libs)", "ghidra": "12.1.4 (analysis attempted, db not persisted)", "java": "JBR 21.0.6"}
+  }
+}

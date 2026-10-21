@@ -143,7 +143,7 @@ class StorageIntegrityTests(unittest.TestCase):
         stack = self.enterContext(ExitStack())
         for name, relative in (
             ('SCRIPTS_DIR', 'scripts'), ('WORKFLOWS_DIR', 'workflows'),
-            ('IMAGES_DIR', 'images'), ('SCRIPT_BACKUPS_DIR', 'backups'),
+            ('IMAGES_DIR', 'images'),
             ('OVERWRITTEN_BACKUPS_DIR', 'overwritten'), ('BASE_DIR', '.'),
             ('SETTINGS_PATH', 'app_settings.json'), ('MODULE_SETTINGS_PATH', 'module_settings.json'),
             ('TEMPLATE_REGIONS_PATH', 'template_regions.json'),
@@ -152,13 +152,11 @@ class StorageIntegrityTests(unittest.TestCase):
         storage.ensure_dirs()
 
     def saves(self):
-        source = storage.SCRIPTS_DIR / 'source.json'
         return (
             (self.root / 'script.json', lambda: storage.save_script(MacroScript(name='new'), self.root / 'script.json')),
             (self.root / 'workflow.json', lambda: storage.save_workflow(Workflow(name='new'), self.root / 'workflow.json')),
             (storage.SETTINGS_PATH, lambda: storage.save_app_settings({'name': 'new'})),
             (storage.MODULE_SETTINGS_PATH, lambda: storage.save_module_settings({'name': 'new'})),
-            (storage.SCRIPT_BACKUPS_DIR / 'source.json', lambda: storage.backup_script(source, {'name': 'new'})),
             (storage.TEMPLATE_REGIONS_PATH, lambda: storage.save_module_objects({'module:new': {'name': 'new'}})),
         )
 
@@ -215,19 +213,3 @@ class StorageIntegrityTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertEqual(first.read_text(encoding='utf-8'), 'first')
         self.assertEqual(second.read_text(encoding='utf-8'), 'second')
-
-    def test_failed_file_copy_preserves_the_previous_backup(self):
-        source = storage.SCRIPTS_DIR / 'source.json'
-        source.write_bytes(b'new source')
-        target = storage.SCRIPT_BACKUPS_DIR / 'source.json'
-        target.write_bytes(b'previous backup')
-
-        def partial_copy(_source, destination):
-            Path(destination).write_bytes(b'partial')
-            raise OSError('copy failed')
-
-        with patch.object(storage.shutil, 'copy2', side_effect=partial_copy):
-            with self.assertRaisesRegex(OSError, 'copy failed'):
-                storage.backup_script(source)
-        self.assertEqual(target.read_bytes(), b'previous backup')
-        self.assertEqual(list(target.parent.iterdir()), [target])

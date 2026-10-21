@@ -3,10 +3,10 @@ from tkinter import ttk
 
 from macroflow.core.models import normalize_foreground_processes
 from .base import (
-    COLOR_SURFACE, COLOR_TEXT, ModalDialog, app_windows, pad, duration_var,
+    COLOR_SURFACE, COLOR_TEXT, ModalDialog, pad, duration_var,
     show_floating_notice,
 )
-from .screen_pickers import ScreenProcessPicker
+from .process_names import ProcessNamePicker
 
 
 class ForegroundProcessesDialog(ModalDialog):
@@ -26,11 +26,10 @@ class ForegroundProcessesDialog(ModalDialog):
         row = ttk.Frame(frame)
         row.pack(fill='x', pady=pad(10, 8))
         self.name = tk.StringVar(self)
-        entry = ttk.Entry(row, textvariable=self.name)
+        entry = ProcessNamePicker(row, self.name)
         entry.pack(side='left', fill='x', expand=True)
-        entry.bind('<Return>', lambda _event: self._add())
+        entry.combo.bind('<Return>', lambda _event: self._add())
         ttk.Button(row, text='添加', command=self._add).pack(side='left', padx=pad(6, 6))
-        ttk.Button(row, text='鼠标选取…', command=self._pick).pack(side='left')
         self.processes = tk.Listbox(frame, height=8, selectmode='extended',
                                    background=COLOR_SURFACE, foreground=COLOR_TEXT,
                                    exportselection=False)
@@ -41,24 +40,17 @@ class ForegroundProcessesDialog(ModalDialog):
         buttons.pack(fill='x', pady=pad(10, 0))
         ttk.Button(buttons, text='移除选中', command=self._remove).pack(side='left')
         ttk.Button(buttons, text='取消', command=self.destroy).pack(side='right')
-        ttk.Button(buttons, text='保存', command=self._save).pack(side='right', padx=pad(0, 6))
+        save_button = ttk.Button(buttons, text='保存', command=self._save)
+        save_button.pack(side='right', padx=pad(0, 6))
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button,
+            lambda: (self.processes.get(0, 'end'), self.interval.get()))
 
     def _add(self):
         names = normalize_foreground_processes([self.name.get()])
         if names and names[0] not in self.processes.get(0, 'end'):
             self.processes.insert('end', names[0])
         self.name.set('')
-
-    def _picked(self, name):
-        self.name.set(name)
-        self._add()
-
-    def _pick(self):
-        self.picker = ScreenProcessPicker(
-            self, self.master, self._picked, hidden_windows=app_windows(self.master),
-            tip_text='移动到目标软件，预览进程名；单击添加，Esc 取消',
-        )
-        self.picker.start()
 
     def _remove(self):
         for index in reversed(self.processes.curselection()):

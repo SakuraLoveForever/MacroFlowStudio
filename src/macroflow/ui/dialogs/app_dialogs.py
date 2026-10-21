@@ -7,7 +7,7 @@ from macroflow.core.storage import (
     load_script, load_template_regions,
     module_image_inventory, module_objects_by_category,
     registered_module_object, resolve_path, save_module_images_dir, save_module_objects,
-    save_template_regions, save_script, script_category_for_path, update_module_object,
+    save_template_regions, save_script, script_category_for_path, script_category_from_dir, update_module_object,
 )
 from macroflow.input.input_guard import KeyCapturer, RESERVED_HOTKEY_VKS
 from macroflow.ui.detect_overlay import show_overlay
@@ -43,6 +43,7 @@ from .base import (
     COLOR_TEXT,
     HOTKEY_DISALLOWED_NAMES,
     ModalDialog,
+    SCRIPT_CATEGORY_LABELS,
     dark_checkbutton,
     duration_var,
     fit_window_to_content,
@@ -59,7 +60,7 @@ from .helpers import (
     select_jump_target_label,
 )
 from .module_objects import (
-    direction_script_files,
+    configured_script_files,
 )
 
 
@@ -664,13 +665,17 @@ class ScriptDirectoriesDialog(ModalDialog):
             ).pack(side="left", padx=pad(6, 0))
         ttk.Label(
             body,
-            text="脚本类别包含关卡、关卡封装、切换和方向；方向目录的脚本供快捷键绑定执行。工作流全局与脚本全局属于模块类别。可填绝对路径或相对路径。",
+            text="脚本类别包含关卡、关卡封装、切换和方向，所有类别均可绑定快捷键。工作流全局与脚本全局属于模块类别。可填绝对路径或相对路径。",
             foreground=COLOR_MUTED, wraplength=px(480),
         ).grid(row=4, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         buttons = ttk.Frame(body)
         buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="确定", command=self.save)
+        save_button.pack(side="right", padx=px(8))
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button,
+            lambda: tuple(v.get().strip() for v in (self.level_dir, self.level_pack_dir, self.switch_dir, self.direction_dir)))
 
     def _browse(self, variable):
         path = filedialog.askdirectory(
@@ -694,7 +699,9 @@ class HotkeyBindingDialog(ModalDialog):
     """Capture one hotkey key and pick the script it runs."""
 
     def __init__(self, parent, current: dict | None = None):
-        super().__init__(parent, "设置快捷键绑定", 580, 300)
+        super().__init__(parent, "设置快捷键绑定", 580, 350)
+        self.settings = load_app_settings()
+        self.category_var = tk.StringVar(value=SCRIPT_CATEGORY_LABELS["level"])
         self.current = dict(current) if current else None
         self.key_vk = int((current or {}).get("vk") or 0)
         self.key_name_var = tk.StringVar(
@@ -720,24 +727,37 @@ class HotkeyBindingDialog(ModalDialog):
             key_row, text="按下新键…", width=10,
             command=self._capture_key,
         ).pack(side="left", padx=pad(8, 0))
-        ttk.Label(body, text="执行脚本").grid(row=1, column=0, sticky="w", pady=px(8))
+        ttk.Label(body, text="脚本分类").grid(row=1, column=0, sticky="w", pady=px(8))
+        category_box = ttk.Combobox(
+            body, textvariable=self.category_var,
+            values=tuple(label for category, label in SCRIPT_CATEGORY_LABELS.items() if category != "all"),
+            state="readonly",
+        )
+        category_box.grid(row=1, column=1, sticky="ew")
+        category_box.bind("<<ComboboxSelected>>", self._script_category_changed)
+        category_box.bind("<MouseWheel>", lambda _event: "break")
+        ttk.Label(body, text="执行脚本").grid(row=2, column=0, sticky="w", pady=px(8))
         script_row = ttk.Frame(body)
-        script_row.grid(row=1, column=1, sticky="ew")
+        script_row.grid(row=2, column=1, sticky="ew")
         self.script_box = ttk.Combobox(
-            script_row, textvariable=self.script_var, width=34,
+            script_row, textvariable=self.script_var, width=34, state="readonly",
         )
         self.script_box.pack(side="left", fill="x", expand=True)
         self.script_box.bind("<MouseWheel>", lambda _event: "break")
         self._refresh_script_options()
         ttk.Label(
             body,
-            text="执行脚本只能从「scripts/方向」目录选择（下拉只显示脚本名）；按快捷键立即执行该脚本（快捷键本身不会录进当前脚本，脚本回放的按键与鼠标会被录进）。",
+            text="先选择脚本分类，再选择该分类中的脚本（含自定义目录）；脚本名后显示所在目录。按快捷键立即执行，快捷键本身不会录进当前脚本，回放的按键与鼠标会被录进。",
             foreground=COLOR_MUTED, wraplength=px(500),
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(12, 0))
         buttons = ttk.Frame(body)
-        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="确定", command=self.save)
+        save_button.pack(side="right", padx=px(8))
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button,
+            lambda: (self.key_vk, self.script_var.get()), new=self.current is None)
 
         # 固定 300 高度在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
         # 高 DPI 下各行与说明文字的实际需求高度超过窗口，按钮行被挤出窗口。
@@ -745,32 +765,25 @@ class HotkeyBindingDialog(ModalDialog):
         fit_window_to_content(self, parent)
 
     def _refresh_script_options(self):
-        root = resolve_path(DIRECTION_SCRIPTS_DIR)
-        try:
-            root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
-        labels = {}
-        try:
-            files = direction_script_files()
-        except Exception:
-            files = []
-        for path in files:
-            # 下拉只显示脚本名，不显示父辈目录。
-            labels[path.stem] = path
         saved = self.script_var.get().strip()
-        if saved:
-            candidate = resolve_path(saved)
-            try:
-                resolved = candidate.resolve()
-                inside = resolved == root.resolve() or root.resolve() in resolved.parents
-            except OSError:
-                inside = False
-            if candidate.is_file() and inside:
-                # 已保存的是相对/绝对路径：回填为脚本名。
-                self.script_var.set(candidate.stem)
+        if saved and saved not in getattr(self, "_script_labels", {}):
+            category = script_category_from_dir(saved, self.settings)
+            if category:
+                self.category_var.set(SCRIPT_CATEGORY_LABELS[category])
+        labels = {
+            f"{path.stem}（{display_path(path.parent)}）": path
+            for path in configured_script_files(self.settings)
+            if SCRIPT_CATEGORY_LABELS.get(script_category_from_dir(path, self.settings)) == self.category_var.get()
+        }
+        if saved and saved not in labels:
+            resolved = resolve_path(saved).resolve()
+            self.script_var.set(next((label for label, path in labels.items() if path.resolve() == resolved), ""))
         self._script_labels = labels
         self.script_box.configure(values=list(labels))
+
+    def _script_category_changed(self, _event=None):
+        self.script_var.set("")
+        self._refresh_script_options()
 
     def _capture_key(self):
         self.key_label.configure(text="请按键…")
@@ -827,25 +840,14 @@ class HotkeyBindingDialog(ModalDialog):
             show_floating_notice(self, "快捷键不可用", f"{name} 是系统功能键，不能单独作为快捷键。")
             return
         if self.key_vk in RESERVED_HOTKEY_VKS:
-            show_floating_notice(self, "快捷键不可用", "F8/F9/F10/F12 已被录制、执行与紧急停止占用。")
+            show_floating_notice(self, "快捷键不可用", "F6/F7/F8/F9/F10/F12 已被锁定、录制、执行与紧急停止占用。")
             return
         raw = self.script_var.get().strip()
         path = self._script_labels.get(raw)
         if path is None:
-            # 只允许 scripts/方向 目录里的脚本：按名字或路径解析后校验目录。
-            candidate = resolve_path(raw)
-            root = resolve_path(DIRECTION_SCRIPTS_DIR)
-            try:
-                resolved = candidate.resolve()
-                inside = resolved == root.resolve() or root.resolve() in resolved.parents
-            except OSError:
-                inside = False
-            if candidate.is_file() and inside:
-                path = candidate
-        if path is None:
             show_floating_notice(
                 self, "缺少脚本",
-                f"只能选择「{DIRECTION_SCRIPTS_DIR}」目录中的脚本（下拉只显示脚本名）。",
+                "请从下拉列表选择一个脚本；支持关卡、关卡封装、切换和方向全部类别。",
             )
             return
         self.result = {"key": name, "vk": self.key_vk, "script": display_path(path)}
@@ -896,12 +898,15 @@ class HotkeyScriptsDialog(ModalDialog):
         bottom = ttk.Frame(self, padding=pad(18, 8, 18, 14))
         bottom.pack(fill="x")
         ttk.Label(
-            bottom, text="F8/F9/F10/F12 为系统功能键，不可绑定；快捷键脚本按纯动作执行。",
+            bottom, text="F6/F7/F8/F9/F10/F12 为系统功能键，不可绑定；快捷键脚本按纯动作执行。",
             foreground=COLOR_MUTED,
         ).pack(side="left")
         ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text="保存", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(bottom, text="保存", command=self.save)
+        save_button.pack(side="right", padx=px(8))
         self._render()
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button, lambda: self.bindings)
 
         # 固定 720×470 在打包后的 EXE（按真实 DPI 渲染）里会装不下内容：
         # 高 DPI 下列表行高、按钮和说明文字的需求尺寸都变大，底部按钮行被
@@ -992,104 +997,6 @@ class HotkeyScriptsDialog(ModalDialog):
         self.destroy()
 
 
-class WindowPicker(ModalDialog):
-    def __init__(self, parent, title: str = "选择要绑定的窗口",
-                 confirm_text: str = "绑定所选窗口"):
-        super().__init__(parent, title, 820, 520)
-        self.confirm_text = confirm_text
-        self.windows: list[WindowInfo] = []
-        self.search_var = tk.StringVar()
-        self.dragging = False
-        top = ttk.Frame(self, padding=px(14))
-        top.pack(fill="x")
-        ttk.Label(top, text="搜索窗口").pack(side="left")
-        entry = ttk.Entry(top, textvariable=self.search_var, width=42)
-        entry.pack(side="left", padx=px(10))
-        entry.bind("<KeyRelease>", lambda _: self._render())
-        self.drag_handle = tk.Label(
-            top, text="✚", width=3, cursor="crosshair",
-            background=COLOR_BLUE_SELECTION, foreground=COLOR_TEXT,
-            font=("Segoe UI Symbol", 13), relief="raised", bd=1,
-        )
-        self.drag_handle.pack(side="right", padx=pad(8, 0))
-        self.drag_handle.bind("<ButtonPress-1>", self._drag_start)
-        self.drag_handle.bind("<B1-Motion>", self._drag_motion)
-        self.drag_handle.bind("<ButtonRelease-1>", self._drag_release)
-        ttk.Label(top, text="按住十字拖到目标窗口后松开", foreground=COLOR_MUTED).pack(side="right", padx=pad(8, 0))
-        ttk.Button(top, text="刷新", command=self.refresh).pack(side="right")
-        frame = ttk.Frame(self, padding=pad(14, 0, 14, 8))
-        frame.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(frame, columns=("title", "class", "process"), show="headings", selectmode="browse")
-        self.tree.heading("title", text="窗口标题")
-        self.tree.heading("class", text="窗口类")
-        self.tree.heading("process", text="进程")
-        self.tree.column("title", width=px(360))
-        self.tree.column("class", width=px(220))
-        self.tree.column("process", width=px(180))
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self.tree.bind("<Double-1>", lambda _: self.choose())
-        bottom = ttk.Frame(self, padding=px(14))
-        bottom.pack(fill="x")
-        ttk.Label(bottom, text="仅显示当前可见且有标题的顶层窗口。", foreground=COLOR_MUTED).pack(side="left")
-        ttk.Button(bottom, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(bottom, text=self.confirm_text, command=self.choose).pack(side="right", padx=px(8))
-        self.refresh()
-
-    def refresh(self):
-        self.windows = selectable_target_windows(enum_windows())
-        self._render()
-
-    def _render(self):
-        query = self.search_var.get().strip().lower()
-        self.tree.delete(*self.tree.get_children())
-        for index, item in enumerate(self.windows):
-            process_path = str(item.process_path or "")
-            if query and query not in item.title.lower() and query not in item.class_name.lower() \
-                    and query not in process_path.lower():
-                continue
-            self.tree.insert("", "end", iid=str(index),
-                             values=(item.title, item.class_name, Path(process_path).name))
-
-    def choose(self):
-        selected = self.tree.selection()
-        if not selected:
-            show_floating_notice(self, "请选择", "请先选择一个窗口。")
-            return
-        self.result = self.windows[int(selected[0])]
-        self.destroy()
-
-
-    def _drag_start(self, _event):
-        self.dragging = True
-        self.configure(cursor="crosshair")
-        self.drag_handle.configure(text="●")
-
-    def _drag_motion(self, _event):
-        if not self.dragging:
-            return
-        x, y = get_cursor_pos()
-        info = window_from_point(x, y)
-        if info and not is_current_process_window(info.hwnd):
-            self.title(f"拖放选择：{info.title or info.class_name}")
-        else:
-            self.title("选择要绑定的窗口")
-
-    def _drag_release(self, _event):
-        if not self.dragging:
-            return
-        self.dragging = False
-        self.configure(cursor="")
-        self.drag_handle.configure(text="✚")
-        x, y = get_cursor_pos()
-        info = window_from_point(x, y)
-        if info and not is_current_process_window(info.hwnd):
-            self.result = info
-            self.destroy()
-        else:
-            self.title("选择要绑定的窗口")
 
 
 class ResolutionStyleEditorDialog(ModalDialog):
@@ -1152,9 +1059,14 @@ class ResolutionStyleEditorDialog(ModalDialog):
         buttons = ttk.Frame(body)
         buttons.grid(row=5, column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="确定", command=self.save)
+        save_button.pack(side="right", padx=px(8))
         self._refresh_system_options()
         fit_window_to_content(self, parent)
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button,
+            lambda: tuple(v.get() for v in (self.name, self.width, self.height, self.refresh_rate, self.scale_percent)),
+            new=self._is_new)
 
     def _resolution_text(self) -> str:
         return f"{self.width.get()} × {self.height.get()}"
@@ -1276,8 +1188,11 @@ class ResolutionStylesDialog(ModalDialog):
         ttk.Button(buttons, text="编辑", command=self.edit).pack(side="left", padx=pad(6, 0))
         ttk.Button(buttons, text="删除", command=self.remove).pack(side="left", padx=pad(6, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=pad(0, 8))
+        save_button = ttk.Button(buttons, text="保存", command=self.save)
+        save_button.pack(side="right", padx=pad(0, 8))
         self._refresh_tree()
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button, lambda: self.styles)
 
     def _refresh_tree(self):
         self.tree.delete(*self.tree.get_children())

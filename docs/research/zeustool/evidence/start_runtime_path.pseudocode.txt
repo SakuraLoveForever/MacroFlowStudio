@@ -1,0 +1,135 @@
+uint __cdecl fcn.004a2b50(int8_t arg_8h)
+
+{
+    int iVar1;
+    uint32_t uVar2;
+    uchar uVar3;
+    uint32_t uVar4;
+    int iVar5;
+    int iVar6;
+    int iVar7;
+    float8 fVar8;
+    float8 fVar9;
+    float8 fVar10;
+    float8 fVar11;
+    float8 fVar12;
+    float8 fVar13;
+    int iStack_6c;
+    int iStack_68;
+    float8 fStack_58;
+    float8 fStack_50;
+    float8 fStack_48;
+    uint32_t uStack_40;
+    uint32_t uStack_38;
+    uint32_t uStack_1c;
+
+    if (*0xbb1bb8 == *0xbb1bbc) {
+        uVar4 = *0xbb1bbc & 0xffffff00;
+        goto code_r0x004a2e88;
+    }
+    iVar5 = 0;
+    if (((arg_8h != 0) && (1 < *0xbb1bbc - *0xbb1bb8 >> 5)) && (*0xbb1c90 != '\0')) {
+        iVar6 = *0xbb1bbc - *0xbb1bb8 >> 5;
+        if (1 < iVar6) {
+            iStack_6c = -1;
+            fStack_58 = *0xb41430;
+            iStack_68 = -1;
+            fStack_48 = *0xb41430;
+            iVar7 = 0;
+            fStack_50 = *0xb41430;
+            iVar5 = 0;
+            do {
+                fVar8 = *(iVar7 + *0xbb1bb8);
+                fVar9 = *(iVar7 + 8 + *0xbb1bb8);
+                fVar12 = *(iVar7 + 0x20 + *0xbb1bb8) - fVar8;
+                fVar13 = *(iVar7 + 0x28 + *0xbb1bb8) - fVar9;
+                fVar10 = fVar13 * fVar13 + fVar12 * fVar12;
+                if (*0xb413b8 <= fVar10) {
+                    fVar10 = ((*0xbb1c38 - fVar9) * fVar13 + (*0xbb1c30 - fVar8) * fVar12) / fVar10;
+                    if (0.0 <= fVar10) goto code_r0x004a2c26;
+                    fVar11 = 0.0;
+                }
+                else {
+                    fVar10 = 0.0;
+code_r0x004a2c26:
+                    fVar11 = *0xb413e8;
+                    if (fVar10 <= *0xb413e8) {
+                        fVar11 = fVar10;
+                    }
+                }
+                fVar10 = *0xbb1c30 - (fVar11 * fVar12 + fVar8);
+                fVar8 = *0xbb1c38 - (fVar11 * fVar13 + fVar9);
+                fVar8 = fVar8 * fVar8 + fVar10 * fVar10;
+                if (fVar8 < 0.0) {
+                    func_0x009e49d0();
+                }
+                else {
+                    fVar8 = SQRT(fVar8);
+                }
+                if (fVar8 <= *0xb41420) {
+                    fVar9 = *0xbb1c40 -
+                            ((*(iVar7 + 0x30 + *0xbb1bb8) - *(iVar7 + 0x10 + *0xbb1bb8)) * fVar11 +
+                            *(iVar7 + 0x10 + *0xbb1bb8));
+                    fVar9 = CONCAT44(fVar9 >> 0x20 & *0xb416a4,SUB84(fVar9,0) & *0xb416a0);
+                    if ((fVar9 <= *0xb41410) && (fVar8 < fStack_58)) {
+                        iStack_6c = iVar5;
+                        fStack_58 = fVar8;
+                    }
+                    if ((fVar9 < fStack_50 - *0xb413c0) || ((fVar9 <= fStack_50 + *0xb413c0 && (fVar8 < fStack_48)))) {
+                        iStack_68 = iVar5;
+                        fStack_50 = fVar9;
+                        fStack_48 = fVar8;
+                    }
+                }
+                iVar7 = iVar7 + 0x20;
+                iVar1 = iVar5 + 2;
+                iVar5 = iVar5 + 1;
+            } while (iVar1 < iVar6);
+            if (-1 < iStack_6c) {
+                iStack_68 = iStack_6c;
+            }
+            if ((-1 < iStack_68) && (iVar5 = iStack_68 + 1, iStack_68 + 1 < iVar6)) goto code_r0x004a2db7;
+        }
+        if ((*0xbb1bc4 < 0) || (iVar5 = *0xbb1bc4, *0xbb1bbc - *0xbb1bb8 >> 5 <= *0xbb1bc4)) {
+            iVar5 = 0;
+        }
+    }
+code_r0x004a2db7:
+    LOCK();
+    UNLOCK();
+    uVar4 = uStack_40 >> 8;
+    uStack_40 = uVar4 << 8;
+    uVar2 = uStack_38 >> 8;
+    uStack_38 = uVar2 << 8;
+    *0xbb1bd0 = uStack_40;
+    *0xbb1bd4 = 0;
+    *0xbb1bd8 = uStack_38;
+    *0xbb1bdc = 0;
+    *0xbb1be0 = 0;
+    *0xbb1be4 = 0;
+    *0xbb1be8 = 0;
+    *0xbb1bec = 0;
+    *0xbb1bf0 = uStack_1c << 0x20;
+    uStack_40 = uVar4 << 8;
+    uStack_38 = uVar2 << 8;
+    *0xbb1bf8 = uStack_40;
+    *0xbb1bfc = 0;
+    *0xbb1c00 = uStack_38;
+    *0xbb1c04 = 0;
+    *0xbb1c08 = 0;
+    *0xbb1c0c = 0;
+    *0xbb1c10 = 0;
+    *0xbb1c14 = 0;
+    *0xbb1c18 = uStack_1c << 0x20;
+    LOCK();
+    *0xbb1cb8 = 1;
+    UNLOCK();
+    uVar4 = 0xbb1b01;
+    *0xbb1bc4 = iVar5;
+code_r0x004a2e88:
+    uVar3 = *0xbb1bc8;
+    LOCK();
+    *0xbb1bc8 = uVar4;
+    UNLOCK();
+    return CONCAT31(uVar4 >> 8,uVar3);
+}

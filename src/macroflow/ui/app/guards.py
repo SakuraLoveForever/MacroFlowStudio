@@ -1,73 +1,43 @@
 from __future__ import annotations
 from macroflow.core.timed_detection import sustained_detection
+from macroflow.core.workflow_plugins import PROCESS_ABSENCE_RESTART
 
-from macroflow.execution.player import (
-    JUMP_CURRENT_SCRIPT_LAST_RESULT, MAX_SCRIPT_REF_DEPTH,
-    AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest,
-    JumpToCurrentScriptLastAction, MacroPlayer, PlaybackStopped,
-    screen_template_scale, is_process_running,
-)
-from macroflow.core.storage import (
-    BASE_DIR, IMAGES_DIR, SCRIPTS_DIR, WORKFLOWS_DIR, archive_overwritten_script,
-    DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
-    available_script_path, backup_script,
-    display_path, ensure_dirs, migrate_workflow_templates, safe_name,
-    DIRECTION_SCRIPTS_DIR,
-    load_app_settings, load_script, load_workflow,
-    script_category_for_path,
-    registered_module_object, registered_template_region, remap_hotkey_script_bindings,
-    resolve_path, save_app_settings,
-    save_script, save_workflow,
-    update_module_object,
-)
-from macroflow.execution.detection_worker import DetectionEvaluation, DetectionWorker
-from macroflow.input.wininput import (
-    WindowInfo, activate_window, enum_windows, get_cursor_pos,
-    get_monitor_rect_for_window, get_monitor_work_area_for_point,
-    get_monitor_work_area_for_window, get_primary_screen_rect, get_virtual_screen_rect,
-    get_window_dpi,
-    force_english_input, get_foreground_window_info, get_window_rect,
-    is_current_process_window, is_window, is_window_process_foreground,
-    make_window_no_activate, move_window_no_activate, send_button, send_move_absolute,
-    set_dark_titlebar, set_rounded_window, show_window,
-    show_window_no_activate,
-)
+from macroflow.execution.player import AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest, JumpToCurrentScriptLastAction, PlaybackStopped, screen_template_scale, is_process_running
+from macroflow.core.storage import DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS, DEFAULT_MODULE_RECHECK_DELAY_MS, DEFAULT_MODULE_TRIGGER_COOLDOWN_MS, load_script, registered_module_object, resolve_path
+from macroflow.execution.detection_worker import DetectionEvaluation
+from macroflow.input.wininput import WindowInfo, activate_window, get_monitor_work_area_for_window, get_primary_screen_rect, get_foreground_window_info, get_window_rect, is_current_process_window, is_window, is_window_process_foreground, make_window_no_activate, move_window_no_activate, send_button, send_move_absolute, set_dark_titlebar, set_rounded_window, show_window_no_activate
 from macroflow.core.image_match import capture_bgr, find_template, find_template_in_image
-from datetime import datetime
 import math
-from macroflow.core.ocr import (
-    _get_engine, find_expected_match, format_ocr_observation, matches_expected,
-    ocr_match_center, recognize_image_with_boxes, recognize_region_with_boxes,
-    set_progress_callback,
-)
+from macroflow.core.ocr import find_expected_match, format_ocr_observation, matches_expected, ocr_match_center, recognize_image_with_boxes, recognize_region_with_boxes
 import os
 import re
-from macroflow.core.alerts import play_alert, prewarm_alert
+from macroflow.core.alerts import play_alert
 from macroflow.ui.detect_overlay import hide_overlay, show_overlay
 import threading
 import time
 import tkinter as tk
 import ttkbootstrap as ttk
 
-from .base import (
-    pad,
-    px,
-    workflow_execution_progress,
-)
-from .constants import (
-    COLOR_BG,
-    COLOR_GREEN,
-    COLOR_RED,
-    COLOR_SURFACE,
-    COLOR_MUTED,
-    COLOR_SURFACE_ALT,
-    COLOR_TEXT,
-    FONT_BODY,
-    FONT_FAMILY,
-)
+from .base import px, workflow_execution_progress
+from .constants import COLOR_BG, COLOR_GREEN, COLOR_RED, COLOR_SURFACE, COLOR_MUTED, COLOR_SURFACE_ALT, COLOR_TEXT, FONT_FAMILY
 
 class GuardsMixin:
     """守卫引擎：共享截图、图片 / OCR / 数字条件评估与命中构造。"""
+
+    def _pause_workflow_plugins(self, paused: bool) -> None:
+        if not getattr(self, "global_guards", None):
+            return
+        now = time.perf_counter()
+        with self.guards_lock:
+            for guard in self.global_guards.values():
+                if guard.get("plugin") != PROCESS_ABSENCE_RESTART:
+                    continue
+                if paused:
+                    guard.setdefault("plugin_pause_since", now)
+                else:
+                    started = guard.pop("plugin_pause_since", None)
+                    if started is not None:
+                        guard["plugin_pause_seconds"] = guard.get("plugin_pause_seconds", 0.0) + max(0.0, now - started)
 
     @staticmethod
     def _ocr_region_in_frame(screen, origin, region) -> tuple:
@@ -92,14 +62,23 @@ class GuardsMixin:
         if str(guard.get("recognize", "")) == "text":
             interval = max(interval, 500)
         return interval / 1000.0
+    def _guard_recheck_delay(self, guard: dict) -> float:
+        """识别确认的等待时长（秒）：首次识别结束后隔这么久才做第二次识别。"""
+        return max(
+            1000, int(guard.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS)),
+        ) / 1000.0
     def _evaluate_global_guards(self) -> dict | None:
+        from .plugins_runtime import claim_plugin_hit
+        plugin_hit = claim_plugin_hit(self)
+        if plugin_hit is not None:
+            return plugin_hit
         worker = getattr(self, "_detection_worker", None)
         if worker is None:
             evaluation = self._evaluate_global_guards_sync()
             if isinstance(evaluation, DetectionEvaluation):
                 self._consume_detection_events(evaluation.deferred_events)
-                return evaluation.hit
-            return evaluation
+                return self._plugin_scope_hit(evaluation.hit)
+            return self._plugin_scope_hit(evaluation)
         if getattr(self, "exiting", False):
             return None
         result = worker.poll()
@@ -123,7 +102,7 @@ class GuardsMixin:
                         and result.hit.get("hwnd") is None:
                     result.hit["hwnd"] = self._bound_hwnd(update_display=False)
                 self._consume_detection_events(result.deferred_events)
-                return result.hit
+                return self._plugin_scope_hit(result.hit)
         player = getattr(self, "player", None)
         if player is None or player.stop_event.is_set():
             return None
@@ -136,6 +115,14 @@ class GuardsMixin:
             if recovery is not None:
                 recovery.detector_pending_at = time.monotonic()
         return None
+    def _plugin_scope_hit(self, hit):
+        player = getattr(self, 'player', None)
+        scope = player.__dict__.get('_plugin_action_scope_ids') if player is not None else None
+        owned = player.__dict__.get('_plugin_owned_scopes') if player is not None else None
+        if hit is not None and scope is not None and frozenset(hit.get('scope_action_ids') or ()) not in (owned or {scope}):
+            self._rollback_detection_hit(hit)
+            return None
+        return hit
     def _rollback_detection_hit(self, hit) -> None:
         """Undo the guard state advanced by one detection result we cannot deliver."""
         if not isinstance(hit, dict):
@@ -222,11 +209,20 @@ class GuardsMixin:
         now = time.perf_counter()
         with self.guards_lock:
             guards = [guard for guard in list(self.global_guards.values())]
+        plugin_scope = player.__dict__.get('_plugin_action_scope_ids') if player is not None else None
+        if plugin_scope is not None:
+            owned_scopes = player.__dict__.get('_plugin_owned_scopes') or {plugin_scope}
+            guards = [guard for guard in guards
+                      if frozenset(guard.get('scope_action_ids') or ()) in owned_scopes]
         if not guards:
             return DetectionEvaluation()
         due: list[dict] = []
         for guard in guards:
-            if now - float(guard.get("last_check_time", 0.0)) < self._guard_check_interval(guard):
+            recheck_at = guard.get("recheck_started_at")
+            if recheck_at is not None:
+                if now - recheck_at < self._guard_recheck_delay(guard):
+                    continue
+            elif now - float(guard.get("last_check_time", 0.0)) < self._guard_check_interval(guard):
                 continue
             start_delay = int(guard.get("start_delay_ms", 0))
             if start_delay and (now - float(guard.get("start_delay_since", now))) * 1000 < start_delay:
@@ -282,10 +278,17 @@ class GuardsMixin:
         return DetectionEvaluation(hits[0], tuple(deferred_events))
     def _evaluate_one_guard(self, guard: dict, screen, origin, now: float,
                             deferred_events: list[dict] | None = None) -> dict | None:
+        if guard.get("plugin") == PROCESS_ABSENCE_RESTART and self.player.paused:
+            return None
         deferred_events = deferred_events if deferred_events is not None else []
         if guard.get("module_ref"):
             self._refresh_guard_from_module(guard)
         recognize = str(guard.get("recognize", ""))
+        recheck = bool(guard.get("recheck_enabled")) and recognize not in ("none", "process", "number") and not guard.get("timed_detection")
+        if not recheck:
+            guard.pop("recheck_started_at", None)
+        elif guard.get("recheck_started_at") is not None and now - guard["recheck_started_at"] < self._guard_recheck_delay(guard):
+            return None
         detected = False
         match = None
         if recognize == "none":
@@ -310,9 +313,15 @@ class GuardsMixin:
             detected, match = self._guard_text_detect(guard, screen, origin)
         else:
             detected, match = self._guard_image_detect(guard, screen, origin)
+        if recheck:
+            if guard.pop("recheck_started_at", None) is None:
+                guard["recheck_started_at"] = time.perf_counter()
+                return None
         if guard.get("timed_detection"):
             observation = None if guard.get("warned_missing_template") or guard.get("warned_find_error") else detected
             state = guard.setdefault("timed_state", {})
+            if guard.get("plugin") == PROCESS_ABSENCE_RESTART:
+                now -= guard.get("plugin_pause_seconds", 0.0)
             if sustained_detection(state, observation, guard.get("timed_condition", "absent"),
                                    int(guard.get("timed_duration_ms", 30000)), now):
                 label = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
@@ -497,10 +506,13 @@ class GuardsMixin:
             )
             guard["hold_enabled"] = bool(obj.get("hold_enabled", False))
             guard["hold_ms"] = max(0, int(obj.get("hold_ms", guard["hold_ms"])))
-            # 命中后、点击前的等待（就是模块表单里的「延时」）：游戏弹窗刚出现那
-            # 一瞬间点击常常被吞掉，这个值要能边跑边调（实时重读，见方法注释）。
-            guard["delay_ms"] = max(
-                0, min(60000, int(obj.get("delay_ms", guard.get("delay_ms", 0)))),
+            guard["delay_ms"] = 0
+            guard["recheck_enabled"] = bool(obj.get("recheck_enabled", False))
+            guard["recheck_delay_ms"] = max(
+                1000, min(600000, int(obj.get(
+                    "recheck_delay_ms",
+                    guard.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS),
+                ))),
             )
             guard["timeout_enabled"] = bool(obj.get("run_code_on_timeout", False)) and not bool(
                 obj.get("wait_text_absent", False)
@@ -760,6 +772,8 @@ class GuardsMixin:
             "hwnd": hwnd,
             "match": guard.get("match_data"),
         }
+        if guard.get('scope_action_ids'):
+            hit['scope_action_ids'] = tuple(guard['scope_action_ids'])
         if hit["kind"] == "timed":
             return hit
         click = guard.get("click")
@@ -947,7 +961,10 @@ class GuardsMixin:
             hit = self._evaluate_global_guards()
             if hit is not None:
                 try:
+                    started = time.perf_counter()
                     self.player.handle_guard_hit(hit)
+                    if callable(hit.get('_plugin_complete')):
+                        deadline += max(0.0, time.perf_counter() - started)
                 except PlaybackStopped:
                     return False
                 except (EndCurrentScriptRequest, AdvanceToNextWorkflowStep,
@@ -1029,6 +1046,14 @@ class GuardsMixin:
         steps = self._workflow_only_steps()
         target_row = max(1, int(getattr(self, "workflow_restart_target_row", 1) or 1))
         target_index = min(target_row, len(steps)) - 1 if steps else 0
+        segment_options = {}
+        segment = getattr(self, "workflow_segment", None)
+        if segment is not None:
+            target_index = max(segment[0], min(target_index, segment[1]))
+            segment_options = {
+                "segment": segment,
+                "segment_repeats": self.workflow_segment_rounds_remaining,
+            }
         self.workflow_restart_requested = False
         self.workflow_restart_target_row = 1
         self.rebuild_workflow_tree()
@@ -1039,6 +1064,7 @@ class GuardsMixin:
         self.run_workflow(
             start_index=target_index, start_repeat=0, resume_action_index=0,
             preserve_global_cooldowns=True, suppress_start_sound=True,
+            **segment_options,
         )
     def _record_workflow_action(self, next_index):
         """Record the next action index of the current script (player thread)."""
@@ -1344,7 +1370,7 @@ class GuardsMixin:
         show_window_no_activate(hwnd)
     def _update_operation_mini(self):
         self.mini_update_after_id = None
-        active = self.recorder.running or (self.worker and self.worker.is_alive())
+        active = bool(self.recorder is not None and self.recorder.running) or (self.worker and self.worker.is_alive())
         if not active or not self.mini_window or not self.mini_window.winfo_exists():
             return
         self._reposition_operation_mini()

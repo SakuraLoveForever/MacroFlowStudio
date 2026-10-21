@@ -4,7 +4,7 @@ from macroflow.core.models import (
     ACTION_ID_KEY, END_CURRENT_SCRIPT_LABEL, NEXT_WORKFLOW_STEP_TARGET_ID,
     RECORDED_INPUT_STEPS_KEY, RECORDED_INPUT_TYPE,
     SCRIPT_START_TARGET_ID, SCROLL_DOWN_LABEL, SCROLL_UP_LABEL,
-    ensure_action_ids, recorded_input_steps,
+    ensure_action_ids, recorded_input_steps, key_sequence_parameters,
     script_ref_repeat_count, scroll_clicks, scroll_direction_label,
     special_action_label,
 )
@@ -35,14 +35,11 @@ from macroflow.input.wininput import (
     window_from_point,
 )
 import json
-from macroflow.execution.player import running_process_names
+from .process_names import ProcessNamePicker
 import tkinter as tk
 
-from .app_dialogs import (
-    RestartWorkflowTargetDialog,
-    ScriptRefDialog,
-    WindowPicker,
-)
+from .app_dialogs import RestartWorkflowTargetDialog, ScriptRefDialog
+from macroflow.ui.dialogs.windows import WindowPicker
 from .base import (
     COLOR_BG,
     COLOR_BLUE_SELECTION,
@@ -403,26 +400,24 @@ class CloseAppDialog(ModalDialog):
         ttk.Label(body, text="进程名").grid(row=0, column=0, sticky="w", pady=px(8))
         name_row = ttk.Frame(body)
         name_row.grid(row=0, column=1, sticky="ew")
-        ttk.Entry(name_row, textvariable=self.name).pack(side="left", fill="x", expand=True)
-        ttk.Button(name_row, text="选择…", command=self.choose).pack(
-            side="left", padx=pad(6, 0),
-        )
-        ttk.Button(name_row, text="鼠标选取…", command=self._pick_process).pack(
-            side="left", padx=pad(6, 0),
-        )
+        ProcessNamePicker(name_row, self.name).pack(fill="x", expand=True)
         ttk.Label(
             body,
-            text="填任务管理器里的映像名称，如 clash-verge.exe；同名的所有进程都会被结束。",
+            text="从进程名库选择目标；同名的所有进程都会被结束。",
             foreground=COLOR_MUTED, wraplength=px(480),
         ).grid(row=1, column=1, sticky="w")
 
         ttk.Label(
             body, text="主进程、子进程和关联进程共用 3 秒，超时全部强制结束。",
         ).grid(row=2, column=1, sticky="w", pady=pad(10, 0))
-        ttk.Label(body, text="一同关闭的关联进程").grid(row=4, column=0, sticky="w", pady=px(8))
+        related_label = ttk.Label(body, text="一同关闭的关联进程")
+        related_label.grid(row=4, column=0, sticky="w", pady=px(8))
+        Tooltip(
+            related_label,
+            "可选，用英文逗号分隔进程名称；与主进程及所有子进程一同关闭，共用 3 秒时限。",
+        )
         related_entry = ttk.Entry(body, textvariable=self.wait_for_processes)
         related_entry.grid(row=4, column=1, sticky="ew")
-        Tooltip(related_entry, "可选，用英文逗号分隔进程名称；与主进程及所有子进程一同关闭，共用 3 秒时限。")
 
         dark_checkbutton(
             body, "普通权限结束失败时以管理员权限重试（会弹出 UAC 授权窗口）", self.elevated_retry,
@@ -456,59 +451,10 @@ class CloseAppDialog(ModalDialog):
         # 确定/取消按钮完全看不见。按内容实际需求重设窗口尺寸并重新居中。
         fit_window_to_content(self, parent)
 
-    def _pick_process(self):
-        self.picker = ScreenProcessPicker(
-            self, self.master, self.name.set,
-            hidden_windows=app_windows(self.master),
-            tip_text="移动到目标软件，预览进程名；单击确认，Esc 取消",
-        )
-        self.picker.start()
-
-    def choose(self):
-        try:
-            names = running_process_names()
-        except OSError as exc:
-            show_floating_notice(self, "无法枚举进程", f"读取进程列表失败：{exc}")
-            return
-        if not names:
-            show_floating_notice(self, "无法枚举进程", "读取进程列表失败。")
-            return
-        picker = tk.Toplevel(self)
-        picker.title("选择正在运行的进程")
-        picker.configure(background=COLOR_BG)
-        picker.geometry(f"{px(380)}x{px(420)}")
-        picker.transient(self)
-        frame = ttk.Frame(picker, padding=px(12))
-        frame.pack(fill="both", expand=True)
-        listbox = tk.Listbox(
-            frame, font=(FONT_MONO, FONT_BODY),
-            background=COLOR_SURFACE, foreground=COLOR_TEXT,
-            selectbackground=COLOR_BLUE_SELECTION,
-            highlightthickness=1, relief="solid",
-        )
-        scroll = ttk.Scrollbar(frame, orient="vertical", command=listbox.yview)
-        listbox.configure(yscrollcommand=scroll.set)
-        listbox.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        for name in names:
-            listbox.insert("end", name)
-
-        def confirm(_event=None):
-            selection = listbox.curselection()
-            if selection:
-                self.name.set(listbox.get(selection[0]))
-            picker.destroy()
-
-        listbox.bind("<Double-Button-1>", confirm)
-        buttons_row = ttk.Frame(frame)
-        buttons_row.pack(fill="x", pady=pad(10, 0))
-        ttk.Button(buttons_row, text="取消", command=picker.destroy).pack(side="right")
-        ttk.Button(buttons_row, text="确定", command=confirm).pack(side="right", padx=px(8))
-
     def save(self):
         name = self.name.get().strip()
         if not name:
-            show_floating_notice(self, "进程名无效", "请输入要结束的进程名。")
+            show_floating_notice(self, "进程名无效", "请从进程名库选择要结束的进程。")
             return
         try:
             delay = max(0, int(self.delay.get()))
@@ -615,6 +561,179 @@ class KeyActionDialog(ModalDialog):
             updated.update({"type": "key", "vk": vk, "name": name, "down": self.mode.get() == "down", "delay_ms": delay})
             updated.pop("hold_ms", None)
             self.result = updated
+        self.destroy()
+
+
+class KeySequenceDialog(ModalDialog):
+    def __init__(self, parent, action: dict | None = None):
+        super().__init__(parent, "编辑组合按键" if action else "添加组合按键", 620, 410)
+        self._skip_auto_duration_units = True
+        self._source = dict(action or {})
+        self.keys = tk.StringVar(value=self._source.get("keys", ""))
+        self.interval_enabled = tk.BooleanVar(value=bool(self._source.get("interval_enabled", False)))
+        self.interval = tk.StringVar(value=str(self._source.get("interval_ms", 500)))
+        self.cycle_interval_enabled = tk.BooleanVar(value=bool(self._source.get("cycle_interval_enabled", False)))
+        self.cycle_interval = tk.StringVar(value=str(self._source.get("cycle_interval_s", 20)))
+        body = ttk.Frame(self, padding=px(14))
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="按键序列").grid(row=0, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
+        sequence_row = ttk.Frame(body)
+        sequence_row.grid(row=0, column=1, sticky="ew")
+        self.keys_entry = ttk.Entry(sequence_row, textvariable=self.keys, exportselection=False)
+        self.keys_entry.pack(side="left", fill="x", expand=True)
+        self.undo_button = ttk.Button(sequence_row, text="撤销", width=5, command=self.undo_sequence)
+        self.undo_button.pack(side="left", padx=pad(6, 0))
+        self.redo_button = ttk.Button(sequence_row, text="恢复", width=5, command=self.redo_sequence)
+        self.redo_button.pack(side="left", padx=pad(6, 0))
+        self._init_sequence_history()
+        self.keys_entry.bind("<Control-z>", self.undo_sequence)
+        self.keys_entry.bind("<Control-y>", self.redo_sequence)
+        ttk.Checkbutton(body, text="相邻操作间隔 (ms)", variable=self.interval_enabled,
+                        command=self._toggle_interval).grid(row=1, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
+        self.interval_entry = ttk.Entry(body, textvariable=self.interval)
+        self.interval_entry.grid(row=1, column=1, sticky="ew")
+        self._toggle_interval()
+        ttk.Checkbutton(body, text="整套执行间隔 (s)", variable=self.cycle_interval_enabled,
+                        command=self._toggle_cycle_interval).grid(row=2, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
+        self.cycle_interval_entry = ttk.Entry(body, textvariable=self.cycle_interval)
+        self.cycle_interval_entry.grid(row=2, column=1, sticky="ew")
+        self._toggle_cycle_interval()
+        mouse_row = ttk.Frame(body)
+        mouse_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=px(8))
+        self.mouse_action = tk.StringVar(value="左键")
+        self.mouse_count = tk.StringVar(value="1")
+        ttk.Combobox(mouse_row, textvariable=self.mouse_action, values=("左键", "右键", "中键", "滚轮上", "滚轮下"),
+                     state="readonly", width=9).pack(side="left")
+        ttk.Label(mouse_row, text="滚轮次数").pack(side="left", padx=px(8))
+        ttk.Entry(mouse_row, textvariable=self.mouse_count, width=7).pack(side="left")
+        ttk.Button(mouse_row, text="插入鼠标操作", command=self.insert_mouse_action).pack(side="left", padx=px(8))
+        delay_row = ttk.Frame(body)
+        delay_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=px(8))
+        self.insert_delay_enabled = tk.BooleanVar(value=False)
+        self.insert_delay_ms = tk.StringVar(value="500")
+        ttk.Checkbutton(delay_row, text="启用延时插入", variable=self.insert_delay_enabled,
+                        command=self._toggle_insert_delay).pack(side="left")
+        self.insert_delay_entry = ttk.Entry(delay_row, textvariable=self.insert_delay_ms, width=8)
+        self.insert_delay_entry.pack(side="left", padx=px(8))
+        ttk.Label(delay_row, text="ms").pack(side="left")
+        self.insert_delay_button = ttk.Button(delay_row, text="插入延时", command=self.insert_sequence_delay)
+        self.insert_delay_button.pack(side="left", padx=px(8))
+        self._toggle_insert_delay()
+        ttk.Label(body, text="示例：2v[左键][延时:500]e[滚轮下:2]。在序列光标处插入操作；延时处只等待指定时长，其他相邻操作按上方间隔执行。点击与滚动作用于鼠标当前位置。",
+                  foreground=COLOR_MUTED, wraplength=px(560)).grid(row=5, column=0, columnspan=2, sticky="w", pady=px(8))
+        ttk.Label(body, text="字母不区分大小写。相邻操作间隔默认关闭；整套执行间隔未勾选时只执行一次，勾选后从本轮首个操作起计时循环，直到手动停止。",
+                  foreground=COLOR_MUTED, wraplength=px(560)).grid(row=6, column=0, columnspan=2, sticky="w")
+        buttons = ttk.Frame(body)
+        buttons.grid(row=7, column=0, columnspan=2, sticky="ew", pady=pad(12, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+
+    def _toggle_insert_delay(self):
+        state = "normal" if self.insert_delay_enabled.get() else "disabled"
+        self.insert_delay_entry.configure(state=state)
+        self.insert_delay_button.configure(state=state)
+
+    def insert_sequence_delay(self):
+        if not self.insert_delay_enabled.get():
+            return
+        try:
+            raw_ms = self.insert_delay_ms.get()
+            if not raw_ms.isascii() or not raw_ms.isdecimal() or int(raw_ms) <= 0:
+                raise ValueError
+            milliseconds = int(raw_ms)
+        except (ValueError, tk.TclError):
+            show_floating_notice(self, "延时错误", "延时必须是正整数，单位为 ms。")
+            return
+        self.keys_entry.insert("insert", f"[延时:{milliseconds}]")
+        self.keys_entry.focus_set()
+
+    def _init_sequence_history(self):
+        self._sequence_history = [self.keys.get()]
+        self._sequence_history_index = 0
+        self._restoring_sequence = False
+        self.keys.trace_add("write", self._record_sequence_edit)
+        self._update_sequence_history_buttons()
+
+    def _record_sequence_edit(self, *_args):
+        value = self.keys.get()
+        if self._restoring_sequence or value == self._sequence_history[self._sequence_history_index]:
+            return
+        del self._sequence_history[self._sequence_history_index + 1:]
+        self._sequence_history.append(value)
+        self._sequence_history = self._sequence_history[-101:]
+        self._sequence_history_index = len(self._sequence_history) - 1
+        self._update_sequence_history_buttons()
+
+    def _update_sequence_history_buttons(self):
+        self.undo_button.configure(state="normal" if self._sequence_history_index > 0 else "disabled")
+        self.redo_button.configure(state="normal" if self._sequence_history_index < len(self._sequence_history) - 1 else "disabled")
+
+    def _step_sequence_history(self, direction):
+        index = self._sequence_history_index + direction
+        if 0 <= index < len(self._sequence_history):
+            self._sequence_history_index = index
+            self._restoring_sequence = True
+            try:
+                self.keys.set(self._sequence_history[index])
+            finally:
+                self._restoring_sequence = False
+            self.keys_entry.icursor("end")
+            self.keys_entry.focus_set()
+        self._update_sequence_history_buttons()
+        return "break"
+
+    def undo_sequence(self, _event=None):
+        return self._step_sequence_history(-1)
+
+    def redo_sequence(self, _event=None):
+        return self._step_sequence_history(1)
+
+    def insert_mouse_action(self):
+        name = self.mouse_action.get()
+        token = f"[{name}]"
+        if name in ("滚轮上", "滚轮下"):
+            count = self.mouse_count.get()
+            if not count.isascii() or not count.isdecimal() or int(count) <= 0:
+                show_floating_notice(self, "次数错误", "滚轮次数必须是正整数。")
+                return
+            token = f"[{name}:{int(count)}]"
+        self.keys_entry.insert("insert", token)
+        self.keys_entry.focus_set()
+
+    def _toggle_interval(self):
+        self.interval_entry.configure(state="normal" if self.interval_enabled.get() else "disabled")
+
+    def _toggle_cycle_interval(self):
+        self.cycle_interval_entry.configure(state="normal" if self.cycle_interval_enabled.get() else "disabled")
+
+    def save(self):
+        try:
+            parameters = {
+                "keys": self.keys.get(), "interval_ms": self.interval.get(),
+                "interval_enabled": self.interval_enabled.get(),
+                "cycle_interval_enabled": self.cycle_interval_enabled.get(),
+                "cycle_interval_s": self.cycle_interval.get(),
+            }
+            keys, interval, cycle = key_sequence_parameters(parameters)
+        except (ValueError, tk.TclError) as exc:
+            show_floating_notice(self, "参数错误", str(exc))
+            return
+        if not parameters["interval_enabled"]:
+            try:
+                _, interval, _ = key_sequence_parameters({**parameters, "interval_enabled": True})
+            except ValueError:
+                interval = 500
+        if not parameters["cycle_interval_enabled"]:
+            try:
+                _, _, cycle = key_sequence_parameters({**parameters, "cycle_interval_enabled": True})
+            except ValueError:
+                cycle = self._source.get("cycle_interval_s", 20)
+        self.result = dict(getattr(self, "_source", None) or {})
+        self.result.update({"type": "key_sequence", "keys": keys, "interval_ms": interval,
+                            "interval_enabled": bool(self.interval_enabled.get()),
+                            "cycle_interval_enabled": bool(self.cycle_interval_enabled.get()),
+                            "cycle_interval_s": cycle})
         self.destroy()
 
 
@@ -1188,7 +1307,10 @@ class GameSetupNoteDialog(ModalDialog):
         buttons.pack(fill="x", pady=pad(12, 0))
         ttk.Button(buttons, text="恢复默认", command=self._restore_default).pack(side="left")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="确定", command=self.save)
+        save_button.pack(side="right", padx=px(8))
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button, lambda: self.text.get("1.0", "end-1c"))
 
     def _restore_default(self):
         if self.text.get("1.0", "end-1c").strip() != DEFAULT_GAME_SETUP_NOTE.strip() \
@@ -1484,9 +1606,18 @@ class SetResolutionActionDialog(ModalDialog):
 
 
 class JsonActionDialog(ModalDialog):
+    """高级动作编辑：直接改动作 JSON。
+
+    键盘动作的虚键码在编辑器里显示成按键名（W、E、SPACE、F5…），保存时换回虚键码，
+    这样能看懂录了什么键、也能直接把键位改成别的字母。
+    """
+
+    KEY_EVENT_TYPES = ("key", "key_press")
+
     def __init__(self, parent, action: dict):
         super().__init__(parent, "高级动作编辑", 640, 500)
-        ttk.Label(self, text="编辑当前动作参数（JSON）", padding=pad(14, 10, 14, 5)).pack(anchor="w")
+        ttk.Label(self, text="编辑当前动作参数（JSON）· 按键写 W、E、SPACE、F5 这类名称即可",
+                  padding=pad(14, 10, 14, 5)).pack(anchor="w")
         self.text = tk.Text(
             self, font=(FONT_MONO, FONT_SUBTITLE), wrap="none", undo=True,
             background=COLOR_SURFACE, foreground=COLOR_TEXT,
@@ -1494,17 +1625,52 @@ class JsonActionDialog(ModalDialog):
             relief="flat", borderwidth=0, padx=px(12), pady=px(10),
         )
         self.text.pack(fill="both", expand=True, padx=px(18))
-        self.text.insert("1.0", json.dumps(action, ensure_ascii=False, indent=2))
+        self.text.insert("1.0", json.dumps(self._with_key_names(action), ensure_ascii=False, indent=2))
         buttons = ttk.Frame(self, padding=px(12))
         buttons.pack(fill="x")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
-        ttk.Button(buttons, text="保存", command=self.save).pack(side="right", padx=px(8))
+        save_button = ttk.Button(buttons, text="保存", command=self.save)
+        save_button.pack(side="right", padx=px(8))
+        from macroflow.ui.save_state import SaveState
+        self.save_state = SaveState(self, save_button, lambda: self.text.get("1.0", "end-1c"))
+
+    @classmethod
+    def _with_key_names(cls, value):
+        """显示用：按键动作的 vk 换成按键名，隐藏随之冗余的 name 字段。"""
+        if isinstance(value, list):
+            return [cls._with_key_names(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: cls._with_key_names(item) for key, item in value.items()}
+        if result.get("type") in cls.KEY_EVENT_TYPES and isinstance(result.get("vk"), (int, str)):
+            try:
+                vk, _ = key_to_vk(str(result["vk"]))
+            except ValueError:
+                pass          # 认不出的旧值原样显示，保存时再报格式错误
+            else:
+                result["vk"] = vk_to_key_name(vk)
+                result.pop("name", None)
+        return result
+
+    @classmethod
+    def _with_key_codes(cls, value):
+        """保存用：按键名换回虚键码，并回填 name（列表里显示按键名要用它）。"""
+        if isinstance(value, list):
+            return [cls._with_key_codes(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: cls._with_key_codes(item) for key, item in value.items()}
+        if result.get("type") in cls.KEY_EVENT_TYPES and result.get("vk") not in (None, ""):
+            vk, name = key_to_vk(str(result["vk"]))
+            result["vk"], result["name"] = vk, name
+        return result
 
     def save(self):
         try:
             value = json.loads(self.text.get("1.0", "end"))
             if not isinstance(value, dict) or not value.get("type"):
                 raise ValueError("动作必须是包含 type 的对象")
+            value = self._with_key_codes(value)
         except (json.JSONDecodeError, ValueError) as exc:
             show_floating_notice(self, "格式错误", str(exc))
             return
@@ -1569,8 +1735,30 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         return preserve_identity(
             ModuleReferenceDelayDialog(parent, action, actions=all_actions).show(),
         )
+    from .recorded_steps import RecordedStepDialog, RouteActionDialog
+    if kind == "ssjj_recording":
+        # 坐标路线不再退回整段 JSON：纠正点与键鼠输入各占一行，双击改其中一项。
+        try:
+            return preserve_identity(RouteActionDialog(parent, action).show())
+        except ValueError as exc:
+            show_floating_notice(parent, "无法编辑这条路线", str(exc))
+            return None
+    if kind == "ssjj_aim":
+        from .ssjj_aim import AimActionDialog
+        return preserve_identity(AimActionDialog(parent, action).show())
+    if kind == "ssjj_wait_mobs_absent":
+        value = DurationDialog(parent, "等待小怪消失",
+                               "连续未检测到小怪才继续（含精英，不含 BOSS）：",
+                               action.get("duration_ms", 5000)).show()
+        return None if value is None else preserve_identity({**action, "duration_ms": value})
+    if RecordedStepDialog.handles(action):
+        # 录制时间轴上的步骤必须由它改：它保留 recorded_at_ms/delay_ms，
+        # 而面板里的对话框会把这些字段丢掉，时间轴就散了。
+        return preserve_identity(RecordedStepDialog(parent, action).show())
     if kind in {"key", "key_press"}:
         return preserve_identity(KeyActionDialog(parent, action).show())
+    if kind == "key_sequence":
+        return preserve_identity(KeySequenceDialog(parent, action).show())
     if kind == "mouse_move":
         return preserve_identity(MouseMoveDialog(parent, action).show())
     if kind in {"click", "mouse_button"}:

@@ -31,8 +31,8 @@ class HotkeyEnabledTests(unittest.TestCase):
         app = self.app()
         app._apply_hotkey_bindings()
         self.assertEqual(set(app._hotkey_vk_map), {74})
-        app.input_guard.set_hotkeys.assert_called_once_with({74, 0x77})
-        app.recorder.set_filter_vks.assert_called_once_with({74})
+        app.input_guard.set_hotkeys.assert_called_once_with({74, 0x05, 0x06, 0x75, 0x77})
+        app.recorder.set_filter_vks.assert_called_once_with({74, 0x05, 0x06})
         app.hotkey_scripts[1]['enabled'] = True
         app._apply_hotkey_bindings()
         self.assertEqual(set(app._hotkey_vk_map), {74, 75})

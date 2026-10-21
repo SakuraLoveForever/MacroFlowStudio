@@ -1,0 +1,260 @@
+{
+  "date": "2026-10-12",
+  "method": "headless static analysis; existing historical memory image; no target execution",
+  "tools": {
+    "radare2": "6.2.4",
+    "r2ghidra": "6.2.4",
+    "capstone": "5.0.9",
+    "upx": "5.2.1"
+  },
+  "main_image_base": "0x400000",
+  "plugin64_image_base": "0x180000000",
+  "samples": [
+    {
+      "name": "original_exe",
+      "path": "E:\\dev\\my_projects\\Vibe Coding\\Macro\\研究\\挂机脚本\\ZeusTool.exe",
+      "size": 27881984,
+      "sha256": "039f71465f44e5cab51476e2b63cfb9b71098f83fbbe54648efa6fd003d75579"
+    },
+    {
+      "name": "main_loaded_image",
+      "path": "C:\\Users\\10524\\AppData\\Local\\Temp\\zeustool-static-research\\ZeusTool-loaded-image.bin",
+      "size": 54145024,
+      "sha256": "f46897374cffa45f108be883ab0ec98dc66662db79b2c14d1986a06e4dfa1dc4"
+    },
+    {
+      "name": "unpacked_plugin64",
+      "path": "C:\\Users\\10524\\AppData\\Local\\Temp\\zeustool-static-research\\unpacked\\plugin64.dll",
+      "size": 382976,
+      "sha256": "d1468cb06cfe457226c83ee5f97e6426c85acb734de4bbe16225b79fefba7f18"
+    },
+    {
+      "name": "original_recorder",
+      "path": "E:\\dev\\my_projects\\Vibe Coding\\Macro\\研究\\挂机脚本\\luzhi.exe",
+      "size": 6414848,
+      "sha256": "1c342e9cda070cedd01f6d5e175f08f8a998a37bbc6a020548c198d8252e556a"
+    },
+    {
+      "name": "unpacked_recorder",
+      "path": "C:\\Users\\10524\\AppData\\Local\\Temp\\zeustool-route-analysis-20261012\\luzhi.unpacked.exe",
+      "size": 11130880,
+      "sha256": "c051f2cc1ab2ad61bf2818a3e8f6b91614193c5a22160ecefe5a75300927cbd1"
+    }
+  ],
+  "functions": [
+    {
+      "semantic_name": "record_hotkey",
+      "va": "0x4c5910",
+      "source": "main_loaded_image",
+      "artifact": "record_hotkey.pseudocode.txt",
+      "sha256": "630e734e674be26a188ac8d4a3479cbbbdd9474471386d0fe6b9f7a7ee3463ce"
+    },
+    {
+      "semantic_name": "read_cached_position",
+      "va": "0x4a3390",
+      "source": "main_loaded_image",
+      "artifact": "read_cached_position.pseudocode.txt",
+      "sha256": "4d4f4fb8215f26a36b6ffff4916be67def1fa2e5b4a6b533be6aa880ed847396"
+    },
+    {
+      "semantic_name": "append_runtime_point",
+      "va": "0x4a2aa0",
+      "source": "main_loaded_image",
+      "artifact": "append_runtime_point.pseudocode.txt",
+      "sha256": "3c3329edb91c814d862b6d3231c9ebc7c743146622a98de53b0c8c414012dafa"
+    },
+    {
+      "semantic_name": "start_runtime_path",
+      "va": "0x4a2b50",
+      "source": "main_loaded_image",
+      "artifact": "start_runtime_path.pseudocode.txt",
+      "sha256": "3bc849648a2ad0924ca0ce5d69d5a0c3131470887a0e504ac9eabba853686058"
+    },
+    {
+      "semantic_name": "advance_runtime_path",
+      "va": "0x4a5f80",
+      "source": "main_loaded_image",
+      "artifact": "advance_runtime_path.pseudocode.txt",
+      "sha256": "89ff3311d1dce4e4c6b628dff68530e3eab31cceca4705413d16bfff7c20ed58"
+    },
+    {
+      "semantic_name": "stuck_monitor",
+      "va": "0x4a71d0",
+      "source": "main_loaded_image",
+      "artifact": "stuck_monitor.pseudocode.txt",
+      "sha256": "399b404902e49e6f84f9f580ffa77272c44100396f99e8a77faa20efe14574f6"
+    },
+    {
+      "semantic_name": "runtime_loop",
+      "va": "0x4a1550",
+      "source": "main_loaded_image",
+      "artifact": "runtime_loop.pseudocode.txt",
+      "sha256": "bd1e02f8ce7c34205fcec529d67c22e69864a9935172835fff03ff3df78715c3"
+    },
+    {
+      "semantic_name": "publish_move_command",
+      "va": "0x4a4ac0",
+      "source": "main_loaded_image",
+      "artifact": "publish_move_command.pseudocode.txt",
+      "sha256": "dea4f89a485c7d00a1adb925528f65a3d0aa16be616d98098bdec11456971114"
+    },
+    {
+      "semantic_name": "async_key_state",
+      "va": "0x18001fcc0",
+      "source": "unpacked_plugin64",
+      "artifact": "async_key_state.pseudocode.txt",
+      "sha256": "4ec8e699af02e6ba8e342c64dfc2a21c98da30903ff4d4f8868f8a5f09e16d0f"
+    },
+    {
+      "semantic_name": "keyboard_state",
+      "va": "0x18001fe00",
+      "source": "unpacked_plugin64",
+      "artifact": "keyboard_state.pseudocode.txt",
+      "sha256": "9f1bb395046c5d9347a9b52c962d2ff46dcbc77c2038cf85ecd8aad90e7ec53a"
+    },
+    {
+      "semantic_name": "read_key_table",
+      "va": "0x180024790",
+      "source": "unpacked_plugin64",
+      "artifact": "read_key_table.pseudocode.txt",
+      "sha256": "41a3a3dd20e98ad0bba7b8b10cb99178d73295212b2200498542f36dec732bea"
+    },
+    {
+      "semantic_name": "key_state_command",
+      "va": "0x4a5180",
+      "source": "main_loaded_image",
+      "artifact": "key_state_command.pseudocode.txt",
+      "sha256": "399cc71bb1533aef3afb15d61baec4049b9429ac07d6e07e4b09ebbe0312bbd0"
+    },
+    {
+      "semantic_name": "mouse_state_command",
+      "va": "0x4a53e0",
+      "source": "main_loaded_image",
+      "artifact": "mouse_state_command.pseudocode.txt",
+      "sha256": "a85869466175a4f284b664271e24b0ceca533ebd08e23a2692806be99b2ad86f"
+    },
+    {
+      "semantic_name": "sequence_tick",
+      "va": "0x4a5450",
+      "source": "main_loaded_image",
+      "artifact": "sequence_tick.pseudocode.txt",
+      "sha256": "0cbcadd1af5130a3ef51657995d97ed28fc4b1bff1c4aacc5356070fa0950bb0"
+    },
+    {
+      "semantic_name": "combat_key_sequences",
+      "va": "0x4a5550",
+      "source": "main_loaded_image",
+      "artifact": "combat_key_sequences.pseudocode.txt",
+      "sha256": "cf15033f6ce12cc0754fe234054f1bb3400b8ef890f28e21d19d3ee0e7bda844"
+    }
+  ],
+  "strings": [
+    {
+      "va": "0xa3fdf4",
+      "encoding": "gb18030",
+      "value": "   -- 门"
+    },
+    {
+      "va": "0xa3fe00",
+      "encoding": "gb18030",
+      "value": "   -- 跳"
+    },
+    {
+      "va": "0xa3fe0c",
+      "encoding": "gb18030",
+      "value": "   -- 蹲"
+    },
+    {
+      "va": "0xa3fe18",
+      "encoding": "gb18030",
+      "value": "mi_addPoint(%.2f, %.2f, %.2f, %d )%s\r\n"
+    }
+  ],
+  "constants": [
+    {
+      "va": "0xb41680",
+      "type": "double",
+      "value": 50.0
+    },
+    {
+      "va": "0xb41688",
+      "type": "double",
+      "value": 1.5
+    },
+    {
+      "va": "0xb413c8",
+      "type": "double",
+      "value": 0.05
+    },
+    {
+      "va": "0xb41410",
+      "type": "double",
+      "value": 80.0
+    },
+    {
+      "va": "0xb41420",
+      "type": "double",
+      "value": 3000.0
+    },
+    {
+      "va": "0xb413e8",
+      "type": "double",
+      "value": 1.0
+    },
+    {
+      "va": "0xb413d8",
+      "type": "double",
+      "value": 0.2
+    },
+    {
+      "va": "0xb413d0",
+      "type": "double",
+      "value": 0.1
+    },
+    {
+      "va": "0xb413e0",
+      "type": "double",
+      "value": 0.5
+    }
+  ],
+  "caveat": "Pseudocode types and calling conventions are imperfect. Semantic names are analyst labels. Critical claims were checked against disassembly. Mutable globals are historical snapshot values.",
+  "tool_archives": [
+    {
+      "file": "radare2-6.2.4-w64.zip",
+      "sha256": "aa3454fd89e8a4ead450caff35a1d3919065744e7091540d4913a9487241799d",
+      "verified_against": "official release checksums.txt"
+    },
+    {
+      "file": "r2ghidra-6.2.4-windows-x86-64.zip",
+      "sha256": "ce26ce2cbf8cd4c1d5629b7c7010eb8a755f5ef75d34552a43c3ca4982a024a0",
+      "verified_against": "official GitHub release asset digest"
+    }
+  ],
+  "mutable_snapshot_parameters": [
+    {
+      "va": "0xb944f0",
+      "type": "int32",
+      "analyst_label": "attempt_limit",
+      "value": 2
+    },
+    {
+      "va": "0xb944f8",
+      "type": "double",
+      "analyst_label": "no_progress_interval",
+      "value": 3.0
+    },
+    {
+      "va": "0xb94500",
+      "type": "double",
+      "analyst_label": "progress_distance",
+      "value": 50.0
+    },
+    {
+      "va": "0xb94508",
+      "type": "double",
+      "analyst_label": "pending_interval",
+      "value": 10.0
+    }
+  ],
+  "artifact_hash_normalization": "UTF-8; LF line endings; trailing whitespace removed; one final newline"
+}

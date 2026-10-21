@@ -301,7 +301,7 @@ class RecordingDisplayTests(unittest.TestCase):
         self.assertEqual(floating_notice_xy("底部居中", 1920, 1080), (780, 994))
         self.assertEqual(floating_notice_xy("右下", 1920, 1080), (1542, 994))
 
-    def test_successful_execution_always_restores_main_from_tray(self):
+    def test_execution_without_tray_restores_main_without_activation(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.execution_progress_text = "running"
         app.main_hidden_for_execution = True
@@ -310,12 +310,25 @@ class RecordingDisplayTests(unittest.TestCase):
         app._hide_execution_mini = Mock()
         app._restore_main_window = Mock()
         app._finish_execution_visibility()
-        app._restore_main_window.assert_called_once()
+        app._restore_main_window.assert_called_once_with(activate=False)
         self.assertFalse(app.main_hidden_for_execution)
 
-    def test_tray_leftover_after_execution_logs_how_to_quit(self):
-        # 执行结束后窗口按设计留在托盘，很容易被当成"软件已经关了"——
-        # 必须留下一条日志说明软件仍在运行、快捷键仍生效、怎么彻底退出。
+    def test_background_restore_does_not_take_game_focus(self):
+        app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
+        app.recorder = Mock(running=False)
+        app.root.winfo_id.return_value = 123
+        app.tray_icon = None
+        with package_patch('app', 'show_window_no_activate', return_value=True) as show:
+            app._restore_main_window(activate=False)
+        show.assert_called_once_with(123)
+        app.root.deiconify.assert_not_called()
+        app.root.lift.assert_not_called()
+        app.root.focus_force.assert_not_called()
+
+    def test_execution_end_always_restores_the_window_instead_of_the_tray(self):
+        # 执行结束一律把主窗口放回桌面：以前托盘图标可见就把窗口留在托盘，
+        # 用户会以为软件已经关了（「无论什么时候都不要最小化到托盘」）。
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.execution_progress_text = "running"
         app.main_hidden_for_execution = True
@@ -329,10 +342,8 @@ class RecordingDisplayTests(unittest.TestCase):
 
         app._finish_execution_visibility()
 
-        app._restore_main_window.assert_not_called()
-        self.assertEqual(len(logs), 1)
-        self.assertIn("系统托盘", logs[0])
-        self.assertIn("退出", logs[0])
+        app._restore_main_window.assert_called_once_with(activate=False)
+        self.assertEqual(logs, [])
 
     def test_worker_error_logs_mini_cleanup_before_hiding_it(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -367,7 +378,11 @@ class RecordingDisplayTests(unittest.TestCase):
         app.execution_notice_label = Mock()
         app.execution_notice_after_id = "old-timer"
 
-        app._show_execution_notice("新的提醒内容", 4500)
+        with patch("macroflow.ui.app.execution.make_window_no_activate") as style, \
+             patch("macroflow.ui.app.execution.set_rounded_window"):
+            app._show_execution_notice("新的提醒内容", 4500)
+        style.assert_called_once_with(window.winfo_id.return_value, click_through=False)
+        window.attributes.assert_called_with("-alpha", 1.0)
 
         app.execution_notice_label.configure.assert_called_once_with(text="新的提醒内容")
         window.after_cancel.assert_called_once_with("old-timer")
@@ -478,13 +493,14 @@ class RecordingDisplayTests(unittest.TestCase):
         app.workflow_tree = Mock()
         app.global_tree = Mock()
         with package_patch('app', 'set_ui_scale'), \
-             patch("macroflow.ui.dialogs.set_ui_scale"):
+             patch("macroflow.ui.dialogs.base.set_ui_scale"):
             app._apply_display_dpi(120)
         root.tk.call.assert_any_call("tk", "scaling", 120 / 72.0)
         app._rebuild_ui_for_display_change.assert_called_once_with()
 
     def test_watch_display_dpi_refits_window_when_work_area_changes(self):
         app, root = self._dpi_watch_app(96 / 72.0)
+        app._apply_display_dpi = Mock()
         app._persist_sidebar_settings = Mock()
         app._display_work_area = {
             "left": 0, "top": 0, "width": 2560, "height": 1400,
@@ -502,6 +518,7 @@ class RecordingDisplayTests(unittest.TestCase):
         app.execution_mini_position = [1070, 656]
         app.mini_window = Mock()
         app.mini_window.winfo_id.return_value = 123
+        app._apply_display_dpi = Mock()
         app._persist_sidebar_settings = Mock()
         area = {"left": 0, "top": 0, "width": 1920, "height": 1040}
         with package_patch('app', 'get_window_dpi', return_value=96), \
@@ -519,7 +536,7 @@ class RecordingDisplayTests(unittest.TestCase):
         app, root = self._dpi_watch_app(192 / 72.0)
         with package_patch('app', 'get_window_dpi', return_value=96), \
              package_patch('app', 'set_ui_scale') as app_scale, \
-             patch("macroflow.ui.dialogs.set_ui_scale") as dialog_scale, \
+             patch("macroflow.ui.dialogs.base.set_ui_scale") as dialog_scale, \
              patch.object(MacroFlowApp, "_configure_dark_theme") as theme:
             app._sync_ui_scale_to_monitor()
         self.assertEqual(root.tk.call.call_args.args, ("tk", "scaling", 96 / 72.0))

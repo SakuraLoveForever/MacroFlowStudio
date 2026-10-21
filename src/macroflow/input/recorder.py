@@ -35,8 +35,9 @@ def _key_data(key) -> tuple[int, str]:
 
 
 class MacroRecorder:
-    def __init__(self, on_action: Callable[[dict], None] | None = None):
+    def __init__(self, on_action: Callable[[dict], None] | None = None, *, on_key=None):
         self.on_action = on_action
+        self.on_key = on_key
         self.actions: list[dict] = []
         self.running = False
         self.mode = "absolute"
@@ -105,8 +106,9 @@ class MacroRecorder:
             # 所有模式都监听原始位移：物理移动只在相对/自动模式消费；注入的
             # 快捷键脚本回放位移在任何模式下都录成「转向」动作（与快捷键
             # 脚本一致，游戏中可生效）。
-            self._raw_listener = RawMouseListener(self._on_raw_move)
-            self._raw_listener.start()
+            if mode != 'buttons':
+                self._raw_listener = RawMouseListener(self._on_raw_move)
+                self._raw_listener.start()
         except Exception:
             self.stop()
             raise
@@ -184,9 +186,11 @@ class MacroRecorder:
         # 它之后发生的实体输入之前，且延时从快捷键按下时刻起算。
         self._flush_injected()
         vk, name = _key_data(key)
+        if self.running and self.on_key:
+            self.on_key(vk, True, injected, callback_at)
         if vk in self._filter_vks:
             return
-        if name.lower() in {"f8", "f9", "f10", "f12"}:
+        if name.lower() in {"f6", "f7", "f8", "f9", "f10", "f12"}:
             return
         self._append({"type": "key", "vk": vk, "name": name, "down": True}, when=callback_at)
 
@@ -194,9 +198,11 @@ class MacroRecorder:
         callback_at = time.perf_counter()
         self._flush_injected()
         vk, name = _key_data(key)
+        if self.running and self.on_key:
+            self.on_key(vk, False, injected, callback_at)
         if vk in self._filter_vks:
             return
-        if name.lower() in {"f8", "f9", "f10", "f12"}:
+        if name.lower() in {"f6", "f7", "f8", "f9", "f10", "f12"}:
             return
         self._append({"type": "key", "vk": vk, "name": name, "down": False}, when=callback_at)
 
@@ -278,6 +284,8 @@ class MacroRecorder:
             }, when=started)
 
     def _on_click(self, x: int, y: int, button, pressed: bool) -> None:
+        if button in (mouse.Button.x1, mouse.Button.x2):
+            return  # Reserved for the competitive head-aim toggle.
         callback_at = time.perf_counter()
         mode = self.current_mode()
         # 注入的点击（快捷键脚本回放）也先刷出未落的转向，保持动作顺序。

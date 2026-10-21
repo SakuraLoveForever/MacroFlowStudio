@@ -1,0 +1,22 @@
+void __cdecl fcn.004a4ac0(int32_t arg_8h)
+
+{
+    int in_ECX;
+    int iVar1;
+    uint *puVar2;
+
+    iVar1 = *(in_ECX + 4);
+    if (iVar1 != 0) {
+        *(iVar1 + 0x100) = 1;
+        *(iVar1 + 0x104) = 0x78;
+        *(iVar1 + 0x108) = 0;
+        *(iVar1 + 0x10c) = 0;
+        puVar2 = *(in_ECX + 4) + 0x110;
+        for (iVar1 = 0x1e; iVar1 != 0; iVar1 = iVar1 + -1) {
+            *puVar2 = *arg_8h;
+            arg_8h = arg_8h + 4;
+            puVar2 = puVar2 + 1;
+        }
+    }
+    return;
+}

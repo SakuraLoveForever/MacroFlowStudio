@@ -1,0 +1,24 @@
+uint fcn.18001fe00(int64_t arg1)
+
+{
+    char cVar1;
+    int iStack_18;
+    uint uStack_14;
+
+    if (arg1 == 0) {
+        uStack_14 = 0;
+    }
+    else {
+        uStack_14 = 0;
+        if (*0x18005b128 != NULL) {
+            uStack_14 = (**0x18005b128)(arg1);
+        }
+        for (iStack_18 = 0; iStack_18 < 0x100; iStack_18 = iStack_18 + 1) {
+            cVar1 = func_0x000180024790(iStack_18);
+            if (cVar1 != '\0') {
+                *(arg1 + iStack_18) = *(arg1 + iStack_18) | 0x80;
+            }
+        }
+    }
+    return uStack_14;
+}
