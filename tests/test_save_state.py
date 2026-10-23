@@ -92,11 +92,3 @@ class SaveStateTests(unittest.TestCase):
         state.snapshot = lambda: [2]
         state.refresh()
         button.configure.assert_called_with(state='disabled')
-
-    def test_enter_on_unchanged_apply_does_not_write_settings(self):
-        from macroflow.ui.app.helpers import HelpersMixin
-        from macroflow.ui.save_state import SaveState
-        app = Mock()
-        app._aim_save_state = SaveState(Mock(), Mock(), lambda: 2)
-        self.assertTrue(HelpersMixin.apply_aim_follow_interval(app))
-        app._persist_sidebar_settings.assert_not_called()

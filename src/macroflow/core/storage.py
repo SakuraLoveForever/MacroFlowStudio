@@ -295,7 +295,6 @@ def remap_hotkey_script_bindings(
 def load_app_settings() -> dict:
     defaults = {
         "sound_enabled": True,
-        "ssjj_aim_interval_ms": 2,
         "mini_window_enabled": True,
         "record_mode": "auto",
         "floating_notice_position": "顶部居中",
@@ -324,7 +323,6 @@ def load_app_settings() -> dict:
             defaults.update(value)
             # activation_window(_enabled) 自 1.48 起改为脚本属性，不再全局保存。
             for obsolete_key in (
-                "ssjj_competitive_hotkey_vk",
                 "execution_mode", "dxdy_port", "target_relative_enabled",
                 "activation_window", "activation_window_enabled",
                 "backup_interval_minutes", "move_interval_ms",
@@ -334,9 +332,6 @@ def load_app_settings() -> dict:
                 defaults.pop(obsolete_key, None)
     except (OSError, json.JSONDecodeError):
         pass
-    interval = defaults["ssjj_aim_interval_ms"]
-    if type(interval) is not int or not 1 <= interval <= 1000:
-        defaults["ssjj_aim_interval_ms"] = 2
     return defaults
 
 

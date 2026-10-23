@@ -129,16 +129,14 @@ class RouteScriptActionTests(unittest.TestCase):
         replay._replay.side_effect = GuardJumpRequest('outer', scope_action_ids=('outer',))
         with self.assertRaises(GuardJumpRequest): replay.replay()
 
-    def test_script_action_uses_before_and_after_delay_order_and_restores_aim_ownership(self):
+    def test_script_action_uses_before_and_after_delay_order(self):
         replay = self.replay()
         events = []
-        replay.player._ssjj_aim_suspended = True
         replay.player._wait = lambda ms: events.append(('wait', ms))
         replay.player._execute_action = Mock(side_effect=lambda *args: events.append(('action', args[0]['type'])))
         replay.script_action({'type': 'notice', 'text': 'test', 'recorded_at_ms': 300,
                               'route_script_action': True, 'delay_ms': 250, 'after_delay_ms': 300})
         self.assertEqual(events, [('wait', 250), ('action', 'notice'), ('wait', 300)])
-        self.assertTrue(replay.player._ssjj_aim_suspended)
 
     def test_generic_keys_do_not_change_raw_key_repeat_filter(self):
         from macroflow.execution.ssjj_recording import distinct_presses
@@ -169,81 +167,6 @@ class RouteScriptActionTests(unittest.TestCase):
             'recorded_at_ms': 100, 'action_id': 'repeat'})
         replay = self.replay(action)
         self.assertEqual(replay.jump_index(('action_id', 'repeat')), 1)
-
-
-class FakeAimLock:
-    """只保留 run_aim_action / update_aim_ownership 用到的开关状态。"""
-
-    def __init__(self, targets=()):
-        self.enabled = set(targets)
-
-    def toggle(self, target):
-        self.enabled.symmetric_difference_update({target})
-        return target in self.enabled
-
-    def set_enabled(self, target, enabled):
-        (self.enabled.add if enabled else self.enabled.discard)(target)
-
-
-class RouteAimOwnershipTests(unittest.TestCase):
-    """路线里的光标锁定动作：后面没有录制镜头时才接管镜头。"""
-
-    def replay(self, action=None):
-        return RouteScriptActionTests().replay(action)
-
-    def aim_event(self, at=450, operation='toggle'):
-        return {'type': 'ssjj_aim', 'operation': operation, 'target': 'boss',
-                'route_script_action': True, 'recorded_at_ms': at, 'delay_ms': 0}
-
-    def prepare(self, action=None, *, enabled=True):
-        replay = self.replay(action)
-        replay.player._ssjj_aim_lock = FakeAimLock({'boss'} if enabled else ())
-        replay.player._ssjj_aim_suspended = True
-        replay.player._wait = Mock()
-        return replay
-
-    def test_the_lock_takes_the_camera_when_no_recorded_camera_inputs_follow(self):
-        replay = self.prepare(enabled=False)
-        logs = []
-        replay.player.on_log = logs.append
-        replay.script_action(self.aim_event())
-        self.assertTrue(replay.aim_takes_camera)
-        self.assertFalse(replay.player._ssjj_aim_suspended, "锁定后才能真的跟随")
-        self.assertTrue(any('后面不再有录制镜头' in message for message in logs))
-
-    def test_recorded_camera_inputs_keep_the_route_owning_the_camera(self):
-        action = straight_recording()
-        action['inputs'].append({'type': 'mouse_move', 'dx': 5, 'dy': 0, 'recorded_at_ms': 700})
-        replay = self.prepare(action, enabled=False)
-        logs = []
-        replay.player.on_log = logs.append
-        replay.script_action(self.aim_event())
-        self.assertFalse(replay.aim_takes_camera)
-        self.assertTrue(replay.player._ssjj_aim_suspended, "录制的转向照旧独占镜头")
-        self.assertTrue(any('还有 1 条录制镜头输入' in message for message in logs))
-
-    def test_unlocking_gives_the_camera_back_to_the_route(self):
-        replay = self.prepare(enabled=False)
-        replay.script_action(self.aim_event())
-        self.assertTrue(replay.aim_takes_camera)
-        replay.script_action(self.aim_event(at=500, operation='unlock'))
-        self.assertFalse(replay.aim_takes_camera)
-        self.assertTrue(replay.player._ssjj_aim_suspended)
-
-    def test_navigation_temporarily_takes_the_camera_back(self):
-        replay = self.prepare()
-        replay.aim_takes_camera = True
-        replay.player._ssjj_aim_suspended = False
-        with replay.navigation_camera():
-            self.assertTrue(replay.player._ssjj_aim_suspended)
-        self.assertFalse(replay.player._ssjj_aim_suspended)
-
-    def test_navigation_leaves_the_route_ownership_untouched(self):
-        replay = self.prepare()
-        replay.player._ssjj_aim_suspended = True
-        with replay.navigation_camera():
-            self.assertTrue(replay.player._ssjj_aim_suspended)
-        self.assertTrue(replay.player._ssjj_aim_suspended)
 
 
 if __name__ == '__main__': unittest.main()

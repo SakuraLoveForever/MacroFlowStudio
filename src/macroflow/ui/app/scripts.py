@@ -1143,12 +1143,6 @@ class ScriptsMixin:
         if action:
             self._insert_action(action)
 
-    def add_aim_lock(self):
-        from macroflow.ui.dialogs.ssjj_aim import AimActionDialog
-        action = AimActionDialog(self.root).show()
-        if action is not None:
-            self._insert_action(action)
-
     def add_rebind_window(self):
         self._insert_action({"type": "rebind_window", "delay_ms": 0})
 

@@ -537,7 +537,6 @@ class RuntimeHelpersMixin:
         )
 
     def _collect_sidebar_settings(self) -> dict:
-        from macroflow.execution.ssjj_aim import get_follow_interval_ms
         try:
             repeat = max(1, min(999999, int(self.repeat_var.get())))
         except (tk.TclError, TypeError, ValueError):
@@ -550,7 +549,6 @@ class RuntimeHelpersMixin:
             "execution_mini_position": list(getattr(self, "execution_mini_position", [])),
             "main_window_geometry": self._current_main_window_geometry(),
             "record_mode": "auto",
-            "ssjj_aim_interval_ms": get_follow_interval_ms(),
             "focus_mode_enabled": bool(self.focus_mode_enabled_var.get()),
             "activate_target_enabled": bool(self.activate_target_enabled_var.get()),
             "partial_script_globals": bool(self.partial_script_globals_var.get()),

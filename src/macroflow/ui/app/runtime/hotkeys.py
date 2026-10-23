@@ -3,10 +3,10 @@ from __future__ import annotations
 from macroflow.ui.dialogs.base import key_to_vk
 from pathlib import Path
 from macroflow.execution.player import PlaybackStopped
-from macroflow.input.input_guard import RESERVED_HOTKEY_VKS, VK_F6, VK_F7, VK_F8, VK_F10
+from macroflow.input.input_guard import RESERVED_HOTKEY_VKS, VK_F7, VK_F8, VK_F10
 from macroflow.input.wininput import activate_window, show_window
 from macroflow.core.display_power import allow_display_sleep, keep_display_awake
-from pynput import keyboard, mouse
+from pynput import keyboard
 from macroflow.core.storage import load_script, resolve_path
 import os
 import sys
@@ -32,31 +32,6 @@ class RuntimeHotkeysMixin:
         show_window(hwnd)
         activate_window(hwnd)
 
-    def toggle_boss_lock(self):
-        panel = getattr(self, '_ssjj_coordinates', None)
-        if panel is not None and not panel.closed:
-            panel.toggle_boss_lock()
-
-    def toggle_competitive_lock(self):
-        if self.exiting:
-            return
-        panel = getattr(self, '_ssjj_coordinates', None)
-        if panel is None or panel.closed:
-            opener = getattr(self, 'open_ssjj_coordinates', None)
-            if opener is None:
-                return
-            opener()
-            panel = getattr(self, '_ssjj_coordinates', None)
-        if panel is not None and not panel.closed:
-            panel.toggle_competitive_lock()
-
-    def switch_competitive_target(self):
-        if self.exiting:
-            return
-        controller = getattr(self.player, '_ssjj_aim_lock', None)
-        if controller is not None:
-            controller.switch_competitive_target()
-
     def mark_route_point(self):
         """F7：给正在录制的坐标路线标记一个纠正点。"""
         panel = getattr(self, '_ssjj_coordinates', None)
@@ -65,7 +40,6 @@ class RuntimeHotkeysMixin:
         panel.mark()
 
     def _start_hotkeys(self):
-        self._side_buttons_down = set()
         # pynput 会把“注入标志”作为第二个参数传给回调（Windows 端），
         # 用它跳过脚本回放产生的注入按键，避免快捷键脚本被自己触发。
         def on_press(key, injected=False):
@@ -78,12 +52,7 @@ class RuntimeHotkeysMixin:
                     if key == keyboard.Key.f12:
                         self._emergency_stop_from_hook()
                     return
-                if key == keyboard.Key.f6:
-                    if VK_F6 in self._hotkey_pressed:
-                        return
-                    self._hotkey_pressed.add(VK_F6)
-                    self._ui(self.toggle_boss_lock)
-                elif key == keyboard.Key.f7:
+                if key == keyboard.Key.f7:
                     # F7：给正在录制的坐标路线打一个纠正点（回放时只在这些点纠正）。
                     self._ui(self.mark_route_point)
                 elif key == keyboard.Key.f8:
@@ -124,7 +93,7 @@ class RuntimeHotkeysMixin:
                 return
             try:
                 self._hotkey_pressed.discard(
-                    VK_F6 if key == keyboard.Key.f6 else VK_F8 if key == keyboard.Key.f8 else VK_F7 if key == keyboard.Key.f7
+                    VK_F8 if key == keyboard.Key.f8 else VK_F7 if key == keyboard.Key.f7
                     else _key_vk(key))
             except Exception:
                 pass
@@ -137,31 +106,10 @@ class RuntimeHotkeysMixin:
                 "请以管理员身份运行或检查安全软件是否拦截了低级键盘钩子。"
             )
 
-        def on_click(x, y, button, pressed, injected=False):
-            vk = {mouse.Button.x1: 5, mouse.Button.x2: 6}.get(button)
-            if injected or vk is None:
-                return
-            if not pressed:
-                self._side_buttons_down.discard(vk)
-                return
-            if self.exiting or self.input_guard.active or vk in self._side_buttons_down:
-                return
-            self._side_buttons_down.add(vk)
-            try:
-                self._ui(self.toggle_competitive_lock if vk == 5 else self.switch_competitive_target)
-            except Exception:
-                self._log("鼠标侧键热键异常：" + traceback.format_exc())
-
-        self.mouse_hotkey_listener = mouse.Listener(on_click=on_click)
-        self.mouse_hotkey_listener.start()
-        if not self.mouse_hotkey_listener.running:
-            self._log("鼠标热键监听器启动失败：鼠标侧键可能无法使用，请检查权限或安全软件。")
-
     def _stop_hotkeys(self):
-        for name in ('hotkey_listener', 'mouse_hotkey_listener'):
-            listener = getattr(self, name, None)
-            if listener is not None:
-                listener.stop()
+        listener = getattr(self, 'hotkey_listener', None)
+        if listener is not None:
+            listener.stop()
 
     @staticmethod
     def _normalize_hotkey_scripts(raw) -> list[dict]:
@@ -196,17 +144,17 @@ class RuntimeHotkeysMixin:
             if not binding.get("enabled", True):
                 continue
             vk = int(binding.get("vk") or 0)
-            if vk <= 0 or vk in RESERVED_HOTKEY_VKS or vk in {5, 6}:
+            if vk <= 0 or vk in RESERVED_HOTKEY_VKS:
                 continue
             vk_map[vk] = binding
         self._hotkey_vk_map = vk_map
-        self._hotkey_recorder_filter_vks = set(vk_map) | {5, 6}
+        self._hotkey_recorder_filter_vks = set(vk_map)
         active = getattr(self, "_hotkey_active_binding", None)
         if active and active.get("vk") not in vk_map:
             self._stop_hotkey_script()
         guard = getattr(self, "input_guard", None)
         if guard is not None:
-            guard.set_hotkeys(set(vk_map) | {5, 6, VK_F6, VK_F8})
+            guard.set_hotkeys(set(vk_map) | {VK_F8})
         recorder = getattr(self, "recorder", None)
         if recorder is not None:
             # 录制中改绑定也要立刻生效：recorder 持有的是 start() 时的拷贝。
@@ -228,12 +176,6 @@ class RuntimeHotkeysMixin:
 
     def _on_hotkey_vk(self, vk: int):
         """专注模式守卫钩子线程触发的快捷键回调。"""
-        if int(vk) in {5, 6}:
-            self._ui(self.toggle_competitive_lock if int(vk) == 5 else self.switch_competitive_target)
-            return
-        if int(vk) == VK_F6:
-            self._ui(self.toggle_boss_lock)
-            return
         if int(vk) == VK_F8:
             self._ui(self.toggle_execution_pause)
             return

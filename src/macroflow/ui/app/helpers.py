@@ -25,7 +25,6 @@ class HelpersMixin:
                  'activation_enabled_var', 'activation_interval_var')
         values = {name: getattr(self, name).get() for name in names}
         values['switch_english_input_enabled'] = bool(self.switch_english_input_enabled)
-        values['aim'] = self._aim_follow_draft()
         for name in ('saved_window_signature', 'saved_activation_signature',
                      'execution_mini_position', 'resolution_styles', 'hotkey_scripts', '_game_setup_note'):
             values[name] = copy.deepcopy(getattr(self, name, None))
@@ -42,63 +41,19 @@ class HelpersMixin:
         if state is not None:
             state.saved()
 
-    def _aim_follow_draft(self):
-        raw = self.aim_follow_interval_var.get()
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            return raw
-
     def _watch_settings_saves(self, owner):
         from macroflow.ui.save_state import SaveState
-        from macroflow.execution.ssjj_aim import get_follow_interval_ms
         self._sidebar_save_state = SaveState(owner, self.sidebar_save_button, self._sidebar_save_values)
-        self._aim_save_state = SaveState(owner, self.aim_apply_button, self._aim_follow_draft,
-                                        baseline=get_follow_interval_ms())
         self._sidebar_save_state.watch(*(self.__dict__[name] for name in self._sidebar_save_values()
-                                        if name in self.__dict__ and name.endswith('_var')),
-                                       self.aim_follow_interval_var)
-        self._aim_save_state.watch(self.aim_follow_interval_var)
+                                        if name in self.__dict__ and name.endswith('_var')))
 
     def _settings_saved(self):
-        from macroflow.execution.ssjj_aim import get_follow_interval_ms
         state = self.__dict__.get('_sidebar_save_state')
         if state is not None:
-            values = self._sidebar_save_values()
-            values['aim'] = get_follow_interval_ms()
-            state.saved(values)
-        state = self.__dict__.get('_aim_save_state')
-        if state is not None:
-            state.saved(get_follow_interval_ms())
-
-    def apply_aim_follow_interval(self, _event=None):
-        state = self.__dict__.get('_aim_save_state')
-        if state is not None:
-            state.refresh()
-            if state.state == 'disabled':
-                return True
-        from macroflow.execution.ssjj_aim import set_follow_interval_ms
-        try:
-            value = int(self.aim_follow_interval_var.get())
-            set_follow_interval_ms(value)
-        except (TypeError, ValueError):
-            self._notify('跟随等待', '请输入 1–1000 ms 的整数。')
-            return False
-        if not self._persist_sidebar_settings():
-            return False
-        state = self.__dict__.get('_aim_save_state')
-        if state is not None:
-            state.saved(value)
-        state = self.__dict__.get('_sidebar_save_state')
-        if state is not None:
-            state.refresh()
-        self._set_status(f'全局锁定跟随等待已设为 {value} ms', 'success')
-        return True
+            state.saved()
 
     def _collect_sidebar_settings(self) -> dict:
-        from macroflow.execution.ssjj_aim import get_competitive_offset_degrees
         settings = super()._collect_sidebar_settings()
-        settings['ssjj_aim_offset_degrees'] = get_competitive_offset_degrees()
         settings["switch_english_input_enabled"] = bool(self.switch_english_input_enabled)
         settings["disconnect_monitor_enabled"] = bool(getattr(self, "disconnect_monitor_enabled", False))
         plugins = self.__dict__.get('_interval_plugins')
@@ -192,13 +147,6 @@ class HelpersMixin:
             state.refresh()
             if state.state == 'disabled':
                 return True
-        if self.__dict__.get('aim_follow_interval_var') is not None:
-            from macroflow.execution.ssjj_aim import set_follow_interval_ms
-            try:
-                set_follow_interval_ms(int(self.aim_follow_interval_var.get()))
-            except (TypeError, ValueError):
-                self._notify('跟随等待', '请输入 1–1000 ms 的整数。')
-                return False
         self._save_activation_interval()
         if not self._persist_sidebar_settings(show_feedback=True):
             return False

@@ -15,10 +15,6 @@ class HotkeysMixin:
             self.hotkey_config_open = False
         if result is None:
             return
-        if any(item.get('enabled', True) and int(item.get('vk') or 0) in {5, 6}
-               for item in result):
-            self._notify('按键冲突', '鼠标后侧键用于启动/暂停索敌，前侧键用于切换目标，不能绑定脚本。')
-            return
         self.hotkey_scripts = self._normalize_hotkey_scripts(result)
         self._apply_hotkey_bindings()
         self._refresh_hotkey_summary()

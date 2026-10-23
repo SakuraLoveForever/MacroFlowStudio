@@ -151,9 +151,6 @@ class CoreMixin:
             self._stop_requested_at = time.perf_counter()
         self.stop_event.set()
         self._resume_event.set()
-        if getattr(self, '_ssjj_aim_lock', None) is not None:
-            from macroflow.execution.ssjj_aim import close_aim_lock
-            close_aim_lock(self)
     def reset(self) -> None:
         self.stop_event.clear()
         # 上一次播放的落点不该影响这一轮：新一轮的第一次点击总是照常发出。
@@ -608,9 +605,6 @@ class CoreMixin:
             try:
                 exit_script_scope()
             finally:
-                if getattr(self, '_ssjj_aim_lock', None) is not None:
-                    from macroflow.execution.ssjj_aim import close_aim_lock
-                    close_aim_lock(self)
                 reset_battle = getattr(self, '_battle_reset', None)
                 if (
                     reset_battle is not None
@@ -1185,29 +1179,15 @@ class CoreMixin:
             if target_id:
                 return "action_id", target_id
             return "row", max(1, int(action.get("jump_row", 1)))
-        elif kind == "ssjj_aim":
-            from macroflow.execution.ssjj_aim import run_aim_action
-            # run_aim_action 返回“锁定是否已开启”，供面板/测试直接调用；
-            # 这里只负责执行，不能把它当成跳转结果（跳转结果是 (类型, 目标) 或 None）。
-            run_aim_action(self, action)
-            return None
         elif kind == "ssjj_wait_mobs_absent":
             from macroflow.execution.ssjj_pve import wait_mobs_absent
             return wait_mobs_absent(self, action)
         elif kind == "ssjj_route":
             from macroflow.execution.ssjj_navigation import run_route_action
-            self._ssjj_aim_suspended = True
-            try:
-                return run_route_action(self, action)
-            finally:
-                self._ssjj_aim_suspended = False
+            return run_route_action(self, action)
         elif kind == "ssjj_recording":
             from macroflow.execution.ssjj_recording import run_recording_action
-            self._ssjj_aim_suspended = True
-            try:
-                return run_recording_action(self, action, hwnd, script_stack, depth)
-            finally:
-                self._ssjj_aim_suspended = False
+            return run_recording_action(self, action, hwnd, script_stack, depth)
         elif kind == "python_script":
             from macroflow.execution.python_script import run_python_script
             return run_python_script(action.get("path", ""), self, hwnd, script_stack, depth,

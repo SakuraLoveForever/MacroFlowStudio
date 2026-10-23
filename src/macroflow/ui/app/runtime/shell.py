@@ -82,8 +82,6 @@ class RuntimeShellMixin:
         self.root.after(120, lambda: set_dark_titlebar(self.root.winfo_id()))
 
         self.app_settings = load_app_settings()
-        from macroflow.execution.ssjj_aim import set_follow_interval_ms
-        set_follow_interval_ms(self.app_settings.get('ssjj_aim_interval_ms', 2))
         self._apply_startup_window_state()
         self._restore_main_window_geometry()
         self._sync_ui_scale_to_monitor()

@@ -840,7 +840,7 @@ class HotkeyBindingDialog(ModalDialog):
             show_floating_notice(self, "快捷键不可用", f"{name} 是系统功能键，不能单独作为快捷键。")
             return
         if self.key_vk in RESERVED_HOTKEY_VKS:
-            show_floating_notice(self, "快捷键不可用", "F6/F7/F8/F9/F10/F12 已被锁定、录制、执行与紧急停止占用。")
+            show_floating_notice(self, "快捷键不可用", "F6/F7/F8/F9/F10/F12 已被系统占用，不能用作快捷键。")
             return
         raw = self.script_var.get().strip()
         path = self._script_labels.get(raw)

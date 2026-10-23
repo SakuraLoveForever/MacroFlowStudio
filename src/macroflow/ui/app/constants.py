@@ -59,7 +59,6 @@ RECORD_TOOLBAR_BUTTON_LABEL = "⏺ 录制"
 ACTION_ICONS = {
     "ssjj_route": "⌖",
     "ssjj_wait_mobs_absent": "◷",
-    "ssjj_aim": "⌖",
     "delay": "◷",
     "rebind_window": "◎",
     "activate_window": "▣",

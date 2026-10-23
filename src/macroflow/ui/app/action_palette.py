@@ -2,7 +2,7 @@
 ACTION_CATEGORIES = (
     ('键鼠', ('add_click', 'add_key', 'add_mouse_move'),
      ('add_text', 'add_repeat_click', 'add_key_sequence', 'add_scroll',
-      'add_turn', 'add_scroll_sequence', 'add_aim_lock')),
+      'add_turn', 'add_scroll_sequence')),
     ('识别', ('add_module', 'add_ocr_compare'),
      ('add_multi_condition_click', 'add_row_list_condition_click', 'add_page')),
     ('流程', ('add_delay', 'add_wait_mobs_absent', 'add_jump'),

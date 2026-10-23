@@ -1755,9 +1755,6 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         except ValueError as exc:
             show_floating_notice(parent, "无法编辑这条路线", str(exc))
             return None
-    if kind == "ssjj_aim":
-        from .ssjj_aim import AimActionDialog
-        return preserve_identity(AimActionDialog(parent, action).show())
     if kind == "ssjj_wait_mobs_absent":
         value = DurationDialog(parent, "等待小怪消失",
                                "连续未检测到小怪才继续（含精英，不含 BOSS）：",

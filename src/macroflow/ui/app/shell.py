@@ -496,23 +496,6 @@ class ShellMixin:
         execution_card.grid(row=1, column=0, sticky="nsew", padx=pad(0, 6), pady=pad(0, 10))
         execution_body = execution_card.body
 
-        aim_row = ttk.Frame(execution_body, style="Card.TFrame")
-        aim_row.pack(fill="x", pady=pad(0, 6))
-        ttk.Label(aim_row, text="锁定跟随等待", style="CardLabel.TLabel").pack(side="left")
-        self.aim_follow_interval_var = tk.StringVar(
-            master=self.root, value=str(self.app_settings.get('ssjj_aim_interval_ms', 2)))
-        aim_interval = ttk.Spinbox(aim_row, from_=1, to=1000, width=5,
-                                   textvariable=self.aim_follow_interval_var,
-                                   command=self.apply_aim_follow_interval)
-        aim_interval.pack(side="left", padx=pad(8, 3))
-        aim_interval.bind('<Return>', self.apply_aim_follow_interval)
-        ttk.Label(aim_row, text="ms", style="CardHint.TLabel").pack(side="left")
-        self.aim_apply_button = ttk.Button(
-            aim_row, text="应用", width=5, command=self.apply_aim_follow_interval,
-            style="Ghost.TButton", state='disabled',
-        )
-        self.aim_apply_button.pack(side="right")
-
         repeat_row = ttk.Frame(execution_body, style="Card.TFrame")
         repeat_row.pack(fill="x", pady=pad(0, 6))
         repeat_label = ttk.Label(repeat_row, text="脚本重复次数", style="CardLabel.TLabel")
@@ -714,7 +697,6 @@ class ShellMixin:
         return (
             ("◷ 延时", "add_delay", "ScriptTool.TButton"),
             ("◷ 等待小怪消失", "add_wait_mobs_absent", "AccentScriptTool.TButton"),
-            ("⌖ 光标锁定/解锁", "add_aim_lock", "AccentScriptTool.TButton"),
             ("◎ 重新绑定", "add_rebind_window", "ScriptTool.TButton"),
             ("▣ 前置窗口", "add_activate_window", "ScriptTool.TButton"),
             ("⌨ 键盘", "add_key", "ScriptTool.TButton"),

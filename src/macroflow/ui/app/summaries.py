@@ -235,12 +235,6 @@ def action_summary(action: dict, action_rows: dict[str, int] | None = None,
     if kind == "ssjj_wait_mobs_absent":
         return "等待小怪消失", (f"连续 {action.get('duration_ms', 5000) / 1000:g} s 无小怪才继续 · "
                                 "出现小怪重新计时 · 含精英，不含 BOSS"), delay
-    if kind == "ssjj_aim":
-        operation = {"unlock": "解锁", "toggle": "切换锁定"}.get(action.get("operation"), "锁定")
-        if action.get('target') == 'competitive':
-            return "光标锁定/解锁", f"{operation} · 敌方玩家 · 头部中心 · 不限范围，实时选择准星最近", delay
-        target = "BOSS 优先，无 BOSS 时最近小怪" if action.get('target') == 'boss' else "最近小怪"
-        return "光标锁定/解锁", f"{operation} · {target} · 身体中心", delay
     if kind == "ssjj_recording":
         return "键鼠连续路线", (f"地图 {action.get('map_id', '?')} · "
                                f"{len(action.get('marks', []))} 个纠正点 · "

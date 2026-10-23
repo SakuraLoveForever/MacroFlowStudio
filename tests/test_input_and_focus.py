@@ -750,7 +750,7 @@ class FocusModeTests(unittest.TestCase):
         app.input_guard = Mock()
         app.recorder = None
         app._apply_hotkey_bindings()
-        app.input_guard.set_hotkeys.assert_called_once_with({0x75, VK_F8, 0x05, 0x06})
+        app.input_guard.set_hotkeys.assert_called_once_with({VK_F8})
 
     def test_disabled_focus_switches_english_when_checked(self):
         app = MacroFlowApp.__new__(MacroFlowApp)

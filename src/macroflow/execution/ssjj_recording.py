@@ -1,7 +1,6 @@
 """Replay a recorded key/mouse route; correct the position only at F7 marks."""
 from __future__ import annotations
 
-import contextlib
 import math
 import threading
 import time
@@ -19,14 +18,6 @@ from .player.control import (
 
 def _number(value, minimum, maximum):
     return type(value) in (int, float) and math.isfinite(value) and minimum <= value <= maximum
-
-
-def turns_camera(event):
-    """这一步回放的是录制镜头（会与锁定跟随抢镜头）。"""
-    kind = event.get('type')
-    if kind == 'turn':
-        return True
-    return kind == 'mouse_move' and event.get('mode', 'relative') == 'relative'
 
 
 def mark_offsets(marks):
@@ -312,9 +303,6 @@ class RecordedReplay:
         self.duration_ms = action['duration_ms']
         # 试跑起点：从中间某一步开始执行时跳过的步骤不再回放，路线时钟按该步对齐。
         self.start_index = int(action.get('start_step_index', 0))
-        # 路线里的光标锁定动作：只有后面不再回放录制镜头时才把镜头交给锁定。
-        self.aim_takes_camera = False
-        self.aim_warned = False
         self.stage = '走到试跑起点并校正朝向' if self.start_index else '走到起点并校正朝向'
         self.hwnd, self.script_stack, self.depth = hwnd, script_stack, depth
 
@@ -322,66 +310,21 @@ class RecordedReplay:
         """Release recorded holds and run the shared dispatcher outside route time."""
         self.session.release()
         self.context.brake()
-        suspended = getattr(self.player, '_ssjj_aim_suspended', False)
-        aim_owned_before = self.aim_takes_camera
         single_action = self.player._single_action
         self.player._single_action = False
         action = {key: value for key, value in event.items()
                   if key not in ('recorded_at_ms', 'route_script_action')}
-        self.player._ssjj_aim_suspended = action['type'] not in {
-            'delay', 'ssjj_wait_mobs_absent', 'block', 'ssjj_aim'}
         self.player._log_event(f'路线脚本动作：{action["type"]}')
         try:
             self.context.checkpoint()
             self.player._wait(int(action.get('delay_ms', 1000 if action['type'] == 'image_match' else 0)))
             result = self.player._execute_action(action, self.hwnd, self.script_stack, self.depth)
-            if action['type'] == 'ssjj_aim':
-                self.update_aim_ownership(event)
             after_delay = max(0, int(action.get('after_delay_ms', 0)))
             if after_delay:
                 self.player._wait(after_delay)
             return result
         finally:
-            # 路线默认独占镜头；锁定动作争到镜头后就不再还回去，直到被解锁。
-            self.player._ssjj_aim_suspended = (
-                (suspended or aim_owned_before) and not self.aim_takes_camera)
             self.player._single_action = single_action
-
-    def update_aim_ownership(self, event):
-        """路线里的光标锁定动作：只有后面不再回放录制镜头时才让它接管镜头。
-
-        路线独占镜头是为了让录制的转向照原样生效；插入锁定动作后如果后面还有
-        录制镜头，两者会互相抢镜头（录制的转向被锁定不断纠正回去），所以只有
-        后面没有镜头输入时才交出去，并把原因写进日志。
-        """
-        controller = getattr(self.player, '_ssjj_aim_lock', None)
-        if not bool(getattr(controller, 'enabled', False)):
-            self.aim_takes_camera = False
-            return
-        at = float(event.get('recorded_at_ms', 0) or 0)
-        remaining = sum(1 for step in self.inputs
-                        if step['recorded_at_ms'] > at and turns_camera(step))
-        self.aim_takes_camera = not remaining
-        if self.aim_takes_camera:
-            self.player._log_event(
-                '路线里的光标锁定已开启：后面不再有录制镜头，锁定跟随立即生效')
-        elif not self.aim_warned:
-            self.player._log_event(
-                f'路线里的光标锁定已开启，但后面还有 {remaining} 条录制镜头输入：'
-                '为避免和路线抢镜头，路线继续独占镜头；把锁定动作放到最后一段镜头输入之后即可立即跟随')
-            self.aim_warned = True
-
-    @contextlib.contextmanager
-    def navigation_camera(self):
-        """导航（走近纠正点、终点对齐）期间临时把镜头让给导航。"""
-        if not self.aim_takes_camera:
-            yield
-            return
-        self.player._ssjj_aim_suspended = True
-        try:
-            yield
-        finally:
-            self.player._ssjj_aim_suspended = False
 
     def jump_index(self, result):
         kind, target = result
@@ -535,12 +478,11 @@ class RecordedReplay:
                 continue
             if mark_due <= input_due and mark_due <= self.duration_ms:
                 self.session.release()
-                with self.navigation_camera():
-                    suspended += self.correct(
-                        self.session.check_state(self.map_id), self.marks[mark_index],
-                        label=(f'纠正点 {mark_index + 1}/{len(self.marks)}：' +
-                               '距记录位置 {distance:.1f}，走近后重新对齐朝向，再继续回放'),
-                    )
+                suspended += self.correct(
+                    self.session.check_state(self.map_id), self.marks[mark_index],
+                    label=(f'纠正点 {mark_index + 1}/{len(self.marks)}：' +
+                           '距记录位置 {distance:.1f}，走近后重新对齐朝向，再继续回放'),
+                )
                 mark_index += 1
                 continue
             if index >= len(self.inputs):
@@ -575,9 +517,8 @@ class RecordedReplay:
         try:
             current = self.session.check_state(self.map_id)
             last = self.samples[-1]
-            with self.navigation_camera():
-                follow_route(self.context, Route(self.map_id, [current.position, current.position]),
-                             reader=self.reader, final_yaw=last['yaw'], final_pitch=last['pitch'])
+            follow_route(self.context, Route(self.map_id, [current.position, current.position]),
+                         reader=self.reader, final_yaw=last['yaw'], final_pitch=last['pitch'])
             current = self.session.check_state(self.map_id)
         except GameUnavailable as exc:
             # 终点验收只是收尾校验：人不在这局游戏里（切出去/换图/退出）就跳过，

@@ -18,7 +18,6 @@ class SidebarPersistenceTests(unittest.TestCase):
         app = self.app()
         app.activation_interval_var = FakeVar('0')
         app.switch_english_input_enabled = False
-        app.aim_follow_interval_var = FakeVar('2')
         app.recorder = None
         app.script = SimpleNamespace(settings={})
         app.saved_activation_signature = None
@@ -55,7 +54,6 @@ class SidebarPersistenceTests(unittest.TestCase):
         for name, value in {
             'repeat_var': 3, 'activation_interval_var': '1.5',
             'floating_notice_position_var': '右下角', 'close_action_var': 'tray',
-            'aim_follow_interval_var': '3',
         }.items():
             with self.subTest(option=name):
                 app = self.editable_app()
