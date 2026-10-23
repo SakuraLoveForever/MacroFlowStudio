@@ -1,0 +1,2855 @@
+{
+  "date": "2026-10-23",
+  "authority": "local historical static analysis; not observed network traffic",
+  "sources": [
+    {
+      "path": "E:\\SSJJ-4399\\analysis\\adventure-rewards\\abc-metadata.json",
+      "bytes": 37184914,
+      "sha256": "78b7a314a639b9b3fa632abc768a338dc3a58f1c3d8172685d8a500ac69fd987"
+    },
+    {
+      "path": "E:\\SSJJ-4399\\analysis\\adventure-rewards\\Lobby.decoded.swf",
+      "bytes": 12148501,
+      "sha256": "03a14001903161e11c02fea98826e581336aeb288936c51aa0d1a9eefa3a76a9"
+    },
+    {
+      "path": "E:\\SSJJ-4399\\analysis\\adventure-rewards\\Lobby_6c54301edd140e1557d4793e0aceaa6c.swf",
+      "bytes": 3633577,
+      "sha256": "cc91968cd018887d62e297229ad339a5fc17686fc75c4049fc2242a7fc2a4571"
+    },
+    {
+      "path": "E:\\SSJJ-4399\\analysis\\adventure-rewards\\inspect_abc.py",
+      "bytes": 5925,
+      "sha256": "88f4cf36ad916068261155d350e1abfbf04dad463ad500974c0cbf1623ea3292"
+    },
+    {
+      "path": "E:\\SSJJ-4399\\analysis\\adventure-rewards\\inspect_ops.py",
+      "bytes": 3098,
+      "sha256": "714ab989fe4388b647cf752bb1799454153bf05021ac247a7ece7f92e7d49484"
+    }
+  ],
+  "methods": [
+    {
+      "method_id": 3790,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.useStorageItem"
+      ],
+      "args": [
+        "String",
+        "int",
+        "Function"
+      ],
+      "result": "void",
+      "code_hex": "d030608c01642c8569d1a0410129d32013080000d35e92442b6192445dc7422cdb59d1d256024fc7420247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "GetLex",
+          "operands": [
+            140
+          ],
+          "resolved": "trace"
+        },
+        {
+          "offset": 5,
+          "opcode": "GetGlobalScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 6,
+          "opcode": "PushString",
+          "operands": [
+            13445
+          ],
+          "resolved": "useStorageItem itemId:"
+        },
+        {
+          "offset": 9,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 10,
+          "opcode": "Add",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 11,
+          "opcode": "Call",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 13,
+          "opcode": "Pop",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 14,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 15,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 16,
+          "opcode": "IfEq",
+          "operands": [
+            8
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 20,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 21,
+          "opcode": "FindProperty",
+          "operands": [
+            8722
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:useStorageItemHandler"
+        },
+        {
+          "offset": 24,
+          "opcode": "Swap",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 25,
+          "opcode": "SetProperty",
+          "operands": [
+            8722
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:useStorageItemHandler"
+        },
+        {
+          "offset": 28,
+          "opcode": "FindPropStrict",
+          "operands": [
+            8519
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 31,
+          "opcode": "PushString",
+          "operands": [
+            11483
+          ],
+          "resolved": "useStorageItem"
+        },
+        {
+          "offset": 34,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 35,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 36,
+          "opcode": "NewArray",
+          "operands": [
+            2
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 38,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8519,
+            2
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 42,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 3791,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.useStoragePack"
+      ],
+      "args": [
+        "String",
+        "int"
+      ],
+      "result": "void",
+      "code_hex": "d0305dc7422cdc59d1d256024fc7420247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "FindPropStrict",
+          "operands": [
+            8519
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 5,
+          "opcode": "PushString",
+          "operands": [
+            11484
+          ],
+          "resolved": "useStoragePack"
+        },
+        {
+          "offset": 8,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 9,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 10,
+          "opcode": "NewArray",
+          "operands": [
+            2
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 12,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8519,
+            2
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 16,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 3792,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.useChosenBoxMulti"
+      ],
+      "args": [
+        "String",
+        "Array",
+        "int"
+      ],
+      "result": "void",
+      "code_hex": "d0305dc7422cdd59d1d2d356034fc7420247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "FindPropStrict",
+          "operands": [
+            8519
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 5,
+          "opcode": "PushString",
+          "operands": [
+            11485
+          ],
+          "resolved": "useChosenBoxMulti"
+        },
+        {
+          "offset": 8,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 9,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 10,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 11,
+          "opcode": "NewArray",
+          "operands": [
+            3
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 13,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8519,
+            2
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 17,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 3793,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.callbackUseChosenBox"
+      ],
+      "args": [
+        "int",
+        "Array"
+      ],
+      "result": "void",
+      "code_hex": "d03060c5422c88692ce135d12cc322d255024f6f02d12401ab2a1205000029d220ab96120a000060c5422cd612d24f6f0247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "GetLex",
+          "operands": [
+            8517
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:facade"
+        },
+        {
+          "offset": 5,
+          "opcode": "PushString",
+          "operands": [
+            13448
+          ],
+          "resolved": "CALLBACK_USE_CHOSEN_BOX"
+        },
+        {
+          "offset": 8,
+          "opcode": "PushString",
+          "operands": [
+            6881
+          ],
+          "resolved": "ret"
+        },
+        {
+          "offset": 11,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 12,
+          "opcode": "PushString",
+          "operands": [
+            4419
+          ],
+          "resolved": "items"
+        },
+        {
+          "offset": 15,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 16,
+          "opcode": "NewObject",
+          "operands": [
+            2
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 18,
+          "opcode": "CallPropVoid",
+          "operands": [
+            111,
+            2
+          ],
+          "resolved": "sendNotification"
+        },
+        {
+          "offset": 21,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 22,
+          "opcode": "PushByte",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 24,
+          "opcode": "Equals",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 25,
+          "opcode": "Dup",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 26,
+          "opcode": "IfFalse",
+          "operands": [
+            5
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 30,
+          "opcode": "Pop",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 31,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 32,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 33,
+          "opcode": "Equals",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 34,
+          "opcode": "Not",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 35,
+          "opcode": "IfFalse",
+          "operands": [
+            10
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 39,
+          "opcode": "GetLex",
+          "operands": [
+            8517
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:facade"
+        },
+        {
+          "offset": 42,
+          "opcode": "PushString",
+          "operands": [
+            2390
+          ],
+          "resolved": "SHOW_PACK_ITEMS"
+        },
+        {
+          "offset": 45,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 46,
+          "opcode": "CallPropVoid",
+          "operands": [
+            111,
+            2
+          ],
+          "resolved": "sendNotification"
+        },
+        {
+          "offset": 49,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 3794,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.onUseStoragePack"
+      ],
+      "args": [
+        "int",
+        "Array"
+      ],
+      "result": "void",
+      "code_hex": "d03060c5422cd612d24f6f0247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "GetLex",
+          "operands": [
+            8517
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:facade"
+        },
+        {
+          "offset": 5,
+          "opcode": "PushString",
+          "operands": [
+            2390
+          ],
+          "resolved": "SHOW_PACK_ITEMS"
+        },
+        {
+          "offset": 8,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 9,
+          "opcode": "CallPropVoid",
+          "operands": [
+            111,
+            2
+          ],
+          "resolved": "sendNotification"
+        },
+        {
+          "offset": 12,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 3802,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.callbackUseStorageItem"
+      ],
+      "args": [
+        "int"
+      ],
+      "result": "void",
+      "code_hex": "d030609f51d14fd5520147",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "GetLex",
+          "operands": [
+            10399
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:storageProxy"
+        },
+        {
+          "offset": 5,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 6,
+          "opcode": "CallPropVoid",
+          "operands": [
+            10581,
+            1
+          ],
+          "resolved": "reduceItem"
+        },
+        {
+          "offset": 10,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 4919,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.useStorageRunePack"
+      ],
+      "args": [
+        "String",
+        "int"
+      ],
+      "result": "void",
+      "code_hex": "d0305dc7422cc262d1d256024fc7420247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "FindPropStrict",
+          "operands": [
+            8519
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 5,
+          "opcode": "PushString",
+          "operands": [
+            12610
+          ],
+          "resolved": "useStorageRunePack"
+        },
+        {
+          "offset": 8,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 9,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 10,
+          "opcode": "NewArray",
+          "operands": [
+            2
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 12,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8519,
+            2
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic:callRemote"
+        },
+        {
+          "offset": 16,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 4920,
+      "owners": [
+        "lobbyNet.logic:ServersLogic.callbackUseStorageRunePack"
+      ],
+      "args": [
+        "int",
+        "Array"
+      ],
+      "result": "void",
+      "code_hex": "d03021d7d12401143b0000609115665024002400240024002400d246a92c0680a505d760dc04665060aa2cd32c022ce0352056046076464500669a0366354fde040310130000609e04608c042cb473d1a0468d04014f82040147",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "PushUndefined",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 3,
+          "opcode": "SetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 4,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 5,
+          "opcode": "PushByte",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 7,
+          "opcode": "IfNe",
+          "operands": [
+            59
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 11,
+          "opcode": "GetLex",
+          "operands": [
+            2705
+          ],
+          "resolved": "lobby.model.rpg:RpgCfgManager"
+        },
+        {
+          "offset": 14,
+          "opcode": "GetProperty",
+          "operands": [
+            80
+          ],
+          "resolved": "instance"
+        },
+        {
+          "offset": 16,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 18,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 20,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 22,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 24,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 26,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 27,
+          "opcode": "CallProperty",
+          "operands": [
+            5673,
+            6
+          ],
+          "resolved": "createRewardList"
+        },
+        {
+          "offset": 31,
+          "opcode": "Coerce",
+          "operands": [
+            677
+          ],
+          "resolved": "__AS3__.vec:Vector<lobby.model.rpg.metadata:IMetaData>"
+        },
+        {
+          "offset": 34,
+          "opcode": "SetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 35,
+          "opcode": "GetLex",
+          "operands": [
+            604
+          ],
+          "resolved": "lobby.view.rpg.utils:PanelManager"
+        },
+        {
+          "offset": 38,
+          "opcode": "GetProperty",
+          "operands": [
+            80
+          ],
+          "resolved": "instance"
+        },
+        {
+          "offset": 40,
+          "opcode": "GetLex",
+          "operands": [
+            5674
+          ],
+          "resolved": "lobby.view.rpg.main:CommonGainRewardPanel"
+        },
+        {
+          "offset": 43,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 44,
+          "opcode": "PushString",
+          "operands": [
+            2
+          ],
+          "resolved": ""
+        },
+        {
+          "offset": 46,
+          "opcode": "PushString",
+          "operands": [
+            6880
+          ],
+          "resolved": "icon_item"
+        },
+        {
+          "offset": 49,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 50,
+          "opcode": "NewArray",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 52,
+          "opcode": "GetLex",
+          "operands": [
+            118
+          ],
+          "resolved": "lobby.view:ApplicationMediator"
+        },
+        {
+          "offset": 54,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 57,
+          "opcode": "GetProperty",
+          "operands": [
+            410
+          ],
+          "resolved": "view"
+        },
+        {
+          "offset": 60,
+          "opcode": "GetProperty",
+          "operands": [
+            53
+          ],
+          "resolved": "popContainer"
+        },
+        {
+          "offset": 62,
+          "opcode": "CallPropVoid",
+          "operands": [
+            606,
+            3
+          ],
+          "resolved": "showPanel"
+        },
+        {
+          "offset": 66,
+          "opcode": "Jump",
+          "operands": [
+            19
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 70,
+          "opcode": "GetLex",
+          "operands": [
+            542
+          ],
+          "resolved": "lobby.manager:PromptManager"
+        },
+        {
+          "offset": 73,
+          "opcode": "GetLex",
+          "operands": [
+            524
+          ],
+          "resolved": "lobby:LanguageConfig"
+        },
+        {
+          "offset": 76,
+          "opcode": "PushString",
+          "operands": [
+            14772
+          ],
+          "resolved": "RUNE_ERROR_"
+        },
+        {
+          "offset": 79,
+          "opcode": "GetLocal1",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 80,
+          "opcode": "Add",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 81,
+          "opcode": "CallProperty",
+          "operands": [
+            525,
+            1
+          ],
+          "resolved": "getText"
+        },
+        {
+          "offset": 85,
+          "opcode": "CallPropVoid",
+          "operands": [
+            514,
+            1
+          ],
+          "resolved": "show"
+        },
+        {
+          "offset": 89,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 29416,
+      "owners": [
+        "lobby.view.storage:UseItemPanel.lobby.view.storage:UseItemPanel:onUseBtnMouseClick"
+      ],
+      "args": [
+        "flash.events:MouseEvent"
+      ],
+      "result": "void",
+      "code_hex": "d03020d7206304d066a2aa0366900173d6d066a9aa032013130000d066a9aa0320d256014f9a1002d04f8b6e004760a7aa0360ba7cb312e20000d066a7aa0360ba7c8780ba7cd720d3ab962a120e00002960f00fd366e78302468f0401962a120b000029d366e783022cafc304ab12900000609206668b012cdc5566b4aa03d366f02366b4aa03801b630460e52766d90466d43760e52766dbff0114160000609e04608c042cb1c304468d04014f8204011049000060e52766d90466d437620466b5aa03d2a2a060e52766dbff010d1a000060c70c464500d066a7aa036686082c02a0d24f93440210120000609e04608c042cb2c304468d04014f8204011016000060c70c464500d066a7aa036686082c02a0d24f934402104c000060a7aa0360c5c301b3121b000060c70c464500d066a7aa0366860846f20900d24f9444021024000060a7aa0360e8c301b31217000060c70c464500d066a7aa0366860846f20900d24f834d0247",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 3,
+          "opcode": "SetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 4,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 5,
+          "opcode": "SetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 7,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 8,
+          "opcode": "GetProperty",
+          "operands": [
+            54562
+          ],
+          "resolved": "numTextInput"
+        },
+        {
+          "offset": 12,
+          "opcode": "GetProperty",
+          "operands": [
+            144
+          ],
+          "resolved": "text"
+        },
+        {
+          "offset": 15,
+          "opcode": "ConvertI",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 16,
+          "opcode": "SetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 17,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 18,
+          "opcode": "GetProperty",
+          "operands": [
+            54569
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:userCallBack"
+        },
+        {
+          "offset": 22,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 23,
+          "opcode": "IfEq",
+          "operands": [
+            19
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 27,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 28,
+          "opcode": "GetProperty",
+          "operands": [
+            54569
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:userCallBack"
+        },
+        {
+          "offset": 32,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 33,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 34,
+          "opcode": "NewArray",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 36,
+          "opcode": "CallPropVoid",
+          "operands": [
+            2074,
+            2
+          ],
+          "resolved": "http://adobe.com/AS3/2006/builtin:apply"
+        },
+        {
+          "offset": 40,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 41,
+          "opcode": "CallPropVoid",
+          "operands": [
+            14091,
+            0
+          ],
+          "resolved": "lobby.view.rpg.component:BasePanel:close"
+        },
+        {
+          "offset": 45,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 46,
+          "opcode": "GetLex",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 50,
+          "opcode": "GetLex",
+          "operands": [
+            15930
+          ],
+          "resolved": "lobby.model.vo:StuffVO"
+        },
+        {
+          "offset": 53,
+          "opcode": "IsTypeLate",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 54,
+          "opcode": "IfFalse",
+          "operands": [
+            226
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 58,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 59,
+          "opcode": "GetProperty",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 63,
+          "opcode": "GetLex",
+          "operands": [
+            15930
+          ],
+          "resolved": "lobby.model.vo:StuffVO"
+        },
+        {
+          "offset": 66,
+          "opcode": "AsTypeLate",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 67,
+          "opcode": "Coerce",
+          "operands": [
+            15930
+          ],
+          "resolved": "lobby.model.vo:StuffVO"
+        },
+        {
+          "offset": 70,
+          "opcode": "SetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 71,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 72,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 73,
+          "opcode": "Equals",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 74,
+          "opcode": "Not",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 75,
+          "opcode": "Dup",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 76,
+          "opcode": "IfFalse",
+          "operands": [
+            14
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 80,
+          "opcode": "Pop",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 81,
+          "opcode": "GetLex",
+          "operands": [
+            2032
+          ],
+          "resolved": "tools:StringUtils"
+        },
+        {
+          "offset": 84,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 85,
+          "opcode": "GetProperty",
+          "operands": [
+            33255
+          ],
+          "resolved": "script"
+        },
+        {
+          "offset": 89,
+          "opcode": "CallProperty",
+          "operands": [
+            527,
+            1
+          ],
+          "resolved": "isEmpty"
+        },
+        {
+          "offset": 93,
+          "opcode": "Not",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 94,
+          "opcode": "Dup",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 95,
+          "opcode": "IfFalse",
+          "operands": [
+            11
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 99,
+          "opcode": "Pop",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 100,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 101,
+          "opcode": "GetProperty",
+          "operands": [
+            33255
+          ],
+          "resolved": "script"
+        },
+        {
+          "offset": 105,
+          "opcode": "PushString",
+          "operands": [
+            74159
+          ],
+          "resolved": "addMaxLv"
+        },
+        {
+          "offset": 109,
+          "opcode": "Equals",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 110,
+          "opcode": "IfFalse",
+          "operands": [
+            144
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 114,
+          "opcode": "GetLex",
+          "operands": [
+            786
+          ],
+          "resolved": "template:GameData"
+        },
+        {
+          "offset": 117,
+          "opcode": "GetProperty",
+          "operands": [
+            139
+          ],
+          "resolved": "data"
+        },
+        {
+          "offset": 120,
+          "opcode": "PushString",
+          "operands": [
+            10972
+          ],
+          "resolved": "shop_item"
+        },
+        {
+          "offset": 123,
+          "opcode": "GetProperty",
+          "operands": [
+            54580
+          ],
+          "resolved": "<runtime-set>"
+        },
+        {
+          "offset": 127,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 128,
+          "opcode": "GetProperty",
+          "operands": [
+            4592
+          ],
+          "resolved": "tid"
+        },
+        {
+          "offset": 131,
+          "opcode": "GetProperty",
+          "operands": [
+            54580
+          ],
+          "resolved": "<runtime-set>"
+        },
+        {
+          "offset": 135,
+          "opcode": "Coerce",
+          "operands": [
+            27
+          ],
+          "resolved": "Object"
+        },
+        {
+          "offset": 137,
+          "opcode": "SetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 139,
+          "opcode": "GetLex",
+          "operands": [
+            5093
+          ],
+          "resolved": "lobby.view.rpg.component:UIBase:userProxy"
+        },
+        {
+          "offset": 142,
+          "opcode": "GetProperty",
+          "operands": [
+            601
+          ],
+          "resolved": "userInfo"
+        },
+        {
+          "offset": 145,
+          "opcode": "GetProperty",
+          "operands": [
+            7124
+          ],
+          "resolved": "maxLv"
+        },
+        {
+          "offset": 148,
+          "opcode": "GetLex",
+          "operands": [
+            5093
+          ],
+          "resolved": "lobby.view.rpg.component:UIBase:userProxy"
+        },
+        {
+          "offset": 151,
+          "opcode": "GetProperty",
+          "operands": [
+            32731
+          ],
+          "resolved": "maxUpgradeLv"
+        },
+        {
+          "offset": 155,
+          "opcode": "IfNe",
+          "operands": [
+            22
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 159,
+          "opcode": "GetLex",
+          "operands": [
+            542
+          ],
+          "resolved": "lobby.manager:PromptManager"
+        },
+        {
+          "offset": 162,
+          "opcode": "GetLex",
+          "operands": [
+            524
+          ],
+          "resolved": "lobby:LanguageConfig"
+        },
+        {
+          "offset": 165,
+          "opcode": "PushString",
+          "operands": [
+            74161
+          ],
+          "resolved": "你的等级已经达到最大上限，请在开放更大上限后再使用该道具"
+        },
+        {
+          "offset": 169,
+          "opcode": "CallProperty",
+          "operands": [
+            525,
+            1
+          ],
+          "resolved": "getText"
+        },
+        {
+          "offset": 173,
+          "opcode": "CallPropVoid",
+          "operands": [
+            514,
+            1
+          ],
+          "resolved": "show"
+        },
+        {
+          "offset": 177,
+          "opcode": "Jump",
+          "operands": [
+            73
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 181,
+          "opcode": "GetLex",
+          "operands": [
+            5093
+          ],
+          "resolved": "lobby.view.rpg.component:UIBase:userProxy"
+        },
+        {
+          "offset": 184,
+          "opcode": "GetProperty",
+          "operands": [
+            601
+          ],
+          "resolved": "userInfo"
+        },
+        {
+          "offset": 187,
+          "opcode": "GetProperty",
+          "operands": [
+            7124
+          ],
+          "resolved": "maxLv"
+        },
+        {
+          "offset": 190,
+          "opcode": "GetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 192,
+          "opcode": "GetProperty",
+          "operands": [
+            54581
+          ],
+          "resolved": "num"
+        },
+        {
+          "offset": 196,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 197,
+          "opcode": "Multiply",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 198,
+          "opcode": "Add",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 199,
+          "opcode": "GetLex",
+          "operands": [
+            5093
+          ],
+          "resolved": "lobby.view.rpg.component:UIBase:userProxy"
+        },
+        {
+          "offset": 202,
+          "opcode": "GetProperty",
+          "operands": [
+            32731
+          ],
+          "resolved": "maxUpgradeLv"
+        },
+        {
+          "offset": 206,
+          "opcode": "IfNle",
+          "operands": [
+            26
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 210,
+          "opcode": "GetLex",
+          "operands": [
+            1607
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic"
+        },
+        {
+          "offset": 213,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 216,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 217,
+          "opcode": "GetProperty",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 221,
+          "opcode": "GetProperty",
+          "operands": [
+            1030
+          ],
+          "resolved": "id"
+        },
+        {
+          "offset": 224,
+          "opcode": "PushString",
+          "operands": [
+            2
+          ],
+          "resolved": ""
+        },
+        {
+          "offset": 226,
+          "opcode": "Add",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 227,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 228,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8723,
+            2
+          ],
+          "resolved": "useStorageItem"
+        },
+        {
+          "offset": 232,
+          "opcode": "Jump",
+          "operands": [
+            18
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 236,
+          "opcode": "GetLex",
+          "operands": [
+            542
+          ],
+          "resolved": "lobby.manager:PromptManager"
+        },
+        {
+          "offset": 239,
+          "opcode": "GetLex",
+          "operands": [
+            524
+          ],
+          "resolved": "lobby:LanguageConfig"
+        },
+        {
+          "offset": 242,
+          "opcode": "PushString",
+          "operands": [
+            74162
+          ],
+          "resolved": "道具使用失败，请重新选择正确的等级上限道具"
+        },
+        {
+          "offset": 246,
+          "opcode": "CallProperty",
+          "operands": [
+            525,
+            1
+          ],
+          "resolved": "getText"
+        },
+        {
+          "offset": 250,
+          "opcode": "CallPropVoid",
+          "operands": [
+            514,
+            1
+          ],
+          "resolved": "show"
+        },
+        {
+          "offset": 254,
+          "opcode": "Jump",
+          "operands": [
+            22
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 258,
+          "opcode": "GetLex",
+          "operands": [
+            1607
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic"
+        },
+        {
+          "offset": 261,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 264,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 265,
+          "opcode": "GetProperty",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 269,
+          "opcode": "GetProperty",
+          "operands": [
+            1030
+          ],
+          "resolved": "id"
+        },
+        {
+          "offset": 272,
+          "opcode": "PushString",
+          "operands": [
+            2
+          ],
+          "resolved": ""
+        },
+        {
+          "offset": 274,
+          "opcode": "Add",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 275,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 276,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8723,
+            2
+          ],
+          "resolved": "useStorageItem"
+        },
+        {
+          "offset": 280,
+          "opcode": "Jump",
+          "operands": [
+            76
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 284,
+          "opcode": "GetLex",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 288,
+          "opcode": "GetLex",
+          "operands": [
+            25029
+          ],
+          "resolved": "lobby.model.vo:PackVO"
+        },
+        {
+          "offset": 292,
+          "opcode": "IsTypeLate",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 293,
+          "opcode": "IfFalse",
+          "operands": [
+            27
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 297,
+          "opcode": "GetLex",
+          "operands": [
+            1607
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic"
+        },
+        {
+          "offset": 300,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 303,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 304,
+          "opcode": "GetProperty",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 308,
+          "opcode": "GetProperty",
+          "operands": [
+            1030
+          ],
+          "resolved": "id"
+        },
+        {
+          "offset": 311,
+          "opcode": "CallProperty",
+          "operands": [
+            1266,
+            0
+          ],
+          "resolved": "http://adobe.com/AS3/2006/builtin:toString"
+        },
+        {
+          "offset": 315,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 316,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8724,
+            2
+          ],
+          "resolved": "useStoragePack"
+        },
+        {
+          "offset": 320,
+          "opcode": "Jump",
+          "operands": [
+            36
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 324,
+          "opcode": "GetLex",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 328,
+          "opcode": "GetLex",
+          "operands": [
+            25064
+          ],
+          "resolved": "lobby.model.vo:RunesPackVO"
+        },
+        {
+          "offset": 332,
+          "opcode": "IsTypeLate",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 333,
+          "opcode": "IfFalse",
+          "operands": [
+            23
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 337,
+          "opcode": "GetLex",
+          "operands": [
+            1607
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic"
+        },
+        {
+          "offset": 340,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 343,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 344,
+          "opcode": "GetProperty",
+          "operands": [
+            54567
+          ],
+          "resolved": "lobby.view.storage:UseItemPanel:_commonItemVO"
+        },
+        {
+          "offset": 348,
+          "opcode": "GetProperty",
+          "operands": [
+            1030
+          ],
+          "resolved": "id"
+        },
+        {
+          "offset": 351,
+          "opcode": "CallProperty",
+          "operands": [
+            1266,
+            0
+          ],
+          "resolved": "http://adobe.com/AS3/2006/builtin:toString"
+        },
+        {
+          "offset": 355,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 356,
+          "opcode": "CallPropVoid",
+          "operands": [
+            9859,
+            2
+          ],
+          "resolved": "useStorageRunePack"
+        },
+        {
+          "offset": 360,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    },
+    {
+      "method_id": 45385,
+      "owners": [
+        "lobby.view.storage:ChosenBoxPanel.lobby.view.storage:ChosenBoxPanel:onConfirm"
+      ],
+      "args": [
+        "flash.events:MouseEvent"
+      ],
+      "result": "void",
+      "code_hex": "d030206304d0668894041201000047d0669a0366e0e6024689d7010080c3282a6305669801d0468c94040013190000609e04608c042cfba905d0468c940400468d04024f82040147d06687940424000d130000609e04608c042cfca905468d04014f8204014756008074d724006307620563061030000009620662072373d6d066859404d2669c940460c4ea028780c4ea022a630420130d0000d3620466811c2401a14fb2060132060711c9ffffd02661889404d04f8b94040060da036650d0669994044fe10f0160da036650d06699940424034fdb030260c70c464500d06683940466860846f20900d3d0668794044f95440347",
+      "ops": [
+        {
+          "offset": 0,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 1,
+          "opcode": "PushScope",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 2,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 3,
+          "opcode": "SetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 5,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 6,
+          "opcode": "GetProperty",
+          "operands": [
+            68104
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_submitting"
+        },
+        {
+          "offset": 10,
+          "opcode": "IfFalse",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 14,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 15,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 16,
+          "opcode": "GetProperty",
+          "operands": [
+            410
+          ],
+          "resolved": "view"
+        },
+        {
+          "offset": 19,
+          "opcode": "GetProperty",
+          "operands": [
+            45920
+          ],
+          "resolved": "m_rewardList"
+        },
+        {
+          "offset": 23,
+          "opcode": "CallProperty",
+          "operands": [
+            27529,
+            0
+          ],
+          "resolved": "getSelection"
+        },
+        {
+          "offset": 28,
+          "opcode": "Coerce",
+          "operands": [
+            5187
+          ],
+          "resolved": "__AS3__.vec:Vector<int>"
+        },
+        {
+          "offset": 31,
+          "opcode": "Dup",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 32,
+          "opcode": "SetLocal",
+          "operands": [
+            5
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 34,
+          "opcode": "GetProperty",
+          "operands": [
+            152
+          ],
+          "resolved": "length"
+        },
+        {
+          "offset": 37,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 38,
+          "opcode": "CallProperty",
+          "operands": [
+            68108,
+            0
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:getChooseNum"
+        },
+        {
+          "offset": 43,
+          "opcode": "IfEq",
+          "operands": [
+            25
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 47,
+          "opcode": "GetLex",
+          "operands": [
+            542
+          ],
+          "resolved": "lobby.manager:PromptManager"
+        },
+        {
+          "offset": 50,
+          "opcode": "GetLex",
+          "operands": [
+            524
+          ],
+          "resolved": "lobby:LanguageConfig"
+        },
+        {
+          "offset": 53,
+          "opcode": "PushString",
+          "operands": [
+            87291
+          ],
+          "resolved": "请选择{0}个奖励"
+        },
+        {
+          "offset": 57,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 58,
+          "opcode": "CallProperty",
+          "operands": [
+            68108,
+            0
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:getChooseNum"
+        },
+        {
+          "offset": 63,
+          "opcode": "CallProperty",
+          "operands": [
+            525,
+            2
+          ],
+          "resolved": "getText"
+        },
+        {
+          "offset": 67,
+          "opcode": "CallPropVoid",
+          "operands": [
+            514,
+            1
+          ],
+          "resolved": "show"
+        },
+        {
+          "offset": 71,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 72,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 73,
+          "opcode": "GetProperty",
+          "operands": [
+            68103
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_openNum"
+        },
+        {
+          "offset": 77,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 79,
+          "opcode": "IfNle",
+          "operands": [
+            19
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 83,
+          "opcode": "GetLex",
+          "operands": [
+            542
+          ],
+          "resolved": "lobby.manager:PromptManager"
+        },
+        {
+          "offset": 86,
+          "opcode": "GetLex",
+          "operands": [
+            524
+          ],
+          "resolved": "lobby:LanguageConfig"
+        },
+        {
+          "offset": 89,
+          "opcode": "PushString",
+          "operands": [
+            87292
+          ],
+          "resolved": "礼包数量不足"
+        },
+        {
+          "offset": 93,
+          "opcode": "CallProperty",
+          "operands": [
+            525,
+            1
+          ],
+          "resolved": "getText"
+        },
+        {
+          "offset": 97,
+          "opcode": "CallPropVoid",
+          "operands": [
+            514,
+            1
+          ],
+          "resolved": "show"
+        },
+        {
+          "offset": 101,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 102,
+          "opcode": "NewArray",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 104,
+          "opcode": "Coerce",
+          "operands": [
+            116
+          ],
+          "resolved": "Array"
+        },
+        {
+          "offset": 106,
+          "opcode": "SetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 107,
+          "opcode": "PushByte",
+          "operands": [
+            0
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 109,
+          "opcode": "SetLocal",
+          "operands": [
+            7
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 111,
+          "opcode": "GetLocal",
+          "operands": [
+            5
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 113,
+          "opcode": "SetLocal",
+          "operands": [
+            6
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 115,
+          "opcode": "Jump",
+          "operands": [
+            48
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 119,
+          "opcode": "Label",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 120,
+          "opcode": "GetLocal",
+          "operands": [
+            6
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 122,
+          "opcode": "GetLocal",
+          "operands": [
+            7
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 124,
+          "opcode": "NextValue",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 125,
+          "opcode": "ConvertI",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 126,
+          "opcode": "SetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 127,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 128,
+          "opcode": "GetProperty",
+          "operands": [
+            68101
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_rewardConfigs"
+        },
+        {
+          "offset": 132,
+          "opcode": "GetLocal2",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 133,
+          "opcode": "GetProperty",
+          "operands": [
+            68124
+          ],
+          "resolved": "<runtime-set>"
+        },
+        {
+          "offset": 137,
+          "opcode": "GetLex",
+          "operands": [
+            46404
+          ],
+          "resolved": "lobby.model.template:CfgShopSortedItem"
+        },
+        {
+          "offset": 141,
+          "opcode": "AsTypeLate",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 142,
+          "opcode": "Coerce",
+          "operands": [
+            46404
+          ],
+          "resolved": "lobby.model.template:CfgShopSortedItem"
+        },
+        {
+          "offset": 146,
+          "opcode": "Dup",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 147,
+          "opcode": "SetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 149,
+          "opcode": "PushNull",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 150,
+          "opcode": "IfEq",
+          "operands": [
+            13
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 154,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 155,
+          "opcode": "GetLocal",
+          "operands": [
+            4
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 157,
+          "opcode": "GetProperty",
+          "operands": [
+            3585
+          ],
+          "resolved": "index"
+        },
+        {
+          "offset": 160,
+          "opcode": "PushByte",
+          "operands": [
+            1
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 162,
+          "opcode": "Subtract",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 163,
+          "opcode": "CallPropVoid",
+          "operands": [
+            818,
+            1
+          ],
+          "resolved": "http://adobe.com/AS3/2006/builtin:push"
+        },
+        {
+          "offset": 167,
+          "opcode": "HasNext2",
+          "operands": [
+            6,
+            7
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 170,
+          "opcode": "IfTrue",
+          "operands": [
+            -55
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 174,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 175,
+          "opcode": "PushTrue",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 176,
+          "opcode": "SetProperty",
+          "operands": [
+            68104
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_submitting"
+        },
+        {
+          "offset": 180,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 181,
+          "opcode": "CallPropVoid",
+          "operands": [
+            68107,
+            0
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:updateSelectionState"
+        },
+        {
+          "offset": 186,
+          "opcode": "GetLex",
+          "operands": [
+            474
+          ],
+          "resolved": "tools:TimerManager"
+        },
+        {
+          "offset": 189,
+          "opcode": "GetProperty",
+          "operands": [
+            80
+          ],
+          "resolved": "instance"
+        },
+        {
+          "offset": 191,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 192,
+          "opcode": "GetProperty",
+          "operands": [
+            68121
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:onSubmitTimeout"
+        },
+        {
+          "offset": 196,
+          "opcode": "CallPropVoid",
+          "operands": [
+            2017,
+            1
+          ],
+          "resolved": "removeHandler"
+        },
+        {
+          "offset": 200,
+          "opcode": "GetLex",
+          "operands": [
+            474
+          ],
+          "resolved": "tools:TimerManager"
+        },
+        {
+          "offset": 203,
+          "opcode": "GetProperty",
+          "operands": [
+            80
+          ],
+          "resolved": "instance"
+        },
+        {
+          "offset": 205,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 206,
+          "opcode": "GetProperty",
+          "operands": [
+            68121
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:onSubmitTimeout"
+        },
+        {
+          "offset": 210,
+          "opcode": "PushByte",
+          "operands": [
+            3
+          ],
+          "resolved": null
+        },
+        {
+          "offset": 212,
+          "opcode": "CallPropVoid",
+          "operands": [
+            475,
+            2
+          ],
+          "resolved": "addHandler"
+        },
+        {
+          "offset": 216,
+          "opcode": "GetLex",
+          "operands": [
+            1607
+          ],
+          "resolved": "lobbyNet.logic:ServersLogic"
+        },
+        {
+          "offset": 219,
+          "opcode": "CallProperty",
+          "operands": [
+            69,
+            0
+          ],
+          "resolved": "getInstance"
+        },
+        {
+          "offset": 222,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 223,
+          "opcode": "GetProperty",
+          "operands": [
+            68099
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_boxVO"
+        },
+        {
+          "offset": 227,
+          "opcode": "GetProperty",
+          "operands": [
+            1030
+          ],
+          "resolved": "id"
+        },
+        {
+          "offset": 230,
+          "opcode": "CallProperty",
+          "operands": [
+            1266,
+            0
+          ],
+          "resolved": "http://adobe.com/AS3/2006/builtin:toString"
+        },
+        {
+          "offset": 234,
+          "opcode": "GetLocal3",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 235,
+          "opcode": "GetLocal0",
+          "operands": [],
+          "resolved": null
+        },
+        {
+          "offset": 236,
+          "opcode": "GetProperty",
+          "operands": [
+            68103
+          ],
+          "resolved": "lobby.view.storage:ChosenBoxPanel:_openNum"
+        },
+        {
+          "offset": 240,
+          "opcode": "CallPropVoid",
+          "operands": [
+            8725,
+            3
+          ],
+          "resolved": "useChosenBoxMulti"
+        },
+        {
+          "offset": 244,
+          "opcode": "ReturnVoid",
+          "operands": [],
+          "resolved": null
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "Client method identifiers are local to the supplied ABC metadata.",
+    "Source SWF identity is recorded; current loaded process identity and server compatibility are not verified.",
+    "Decoded AVM2 instructions are static evidence, not original ActionScript source.",
+    "No application UI was launched, captured or operated. No game process was attached or modified. No game request was sent."
+  ]
+}
