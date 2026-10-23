@@ -51,7 +51,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var.get.return_value = "above"
         app.workflow_tree.selection.return_value = ("0",)  # 选中 a.json（全局模块在单独列表）
         with patch("tkinter.filedialog.askopenfilename", return_value="C:/scripts/新脚本.json"):
-            app.insert_workflow_step()
+            app.add_script_step()
         # 全局模块保持首位，新步骤插在 a.json 之前
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
@@ -70,7 +70,7 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("0",)
         with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
-            app.insert_workflow_step()
+            app.add_script_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
             ["a.json", "new.json", "b.json"],
@@ -87,22 +87,12 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("1",)
         with patch("tkinter.filedialog.askopenfilename", return_value="C:/x/new.json"):
-            app.insert_workflow_step()
+            app.add_script_step()
         self.assertEqual(
             [Path(s["script"]).name for s in app.workflow.steps],
             ["a.json", "b.json", "new.json"],
         )
         app.workflow_tree.selection_set.assert_called_with("2")
-
-    def test_insert_requires_selected_row(self):
-        app = self._app()
-        app.workflow = Workflow(steps=[{"script": "a.json", "step_id": "a"}])
-        app.workflow_insert_position_var = Mock()
-        app.workflow_insert_position_var.get.return_value = "above"
-        app.workflow_tree.selection.return_value = ()
-        app.insert_workflow_step()
-        app._notify.assert_called_once_with("插入脚本", "请先选择插入位置所在的工作流行。")
-        self.assertEqual(len(app.workflow.steps), 1)
 
     def test_insert_cancel_keeps_steps_unchanged(self):
         app = self._app()
@@ -111,12 +101,13 @@ class WorkflowInsertTests(unittest.TestCase):
         app.workflow_insert_position_var.get.return_value = "below"
         app.workflow_tree.selection.return_value = ("0",)
         with patch("tkinter.filedialog.askopenfilename", return_value=""):
-            app.insert_workflow_step()
+            app.add_script_step()
         self.assertEqual(len(app.workflow.steps), 1)
         app._persist_workflow_draft.assert_not_called()
 
     def test_insert_module_below_selected_workflow_row(self):
         app = self._app()
+        app._set_status = Mock()
         app.workflow = Workflow(steps=[
             {"script": "a.json", "step_id": "a"},
             {"script": "b.json", "step_id": "b"},
@@ -130,7 +121,7 @@ class WorkflowInsertTests(unittest.TestCase):
         }
         with package_patch('app', 'ModulePickerDialog') as picker_class:
             picker_class.return_value.show.return_value = action
-            app.insert_workflow_module_step()
+            app.add_workflow_module_step()
 
         self.assertEqual([step.get("kind", "script") for step in app.workflow.steps], [
             "script", "module", "script",
@@ -139,7 +130,7 @@ class WorkflowInsertTests(unittest.TestCase):
         self.assertEqual(app.workflow.steps[1]["action"]["module_name"], "switch")
         app.workflow_tree.selection_set.assert_called_with("1")
         picker_class.assert_called_once_with(
-            app.root, categories=("switch", "special"), allow_number=False,
+            app.root, categories=("switch", "special"), multi_select=True, allow_number=False,
         )
 
     def test_add_multiple_modules_as_workflow_rows(self):

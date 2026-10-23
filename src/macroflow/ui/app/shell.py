@@ -684,28 +684,26 @@ class ShellMixin:
         self._insert_script(True)
 
     def _show_script_more_menu(self):
-        """「⋯」：文件操作 + 脚本插入 + 低频管理入口。"""
+        """「⋯」：独有文件操作、低频管理入口，最后为三个脚本插入选项。"""
         menu = tk.Menu(
             self.root, tearoff=False, background=COLOR_SURFACE, foreground=COLOR_TEXT,
             activebackground="#1F4C80", activeforeground="#FFFFFF",
             borderwidth=1, relief="solid",
         )
-        menu.add_command(label="＋ 新建", command=self.new_script)
-        menu.add_command(label="📂 打开", command=self.open_script)
         menu.add_command(label="✕ 关闭", command=self.close_script)
         menu.add_command(label="⧉ 新开窗口", command=self.open_new_window)
         menu.add_separator()
         menu.add_command(label="导入包…", command=self.import_portable_bundle)
         menu.add_command(label="导出当前脚本…", command=self.export_portable_bundle)
         menu.add_separator()
-        menu.add_command(label="⇥ 引用脚本（实时读取）", command=lambda: self._insert_script(False))
-        menu.add_command(label="⇥ 逐行插入脚本", command=lambda: self._insert_script(True))
-        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
-        menu.add_separator()
         menu.add_command(label="📂 打开脚本目录",
                          command=lambda: self.open_folder(self._script_category_dir()))
         menu.add_command(label="🗂 目录设置…", command=self._configure_script_directories)
         menu.add_command(label="▤ 模块管理…", command=self.open_template_region_manager)
+        menu.add_separator()
+        menu.add_command(label="⇥ 引用脚本（实时读取）", command=self._insert_script_reference)
+        menu.add_command(label="⇥ 逐行插入脚本", command=self._insert_script_inline)
+        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
         self._popup_menu(menu, self.script_more_menu_button)
 
     def _popup_menu(self, menu, anchor):
@@ -1221,32 +1219,29 @@ class ShellMixin:
         add_toolbar.pack(fill="x")
         ttk.Label(add_toolbar, text="添加 / 插入", style="CardHint.TLabel").pack(
             side="left", padx=pad(0, 8))
-        ttk.Button(add_toolbar, text="添加当前脚本", command=self.add_current_script_step,
-                   style="Chip.TButton").pack(side="left")
-        ttk.Button(add_toolbar, text="选择已有脚本", command=self.add_script_step,
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        ttk.Button(add_toolbar, text="添加模块", command=self.add_workflow_module_step,
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        insert_toolbar = ttk.Frame(toolbar, style="Card.TFrame")
-        insert_toolbar.pack(fill="x", pady=pad(5, 0))
-        ttk.Label(insert_toolbar, text="插入位置", style="CardHint.TLabel").pack(
-            side="left", padx=pad(0, 6))
+        self.workflow_add_kind_combo = ttk.Combobox(
+            add_toolbar, values=("当前脚本", "已有脚本", "模块"), state="readonly", width=10,
+        )
+        self.workflow_add_kind_combo.current(0)
+        self.workflow_add_kind_combo.pack(side="left")
+        ttk.Button(add_toolbar, text="确定", command=self._add_selected_workflow_step,
+                   style="ChipAccent.TButton").pack(side="left", padx=pad(5, 0))
+        ttk.Label(add_toolbar, text="插入位置", style="CardHint.TLabel").pack(
+            side="left", padx=pad(14, 6))
         self.workflow_insert_above_button = ttk.Button(
-            insert_toolbar, text="▲ 上方", width=6,
+            add_toolbar, text="▲", width=3,
             command=lambda: self._set_workflow_insert_position(True),
             bootstyle="secondary",
         )
         self.workflow_insert_above_button.pack(side="left")
         self.workflow_insert_below_button = ttk.Button(
-            insert_toolbar, text="▼ 下方", width=6,
+            add_toolbar, text="▼", width=3,
             command=lambda: self._set_workflow_insert_position(False),
             bootstyle="secondary",
         )
         self.workflow_insert_below_button.pack(side="left", padx=pad(5, 0))
-        ttk.Button(insert_toolbar, text="插入脚本", command=self.insert_workflow_step,
-                   style="ChipAccent.TButton").pack(side="left", padx=pad(6, 0))
-        ttk.Button(insert_toolbar, text="插入模块", command=self.insert_workflow_module_step,
-                   style="ChipAccent.TButton").pack(side="left", padx=pad(4, 0))
+        self._attach_tip(self.workflow_insert_above_button, "插入到选中步骤上方；未选中时追加到末尾。")
+        self._attach_tip(self.workflow_insert_below_button, "插入到选中步骤下方；未选中时追加到末尾。")
         self._set_workflow_insert_position(False)
 
         edit_toolbar = ttk.Frame(toolbar, style="Card.TFrame")

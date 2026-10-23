@@ -401,6 +401,12 @@ class WorkflowMixin:
             return None
 
 
+    def _add_selected_workflow_step(self):
+        handlers = (
+            self.add_current_script_step, self.add_script_step, self.add_workflow_module_step,
+        )
+        handlers[self.workflow_add_kind_combo.current()]()
+
     def add_current_script_step(self):
         path = self.save_current_script()
         if path:
@@ -549,41 +555,6 @@ class WorkflowMixin:
             self.workflow_insert_position_var, self.workflow_insert_above_button,
             self.workflow_insert_below_button, above,
         )
-
-    def insert_workflow_step(self):
-        """在选中步骤的上方或下方插入一个脚本步骤（按插入位置设置）。"""
-        workflow_steps = self._workflow_only_steps()
-        selected = self._selected_workflow_index()
-        if selected is None or not workflow_steps:
-            self._notify("插入脚本", "请先选择插入位置所在的工作流行。")
-            return
-        path = filedialog.askopenfilename(
-            parent=self.root, initialdir=self._script_category_dir(), title="选择要插入的脚本",
-            filetypes=[("MacroFlow 脚本 / Python", "*.json *.py"), ("所有文件", "*.*")],
-        )
-        if not path:
-            return
-        index = self._workflow_insert_target_index()
-        if index is None:
-            return
-        self._insert_workflow_step_at(Path(path), index)
-
-    def insert_workflow_module_step(self):
-        workflow_steps = self._workflow_only_steps()
-        selected = self._selected_workflow_index()
-        if selected is None or not workflow_steps:
-            self._notify("插入模块", "请先选择插入位置所在的工作流行。")
-            return
-        action = ModulePickerDialog(
-            self.root, categories=("switch", "special"), allow_number=False,
-        ).show()
-        if not isinstance(action, dict):
-            return
-        index = self._workflow_insert_target_index()
-        if index is None:
-            return
-        step = self._new_workflow_module_step(action)
-        self._insert_workflow_task_at(step, index)
 
     def _workflow_insert_target_index(self) -> int | None:
         """添加/插入共用：按“插入位置”设置换算选中行的目标下标；未选中行返回 None。"""
