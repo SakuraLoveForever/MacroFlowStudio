@@ -13,7 +13,13 @@ from .base import show_floating_notice
 def route_action_categories():
     specs = tuple(spec for spec in ShellMixin._script_action_button_specs()
                   if spec[1] not in {'open_ssjj_coordinates', '_toggle_record_from_toolbar'})
-    return tuple((label, primary + extra) for label, primary, extra in action_category_specs(specs))
+    categories = tuple((label, primary + extra) for label, primary, extra in action_category_specs(specs)
+                       if primary or extra)
+    return categories + (("脚本", (
+        ("引用脚本", "_insert_script_reference", "ScriptTool.TButton"),
+        ("逐行插入脚本", "_insert_script_inline", "ScriptTool.TButton"),
+        ("插入指定行…", "_insert_script_range", "ScriptTool.TButton"),
+    )),)
 
 
 class ScriptActionInserter(ScriptsMixin):

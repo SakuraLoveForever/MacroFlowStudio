@@ -676,53 +676,42 @@ class ShellMixin:
         if flow is not None:
             self.root.after_idle(flow._relayout)
 
-    # ----------------------------------------------------------------- menus
-    def _insert_script_reference(self):
-        self._insert_script(False)
+    def _insert_selected_script(self):
+        mode = self.script_insert_kind_combo.current()
+        if mode == 2:
+            self._insert_script_range()
+        else:
+            self._insert_script(mode == 1)
 
-    def _insert_script_inline(self):
-        self._insert_script(True)
-
-    def _show_script_more_menu(self):
-        """「⋯」：独有文件操作、低频管理入口，最后为三个脚本插入选项。"""
-        menu = tk.Menu(
-            self.root, tearoff=False, background=COLOR_SURFACE, foreground=COLOR_TEXT,
-            activebackground="#1F4C80", activeforeground="#FFFFFF",
-            borderwidth=1, relief="solid",
+    def _build_script_tools(self, parent):
+        file_tools = ttk.Frame(parent, style="App.TFrame")
+        file_tools.pack(fill="x", pady=pad(6, 0))
+        for text, command in (
+            ("关闭", self.close_script),
+            ("新开窗口", self.open_new_window),
+            ("导入包", self.import_portable_bundle),
+            ("导出脚本", self.export_portable_bundle),
+            ("脚本目录", lambda: self.open_folder(self._script_category_dir())),
+            ("目录设置", self._configure_script_directories),
+            ("模块管理", self.open_template_region_manager),
+        ):
+            ttk.Button(file_tools, text=text, command=command,
+                       style="Chip.TButton").pack(side="left", padx=pad(0, 5))
+        ttk.Label(file_tools, text="插入脚本", style="Muted.TLabel").pack(
+            side="left", padx=pad(9, 7))
+        self.script_insert_kind_combo = ttk.Combobox(
+            file_tools, values=("引用脚本", "逐行插入", "指定行插入"),
+            state="readonly", width=10,
         )
-        menu.add_command(label="✕ 关闭", command=self.close_script)
-        menu.add_command(label="⧉ 新开窗口", command=self.open_new_window)
-        menu.add_separator()
-        menu.add_command(label="导入包…", command=self.import_portable_bundle)
-        menu.add_command(label="导出当前脚本…", command=self.export_portable_bundle)
-        menu.add_separator()
-        menu.add_command(label="📂 打开脚本目录",
-                         command=lambda: self.open_folder(self._script_category_dir()))
-        menu.add_command(label="🗂 目录设置…", command=self._configure_script_directories)
-        menu.add_command(label="▤ 模块管理…", command=self.open_template_region_manager)
-        menu.add_separator()
-        menu.add_command(label="⇥ 引用脚本（实时读取）", command=self._insert_script_reference)
-        menu.add_command(label="⇥ 逐行插入脚本", command=self._insert_script_inline)
-        menu.add_command(label="⇥ 插入脚本指定行…", command=self._insert_script_range)
-        self._popup_menu(menu, self.script_more_menu_button)
-
-    def _popup_menu(self, menu, anchor):
-        """在按钮正下方弹出菜单（键盘也可用：按钮获得焦点后按空格/回车）。"""
-        anchor.update_idletasks()
-        x = anchor.winfo_rootx()
-        y = anchor.winfo_rooty() + anchor.winfo_height()
-        try:
-            menu.tk_popup(x, y)
-        finally:
-            menu.grab_release()
+        self.script_insert_kind_combo.current(0)
+        self.script_insert_kind_combo.pack(side="left")
+        ttk.Button(file_tools, text="插入", command=self._insert_selected_script,
+                   style="ChipAccent.TButton").pack(side="left", padx=pad(5, 0))
 
     @staticmethod
     def _script_action_button_specs():
         """Return the action buttons exposed by the script editor toolbar."""
         return (
-            ("⇥ 引用脚本", "_insert_script_reference", "ScriptTool.TButton"),
-            ("⇥ 逐行插入脚本", "_insert_script_inline", "ScriptTool.TButton"),
-            ("⇥ 插入指定行…", "_insert_script_range", "ScriptTool.TButton"),
             ("◷ 延时", "add_delay", "ScriptTool.TButton"),
             ("◷ 等待小怪消失", "add_wait_mobs_absent", "AccentScriptTool.TButton"),
             ("⌖ 光标锁定/解锁", "add_aim_lock", "AccentScriptTool.TButton"),
@@ -784,11 +773,7 @@ class ShellMixin:
         from macroflow.ui.save_state import SaveState
         self._script_save_state = SaveState(actions, script_save_button,
                                             lambda: bool(self.dirty), baseline=False)
-        self.script_more_menu_button = ttk.Button(
-            actions, text="⋯", width=3, command=self._show_script_more_menu,
-            style="Ghost.TButton",
-        )
-        self.script_more_menu_button.pack(side="left", padx=pad(6, 0))
+        self._build_script_tools(outer)
 
         meta_card = Card(outer, padding=(14, 9, 14, 9))
         meta_card.pack(fill="x", pady=pad(10, 0))

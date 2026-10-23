@@ -70,6 +70,8 @@ class RouteScriptActionTests(unittest.TestCase):
         commands = {spec[1] for _, specs in route_action_categories() for spec in specs}
         expected = {spec[1] for spec in ShellMixin._script_action_button_specs()} - {
             'open_ssjj_coordinates', '_toggle_record_from_toolbar'}
+        # 主编辑器把这三项移到了常驻下拉框；路线编辑器继续提供相同插入能力。
+        expected.update({'_insert_script_reference', '_insert_script_inline', '_insert_script_range'})
         self.assertEqual(commands, expected)
 
     def test_jump_over_recorded_release_does_not_restore_old_hold(self):

@@ -79,22 +79,6 @@ class ScriptEditingTests(unittest.TestCase):
         self.assertEqual(dialog.tree.pending_events, 0)
         self.assertEqual(dialog.tree.selection_calls, 2)
 
-    def test_script_more_menu_does_not_duplicate_insert_direction_buttons(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.root = Mock()
-        app.script_more_menu_button = Mock()
-        app.script_more_menu_button.winfo_rootx.return_value = 10
-        app.script_more_menu_button.winfo_rooty.return_value = 20
-        app.script_more_menu_button.winfo_height.return_value = 24
-
-        with patch("macroflow.ui.app.shell.tk.Menu") as menu_class:
-            app._show_script_more_menu()
-
-        labels = [call.kwargs["label"] for call in menu_class.return_value.add_command.call_args_list]
-        self.assertIn("⇥ 插入脚本指定行…", labels)
-        self.assertNotIn("▲ 向上插入", labels)
-        self.assertNotIn("▼ 向下插入", labels)
-
     def test_set_script_insert_position_highlights_current_mode(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.insert_position_var = FakeVar("below")
