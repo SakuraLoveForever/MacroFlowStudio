@@ -3003,24 +3003,37 @@ class LastScriptRestoreTests(unittest.TestCase):
         app._restore_editor_draft.assert_called_once_with(draft)
         app._load_last_script.assert_not_called()
 
-    def test_restore_main_window_geometry_uses_saved_value(self):
+    def test_restore_main_window_geometry_keeps_fixed_size(self):
+        from macroflow.ui.app.base import px
+        from macroflow.ui.app.constants import TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
+
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.app_settings = {"main_window_geometry": "1600x900+40+50"}
         app.root = Mock()
 
-        app._restore_main_window_geometry()
+        with package_patch('app', 'get_virtual_screen_rect',
+                           return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
+            app._restore_main_window_geometry()
 
-        app.root.geometry.assert_called_once_with("1600x900+40+50")
+        app.root.geometry.assert_called_once_with(
+            f"{px(TARGET_MAIN_WIDTH)}x{px(TARGET_MAIN_HEIGHT)}+40+50",
+        )
 
-    def test_restore_main_window_geometry_rehomes_offscreen_saved_value(self):
+    def test_restore_main_window_geometry_clamps_offscreen_position(self):
+        from macroflow.ui.app.base import px
+        from macroflow.ui.app.constants import TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
+
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.app_settings = {"main_window_geometry": "1902x1039+-1919+182"}
         app.root = Mock()
 
-        with package_patch('app', 'get_virtual_screen_rect', return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
+        with package_patch('app', 'get_virtual_screen_rect',
+                           return_value={'left': 0, 'top': 0, 'width': 1920, 'height': 1080}):
             app._restore_main_window_geometry()
 
-        app.root.geometry.assert_called_once_with("1902x1039+9+20")
+        app.root.geometry.assert_called_once_with(
+            f"{px(TARGET_MAIN_WIDTH)}x{px(TARGET_MAIN_HEIGHT)}+0+182",
+        )
 
 
 class RecordedInputDialogTests(unittest.TestCase):

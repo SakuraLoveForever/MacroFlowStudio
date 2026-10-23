@@ -69,6 +69,7 @@ class RuntimeShellMixin:
         self.ui_queue = UIUpdateQueue(self.root, interval_ms=33)
         self.root.title(f"{APP_NAME}  {APP_VERSION}")
         self.root.geometry(default_main_geometry())
+        self.root.resizable(False, False)
         self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
         self.root.option_add("*Font", (FONT_FAMILY, FONT_BODY))
         disable_combobox_wheel_selection(self.root)
@@ -83,8 +84,8 @@ class RuntimeShellMixin:
         self.app_settings = load_app_settings()
         from macroflow.execution.ssjj_aim import set_follow_interval_ms
         set_follow_interval_ms(self.app_settings.get('ssjj_aim_interval_ms', 2))
-        self._restore_main_window_geometry()
         self._apply_startup_window_state()
+        self._restore_main_window_geometry()
         self._sync_ui_scale_to_monitor()
         # 游戏设置说明（用户可编辑的使用前参数清单）：随 app_settings 持久化。
         self._game_setup_note = self.app_settings.get("game_setup_note")

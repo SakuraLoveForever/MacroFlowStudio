@@ -40,15 +40,16 @@ class PackageEntryTests(unittest.TestCase):
 
 
 class MainWindowSizeTests(unittest.TestCase):
-    """窗口尺寸按逻辑像素设计，且随 DPI 缩放。"""
+    """窗口是固定尺寸的紧凑窗口，且随 DPI 缩放。"""
 
-    def test_default_geometry_is_the_compact_target(self):
-        from macroflow.ui.app.base import default_main_geometry
+    def test_default_geometry_is_the_fixed_compact_size(self):
+        from macroflow.ui.app.base import default_main_geometry, px
         from macroflow.ui.app.constants import TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
 
-        width, height = default_main_geometry().split("x")
-        self.assertLessEqual(int(width), TARGET_MAIN_WIDTH)
-        self.assertLessEqual(int(height), TARGET_MAIN_HEIGHT)
+        self.assertEqual(
+            default_main_geometry(),
+            f"{px(TARGET_MAIN_WIDTH)}x{px(TARGET_MAIN_HEIGHT)}",
+        )
 
     def test_minimum_size_is_usable_at_1024_logical_pixels(self):
         from macroflow.ui.app.constants import MIN_MAIN_HEIGHT, MIN_MAIN_WIDTH
@@ -56,19 +57,12 @@ class MainWindowSizeTests(unittest.TestCase):
         self.assertLessEqual(MIN_MAIN_WIDTH, 1024)
         self.assertLessEqual(MIN_MAIN_HEIGHT, 640)
 
-    def test_geometry_never_exceeds_a_small_screen(self):
-        """小屏（1024×768）上窗口不得超过屏幕，也不能小于最小尺寸。"""
-        from unittest.mock import patch
+    def test_fixed_window_fits_a_1024x768_screen(self):
+        from macroflow.ui.app.base import default_main_geometry
 
-        from macroflow.ui.app import base
-        from macroflow.ui.app.constants import MIN_MAIN_WIDTH
-
-        with patch.object(base, "get_virtual_screen_rect",
-                          return_value={"left": 0, "top": 0, "width": 1024, "height": 768}):
-            width, height = base.default_main_geometry().split("x")
-        self.assertLessEqual(int(width), 1024)
-        self.assertGreaterEqual(int(width), MIN_MAIN_WIDTH)
-        self.assertLessEqual(int(height), 768)
+        width, height = (int(value) for value in default_main_geometry().split("x"))
+        self.assertLessEqual(width, 1024)
+        self.assertLessEqual(height, 768)
 
 
 if __name__ == "__main__":

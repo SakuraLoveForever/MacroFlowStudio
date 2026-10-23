@@ -876,7 +876,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app.global_tree = Mock()
         app.global_tree.get_children.return_value = ()
         app.empty_global_hint = Mock()
-        app._global_module_label = Mock(return_value="◆ 模块对象 · 已禁用全局模块")
+        app._global_module_label = Mock(return_value="已禁用全局模块")
         app._autosize_tree_column = Mock()
 
         with package_patch('app', 'registered_module_object', return_value={'enabled': False}):

@@ -12,7 +12,7 @@ import time
 import tkinter as tk
 
 from ..base import coordinate_scale_summary, px, set_ui_scale
-from ..constants import EVENT_LOG_HEADER, MIN_MAIN_HEIGHT, MIN_MAIN_WIDTH, TRACE_LOG_HEADER
+from ..constants import EVENT_LOG_HEADER, MIN_MAIN_HEIGHT, MIN_MAIN_WIDTH, TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH, TRACE_LOG_HEADER
 from ..summaries import action_detail
 
 class RuntimeHelpersMixin:
@@ -342,34 +342,28 @@ class RuntimeHelpersMixin:
         return script
 
     def _restore_main_window_geometry(self) -> None:
-        """Restore the main window size and position saved at the last close."""
+        """只恢复位置：窗口大小固定，不再沿用上次保存的尺寸。"""
         geometry = str(getattr(self, "app_settings", {}).get("main_window_geometry", "") or "").strip()
         if not geometry:
             return
         try:
             match = re.fullmatch(r"(\d+)x(\d+)[+-](-?\d+)[+-](-?\d+)", geometry)
-            if match:
-                width, height = (int(value) for value in match.group(1, 2))
-                left, top = (int(value) for value in match.group(3, 4))
-                screen = get_virtual_screen_rect()
-                screen_left = int(screen.get("left", 0))
-                screen_top = int(screen.get("top", 0))
-                screen_width = max(1, int(screen.get("width", 0)))
-                screen_height = max(1, int(screen.get("height", 0)))
-                visible_width = min(left + width, screen_left + screen_width) - max(left, screen_left)
-                visible_height = min(top + height, screen_top + screen_height) - max(top, screen_top)
-                # 显示器配置变化后，旧位置可能落在已断开的显示器上。
-                # 至少保留一小块可见区域，否则恢复到当前虚拟桌面中央。
-                if visible_width < min(64, width) or visible_height < min(64, height):
-                    width = min(width, screen_width)
-                    height = min(height, screen_height)
-                    left = screen_left + max(0, (screen_width - width) // 2)
-                    top = screen_top + max(0, (screen_height - height) // 2)
-                    geometry = f"{width}x{height}+{left}+{top}"
-            self.root.geometry(geometry)
+            if not match:
+                return
+            left, top = (int(value) for value in match.group(3, 4))
+            screen = get_virtual_screen_rect()
+            screen_left = int(screen.get("left", 0))
+            screen_top = int(screen.get("top", 0))
+            screen_width = max(1, int(screen.get("width", 0)))
+            screen_height = max(1, int(screen.get("height", 0)))
+            width = min(px(TARGET_MAIN_WIDTH), screen_width)
+            height = min(px(TARGET_MAIN_HEIGHT), screen_height)
+            # 显示器配置变化后，旧位置可能落在已断开的显示器上：把固定大小的
+            # 窗口整体夹回当前虚拟桌面内，而不是把窗口缩成别的尺寸。
+            left = max(screen_left, min(left, screen_left + screen_width - width))
+            top = max(screen_top, min(top, screen_top + screen_height - height))
+            self.root.geometry(f"{width}x{height}+{left}+{top}")
         except (AttributeError, tk.TclError, ValueError):
-            # Ignore stale monitor coordinates or a malformed setting and keep
-            # the safe default geometry assigned during window creation.
             return
 
     def _watch_display_dpi(self) -> None:
@@ -392,16 +386,18 @@ class RuntimeHelpersMixin:
         target_dpi = self._fitted_display_dpi(dpi, area)
         if area is not None:
             area = dict(area)
-            if previous_area is not None and area != previous_area:
-                self.root.geometry(
-                    f"{area['width']}x{area['height']}+{area['left']}+{area['top']}"
-                )
             self._display_work_area = area
         if dpi:
             self._display_dpi = dpi
         # 不同显示器可能收敛到相同缩放，仍需按新的工作区重建固定像素布局。
         if target_dpi and (display_changed or target_dpi != self._ui_scaling_dpi()):
             self._apply_display_dpi(target_dpi)
+            if area is not None:
+                # 缩放变了，固定尺寸窗口的物理像素尺寸也要跟着变。
+                try:
+                    self.root.geometry(self._fixed_main_geometry(area))
+                except (tk.TclError, ValueError, OSError):
+                    pass
         if display_changed and area is not None:
             self._adapt_execution_mini_position(area)
         self.root.after(600, self._watch_display_dpi)
@@ -409,9 +405,13 @@ class RuntimeHelpersMixin:
     def _fitted_display_dpi(self, dpi: int, area: dict | None) -> int:
         if not dpi or not area:
             return dpi
-        # 1920×1080 是主界面双栏在 100% 时的完整工作面积。
+        # 常规屏幕保留舒适缩放，小屏按紧凑布局收敛，并预留系统标题栏。
         fit = min(area["width"] / 1920, area["height"] / 1080)
-        return min(dpi, max(96, round(96 * fit)))
+        compact_fit = min(
+            area["width"] / TARGET_MAIN_WIDTH,
+            max(1, area["height"] - 32) / TARGET_MAIN_HEIGHT,
+        )
+        return min(dpi, max(72, round(96 * min(max(1, fit), compact_fit))))
 
     def _ui_scaling_dpi(self) -> int:
         """Tk 当前 scaling 对应的 DPI——px() 就是按它换算的。"""
@@ -462,19 +462,28 @@ class RuntimeHelpersMixin:
             cursor = (0, 0)
         return get_monitor_work_area_for_point(*cursor) or get_primary_screen_rect()
 
-    def _apply_startup_window_state(self) -> None:
-        """打开即铺满"窗口所在的那块屏"（视觉等同全屏，任务栏不被遮挡）。
+    def _fixed_main_geometry(self, area: dict | None = None) -> str:
+        """固定紧凑窗口：在给定显示器工作区居中，不随屏幕大小铺满。
 
-        用工作区尺寸而不是 state("zoomed")：Windows 对最大化的窗口不绘制圆角，
-        铺满工作区的普通窗口在 Windows 11 上仍保留圆角，任务栏也不会被盖住。
+        尺寸按 96 DPI 设计、随 DPI 缩放；极端小屏（物理工作区比设计尺寸还小）
+        时收敛到工作区内，保证窗口始终完整可见。
+        """
+        area = dict(area or self._startup_monitor_area())
+        width = min(px(TARGET_MAIN_WIDTH), max(1, int(area["width"])))
+        height = min(px(TARGET_MAIN_HEIGHT), max(1, int(area["height"]) - 32))
+        left = area["left"] + max(0, (area["width"] - width) // 2)
+        top = area["top"] + max(0, (area["height"] - 32 - height) // 3)
+        return f"{width}x{height}+{left}+{top}"
+
+    def _apply_startup_window_state(self) -> None:
+        """固定大小的紧凑窗口：开在窗口所在显示器中间偏上，不铺满屏幕。
+
+        主界面按 96 DPI 设计成固定尺寸，用户不需要全屏也不需要拖拽拉伸；
+        在不同分辨率下由 DPI 适配算法收敛，窗口始终保持同一套布局。
         """
         area = self._startup_monitor_area()
         self._display_work_area = dict(area)
-        if area["width"] < 800 or area["height"] < 500:
-            return
-        self.root.geometry(
-            f"{area['width']}x{area['height']}+{area['left']}+{area['top']}"
-        )
+        self.root.geometry(self._fixed_main_geometry(area))
 
     def _sync_ui_scale_to_monitor(self) -> None:
         """按主窗口所在显示器的 DPI 重设界面缩放，必须在建界面之前调用。
@@ -499,6 +508,11 @@ class RuntimeHelpersMixin:
         # 主题里的字号、行高、内边距都按 px() 算过一遍，缩放变了必须重配。
         self._configure_dark_theme()
         self.root.minsize(px(MIN_MAIN_WIDTH), px(MIN_MAIN_HEIGHT))
+        if area:
+            try:
+                self.root.geometry(self._fixed_main_geometry(area))
+            except (tk.TclError, ValueError, OSError):
+                pass
 
     def _current_main_window_geometry(self) -> str:
         root = getattr(self, "root", None)

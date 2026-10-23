@@ -882,69 +882,28 @@ class RuntimeWorkflowMixin:
 
 
     def _global_module_label(self, step: dict, module_objects: dict | None = None) -> str:
-        """Full summary for a global module, reading the referenced script when needed."""
+        """全局模块行只显示用户起的标题，不重复引擎细节（区域/图片名/触发说明）。"""
         config = dict(step.get("config") or {})
         script_value = step.get("script", "")
-        if not config and script_value.strip():
+        if not config and str(script_value).strip():
             script_path = resolve_path(script_value)
             if script_path.is_file():
                 try:
-                    script = load_script(script_path)
-                    config = self._script_trigger_config(script)
+                    config = self._script_trigger_config(load_script(script_path))
                 except Exception:
                     pass
-        module_obj = {}
         if config.get("module_ref") and str(
             config.get("module_key") or config.get("template") or ""
         ).strip():
             module_key = str(config.get("module_key") or config.get("template", "")).strip()
             module_obj = self._module_object(module_key, module_objects) or {}
-            module_name = str(module_obj.get("name", "")).strip() or (
-                "未找到模块" if module_key.startswith("module:") else Path(
-                    module_key.replace("\\", "/"),
-                ).stem
-            )
-            script_text = f"◆ 模块对象 · {module_name}"
-        elif str(script_value).strip():
-            script_name = workflow_script_name(script_value)
-            script_text = f"⇄ 引用脚本 · {script_name}" if script_name else "⇄ 引用脚本 · 未配置"
-        else:
-            script_text = "◈ 全局检测 · 未配置"
-        if module_obj:
-            recognize = str(module_obj.get("recognize", ""))
-            if recognize == "text":
-                expected = str(module_obj.get("expected_text", "")).strip()
-                template_name = f"文字识别：{expected}" if expected else "文字识别"
-            elif recognize == "process":
-                template_name = f"进程检测：{module_obj.get('process_name', '')}"
-            elif recognize == "number":
-                template_name = "数字识别"
-            else:
-                template_name = Path(str(module_obj.get("template", ""))).name
-        elif config.get("module_ref"):
-            template_name = ""
-        else:
-            template_name = Path(str(config.get("template", ""))).name
-        if not template_name:
-            return script_text
-        region = config.get("region") or []
-        region_mode = str(config.get("region_mode", ""))
-        if region_mode == "template":
-            region_text = "模板区域"
-        elif region_mode == "window":
-            region_text = "目标窗口"
-        elif region_mode == "custom" or len(region) == 4:
-            try:
-                region_text = ",".join(str(int(part)) for part in region) if len(region) == 4 else "全屏"
-            except (TypeError, ValueError):
-                region_text = "全屏"
-        else:
-            region_text = "全屏"
-        try:
-            hold = int(config.get("hold_ms", 1000))
-        except (TypeError, ValueError):
-            hold = 1000
-        hold_text = f"持续 {hold} ms" if config.get("hold_enabled", False) else "识别到立即执行"
-        return (f"◈ 全局检测 · {script_text} · {template_name} · 区域 {region_text} · "
-                f"{hold_text} · 触发后执行模块步骤，再继续工作流")
+            name = str(module_obj.get("name", "")).strip()
+            if name:
+                return name
+            return "未找到模块" if module_key.startswith("module:") else Path(
+                module_key.replace("\\", "/"),
+            ).stem
+        if str(script_value).strip():
+            return workflow_script_name(script_value) or "未配置"
+        return "未配置"
 

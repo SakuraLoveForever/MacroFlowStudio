@@ -128,7 +128,7 @@ class WorkflowMixin:
             self.empty_workflow_hint.place_forget()
         else:
             self.empty_workflow_hint.place(relx=0.5, rely=0.45, anchor="center")
-        self._autosize_tree_column(self.workflow_tree, "script", 500, script_labels)
+        self._autosize_tree_column(self.workflow_tree, "script", 220, script_labels)
         self.rebuild_global_tree(module_objects)
 
     def _set_workflow_row(self, row: int, module_objects: dict | None = None) -> None:
@@ -194,7 +194,7 @@ class WorkflowMixin:
             self.empty_global_hint.place_forget()
         else:
             self.empty_global_hint.place(relx=0.5, rely=0.45, anchor="center")
-        self._autosize_tree_column(tree, "module", 700, module_labels)
+        self._autosize_tree_column(tree, "module", 240, module_labels)
 
 
     def _measure_font(self):

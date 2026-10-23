@@ -909,7 +909,7 @@ class ShellMixin:
         search_left = ttk.Frame(search, style="Card.TFrame")
         search_left.pack(side="left")
         ttk.Label(search_left, text="搜索键鼠", style="CardHint.TLabel").pack(side="left")
-        key_search_entry = ttk.Entry(search_left, textvariable=self.key_search_var, width=14)
+        key_search_entry = ttk.Entry(search_left, textvariable=self.key_search_var, width=10)
         key_search_entry.pack(side="left", padx=pad(8, 5))
         key_search_entry.bind("<Return>", lambda _event: self._search_key_actions(1))
         self.input_search_capture_button = ttk.Button(
@@ -934,8 +934,8 @@ class ShellMixin:
                    command=self._clear_key_search,
                    style="Ghost.TButton").pack(side="left", padx=pad(3, 8))
 
-        search_right = ttk.Frame(search, style="Card.TFrame")
-        search_right.pack(side="right")
+        search_right = ttk.Frame(table, style="Card.TFrame")
+        search_right.pack(fill="x", pady=pad(0, 8))
         ttk.Label(search_right, textvariable=self.key_search_match_var,
                   style="CardHint.TLabel").pack(side="left", padx=pad(0, 8))
         ttk.Button(search_right, text="统一设置", width=8,
@@ -993,9 +993,7 @@ class ShellMixin:
         header.pack(fill="x")
         titles = ttk.Frame(header, style="App.TFrame")
         titles.pack(side="left")
-        ttk.Label(titles, text="工作流", style="PageTitle.TLabel").pack(anchor="w")
-        ttk.Label(titles, text="把脚本与全局模块串成一次完整执行，支持拖动排序与重复次数",
-                  style="PageSubtitle.TLabel").pack(anchor="w", pady=pad(1, 0))
+        ttk.Label(titles, text="工作流", style="PageTitle.TLabel").pack(anchor="w", pady=pad(4, 0))
         header_actions = ttk.Frame(header, style="App.TFrame")
         header_actions.pack(side="right")
         ttk.Button(header_actions, text="新建", command=self.new_workflow,
@@ -1025,29 +1023,40 @@ class ShellMixin:
             style="Ghost.TButton", state="disabled",
         )
         self.workflow_pause_button.pack(side="left", padx=pad(6, 0))
-        ttk.Button(
-            header_actions, text="运行工作流    F10", command=self.run_workflow,
-            style="Primary.TButton",
-        ).pack(side="left", padx=pad(6, 0))
-
-        workflow_action_bar = ttk.Frame(outer, style="App.TFrame")
-        workflow_action_bar.pack(fill="x", pady=pad(10, 0))
+        # 执行辅助项与主操作同一行，省下整行高度留给步骤表。
+        workflow_action_bar = ttk.Frame(header_actions, style="App.TFrame")
+        workflow_action_bar.pack(side="left", padx=pad(6, 0))
         ttk.Checkbutton(
             workflow_action_bar, text="测试模式", variable=self.workflow_test_mode_var,
             bootstyle="round-toggle",
         ).pack(side="left")
         ttk.Button(workflow_action_bar, text="从选中行运行",
                    command=self.run_workflow_from_selected,
-                   style="Ghost.TButton").pack(side="left", padx=pad(12, 0))
-        ttk.Button(workflow_action_bar, text="防遮挡进程…",
-                   command=self.edit_foreground_minimize_processes,
-                   style="Ghost.TButton").pack(side="right")
-        ttk.Button(workflow_action_bar, text="导出当前工作流…",
-                   command=lambda: self.export_portable_bundle("workflow"),
-                   style="Ghost.TButton").pack(side="right", padx=pad(6, 0))
-        ttk.Button(workflow_action_bar, text="导入包…",
-                   command=self.import_portable_bundle,
-                   style="Ghost.TButton").pack(side="right", padx=pad(6, 0))
+                   style="Ghost.TButton").pack(side="left", padx=pad(8, 0))
+        ttk.Button(
+            header_actions, text="运行工作流    F10", command=self.run_workflow,
+            style="Primary.TButton",
+        ).pack(side="left", padx=pad(6, 0))
+        workflow_more_menu = tk.Menu(self.root, tearoff=False)
+        workflow_more_menu.add_command(label="导入包…", command=self.import_portable_bundle)
+        workflow_more_menu.add_command(
+            label="导出当前工作流…", command=lambda: self.export_portable_bundle("workflow"))
+        workflow_more_menu.add_separator()
+        workflow_more_menu.add_command(
+            label="防遮挡进程…", command=self.edit_foreground_minimize_processes)
+
+        def _show_workflow_more_menu():
+            workflow_more_menu.tk_popup(
+                workflow_more_button.winfo_rootx(),
+                workflow_more_button.winfo_rooty() + workflow_more_button.winfo_height(),
+            )
+            workflow_more_menu.grab_release()
+
+        workflow_more_button = ttk.Button(
+            header_actions, text="⋯", width=3, style="Ghost.TButton",
+            command=_show_workflow_more_menu,
+        )
+        workflow_more_button.pack(side="left")
 
         meta_card = Card(outer, padding=(14, 9, 14, 9))
         meta_card.pack(fill="x", pady=pad(10, 0))
@@ -1055,12 +1064,12 @@ class ShellMixin:
         workflow_meta_bar.pack(fill="x")
         ttk.Label(workflow_meta_bar, text="名称", style="CardHint.TLabel").pack(side="left")
         workflow_name_entry = ttk.Entry(workflow_meta_bar, textvariable=self.workflow_name_var,
-                                        width=24)
+                                        width=18)
         workflow_name_entry.pack(side="left", padx=pad(8, 6), ipady=px(1))
         workflow_name_entry.bind("<KeyRelease>", self._schedule_workflow_draft_save)
-        ttk.Button(workflow_meta_bar, text="✏️ 修改名称", command=self.rename_workflow,
+        ttk.Button(workflow_meta_bar, text="重命名", command=self.rename_workflow,
                    style="Ghost.TButton").pack(side="left")
-        ttk.Button(workflow_meta_bar, text="⧉ 复制为新工作流", command=self.duplicate_workflow,
+        ttk.Button(workflow_meta_bar, text="复制工作流", command=self.duplicate_workflow,
                    style="Ghost.TButton").pack(side="left", padx=pad(6, 10))
 
         start_label = ttk.Frame(workflow_meta_bar, style="Card.TFrame")
@@ -1076,9 +1085,9 @@ class ShellMixin:
             "留空表示手动运行；设置后到达指定时间自动开始当前工作流。",
         )
 
-        run_card = Card(outer, title="运行设置", hint="仅影响当前工作流")
-        run_card.pack(fill="x", pady=pad(10, 0))
-        run_settings = run_card.body
+        # 运行参数与文件信息同卡，避免在工作流页再占一张整卡的高度。
+        run_settings = ttk.Frame(meta_card.body, style="Card.TFrame")
+        run_settings.pack(fill="x", pady=pad(8, 0))
         run_settings.columnconfigure((0, 1), weight=1, uniform="run")
 
         start_delay_bar = ttk.Frame(run_settings, style="Card.TFrame")
@@ -1158,13 +1167,13 @@ class ShellMixin:
         self.workflow_content_pane.pack(fill="both", expand=True, pady=pad(10, 0))
 
         global_card = Card(self.workflow_content_pane, title="全局模块",
-                           hint="执行时启用 · 独立编号")
+                           padding=(14, 6, 14, 8))
         self.workflow_content_pane.add(global_card, weight=2)
         global_box = global_card.body
         global_toolbar = ttk.Frame(global_box, style="Card.TFrame")
         global_toolbar.pack(fill="x", pady=pad(0, 7))
         ttk.Button(
-            global_toolbar, text="添加工作流全局模块", command=self.add_workflow_global_module,
+            global_toolbar, text="添加模块", command=self.add_workflow_global_module,
             style="ChipAccent.TButton",
         ).pack(side="left")
         ttk.Button(
@@ -1218,7 +1227,7 @@ class ShellMixin:
         self.global_tree.bind("<Button-3>", self._show_global_context_menu, add="+")
 
         workflow_card = Card(self.workflow_content_pane, title="步骤",
-                             hint="独立编号 · 从 1 开始")
+                             padding=(14, 6, 14, 8))
         self.workflow_content_pane.add(workflow_card, weight=3)
         workflow_box = workflow_card.body
         toolbar = ttk.Frame(workflow_box, style="Card.TFrame")
@@ -1234,24 +1243,25 @@ class ShellMixin:
                    style="Chip.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(add_toolbar, text="添加模块", command=self.add_workflow_module_step,
                    style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        ttk.Separator(add_toolbar, orient="vertical").pack(side="left", fill="y", padx=px(10))
-        ttk.Label(add_toolbar, text="插入位置", style="CardHint.TLabel").pack(
+        insert_toolbar = ttk.Frame(toolbar, style="Card.TFrame")
+        insert_toolbar.pack(fill="x", pady=pad(5, 0))
+        ttk.Label(insert_toolbar, text="插入位置", style="CardHint.TLabel").pack(
             side="left", padx=pad(0, 6))
         self.workflow_insert_above_button = ttk.Button(
-            add_toolbar, text="▲ 上方", width=6,
+            insert_toolbar, text="▲ 上方", width=6,
             command=lambda: self._set_workflow_insert_position(True),
             bootstyle="secondary",
         )
         self.workflow_insert_above_button.pack(side="left")
         self.workflow_insert_below_button = ttk.Button(
-            add_toolbar, text="▼ 下方", width=6,
+            insert_toolbar, text="▼ 下方", width=6,
             command=lambda: self._set_workflow_insert_position(False),
             bootstyle="secondary",
         )
         self.workflow_insert_below_button.pack(side="left", padx=pad(5, 0))
-        ttk.Button(add_toolbar, text="插入脚本", command=self.insert_workflow_step,
+        ttk.Button(insert_toolbar, text="插入脚本", command=self.insert_workflow_step,
                    style="ChipAccent.TButton").pack(side="left", padx=pad(6, 0))
-        ttk.Button(add_toolbar, text="插入模块", command=self.insert_workflow_module_step,
+        ttk.Button(insert_toolbar, text="插入模块", command=self.insert_workflow_module_step,
                    style="ChipAccent.TButton").pack(side="left", padx=pad(4, 0))
         self._set_workflow_insert_position(False)
 

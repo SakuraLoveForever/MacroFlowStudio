@@ -2373,11 +2373,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 label = app._global_module_label({
                     "kind": "global_module", "script": "scripts/g.json",
                 })
-            self.assertIn("⇄ 引用脚本 · g · 检测图.png", label)
-            self.assertIn("检测图.png", label)
-            self.assertIn("10,20,30,40", label)
-            self.assertIn("1500", label)
-            self.assertIn("触发后执行模块步骤，再继续工作流", label)
+            self.assertEqual(label, "g")
 
     def test_global_module_label_shows_text_target_instead_of_module_id(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -2389,12 +2385,11 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         objects = {key: {"name": "识别文字", "template": "", "recognize": "text",
                          "expected_text": "加载资源失败"}}
         label = app._global_module_label(step, objects)
-        self.assertIn("识别文字 · 文字识别：加载资源失败", label)
-        self.assertIn("区域 模板区域", label)
+        # 行里只留用户起的标题：不重复“全局检测 / 模块对象 / 区域 / 触发说明”。
+        self.assertEqual(label, "识别文字")
         self.assertNotIn(key, label)
         step["config"]["template"] = ""
-        self.assertIn("识别文字 · 文字识别：加载资源失败",
-                      app._global_module_label(step, objects))
+        self.assertEqual(app._global_module_label(step, objects), "识别文字")
 
     def test_global_module_label_resolves_image_template_from_module_object(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -2405,7 +2400,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         label = app._global_module_label(step, {key: {
             "name": "主界面", "template": "images/主界面.png", "recognize": "image",
         }})
-        self.assertIn("主界面 · 主界面.png", label)
+        self.assertEqual(label, "主界面")
         self.assertNotIn(key, label)
 
     def test_screen_point_picker_restores_main_without_owner(self):

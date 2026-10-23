@@ -3,11 +3,10 @@ from __future__ import annotations
 from macroflow.core.models import DEFAULT_RECORDED_SCREEN
 from pathlib import Path
 import ctypes
-from macroflow.input.wininput import get_virtual_screen_rect
 import tkinter as tk
 import ttkbootstrap as ttk
 
-from .constants import ACTION_ICONS, COLOR_HOVER, FLOATING_NOTICE_HEIGHT, FLOATING_NOTICE_WIDTH, MIN_MAIN_HEIGHT, MIN_MAIN_WIDTH, SCRIPT_CATEGORY_LABELS, TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
+from .constants import ACTION_ICONS, COLOR_HOVER, FLOATING_NOTICE_HEIGHT, FLOATING_NOTICE_WIDTH, SCRIPT_CATEGORY_LABELS, TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
 
 def enable_per_monitor_dpi_awareness() -> None:
     """按显示器缩放（Per-Monitor v2），必须在创建 Tk 窗口之前调用。
@@ -155,18 +154,12 @@ def bind_tree_hover(tree, tag: str = "hover") -> None:
     tree.bind("<Motion>", on_motion, add="+")
     tree.bind("<Leave>", on_leave, add="+")
 def default_main_geometry() -> str:
-    """默认窗口尺寸：目标 1100×700，并按当前显示器收敛，永不超过屏幕。
+    """主窗口固定为紧凑尺寸（不铺满屏幕，也不随窗口拉伸变形）。
 
-    尺寸按 96 DPI 的逻辑像素设计，再交给 px() 换算成实际像素；不能把物理
-    像素当逻辑像素用，否则高 DPI 屏上窗口会小于设计值、控件被裁切。
+    尺寸按 96 DPI 的逻辑像素设计，再交给 px() 换算成实际像素；位置由
+    ``_apply_startup_window_state`` 在窗口所在显示器里居中 / 恢复。
     """
-    screen = get_virtual_screen_rect()
-    scale = _UI_SCALE if _UI_SCALE > 0 else 1.0
-    logical_width = int(screen.get("width", 0)) / scale
-    logical_height = int(screen.get("height", 0)) / scale
-    width = min(TARGET_MAIN_WIDTH, max(MIN_MAIN_WIDTH, int(logical_width) - 80))
-    height = min(TARGET_MAIN_HEIGHT, max(MIN_MAIN_HEIGHT, int(logical_height) - 80))
-    return f"{px(width)}x{px(height)}"
+    return f"{px(TARGET_MAIN_WIDTH)}x{px(TARGET_MAIN_HEIGHT)}"
 def workflow_script_name(value: str) -> str:
     """Show a workflow script as a clean name, never as scripts/name.json."""
     return Path(str(value).replace("\\", "/")).stem or str(value)

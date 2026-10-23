@@ -8,13 +8,12 @@ FLOATING_NOTICE_POSITIONS = ("左上", "顶部居中", "右上", "左下", "底�
 SCRIPT_CATEGORY_VALUES = ("关卡", "关卡封装", "切换", "方向")
 FLOATING_NOTICE_WIDTH = 360
 FLOATING_NOTICE_HEIGHT = 68
-# 主窗口按 96 DPI 的逻辑像素设计，实际尺寸由 px() 随 DPI 缩放。
-# 最小宽度 1024：常见 1366×768 笔记本与 1024 宽的逻辑分辨率下主要操作仍可用。
-MIN_MAIN_WIDTH = 1024
-MIN_MAIN_HEIGHT = 600
-# 默认窗口目标尺寸（受屏幕尺寸收敛，见 default_main_geometry）。
-TARGET_MAIN_WIDTH = 1100
-TARGET_MAIN_HEIGHT = 700
+# 主窗口是固定大小的紧凑窗口（不铺满屏幕、也不随拉伸变形），按 96 DPI 设计，
+# 实际尺寸由 px() 随 DPI 缩放；高缩放 + 低分辨率时由 DPI 适配算法收敛。
+MIN_MAIN_WIDTH = 640
+MIN_MAIN_HEIGHT = 480
+TARGET_MAIN_WIDTH = 1024
+TARGET_MAIN_HEIGHT = 680
 # 背景 4 档（深 → 浅：窗口底 / 导航栏 / 卡片 / 输入与浮层）
 COLOR_BG = "#0D1217"
 COLOR_SIDEBAR = "#131A21"
@@ -44,10 +43,10 @@ FONT_SUBTITLE = 10
 FONT_TITLE = 13
 FONT_BRAND = 16
 # 页面级间距（按 96 DPI 设计，使用前过 px()）。
-PAGE_PAD_X = 22
-PAGE_PAD_Y = 16
+PAGE_PAD_X = 14
+PAGE_PAD_Y = 12
 CARD_PAD = 14
-RAIL_WIDTH = 212
+RAIL_WIDTH = 192
 # 动作列表 / 工作流表格最左边那一列：选中片段时填满实心方块，形成一根竖条。
 SEGMENT_BAR = "█"
 SEGMENT_COLUMN = ("mark", "", 20, "center")
@@ -93,14 +92,14 @@ ACTION_ICONS = {
 }
 WORKFLOW_TREE_COLUMNS = (
     SEGMENT_COLUMN,
-    ("index", "步骤", 50, "center"), ("script", "脚本 / 模块", 320, "w"),
+    ("index", "步骤", 50, "center"), ("script", "脚本 / 模块", 220, "w"),
     ("original", "原始次数", 76, "center"), ("repeat", "剩余次数", 76, "center"),
-    ("restore", "恢复次数", 76, "center"), ("before", "开始前等待", 92, "center"),
-    ("interval", "重复间隔", 92, "center"), ("enabled", "状态", 64, "center"),
+    ("restore", "恢复次数", 76, "center"), ("before", "开始前等待", 88, "center"),
+    ("interval", "重复间隔", 88, "center"), ("enabled", "状态", 64, "center"),
 )
 GLOBAL_TREE_COLUMNS = (
     ("index", "步骤", 50, "center"),
-    ("module", "全局检测模块", 420, "w"),
+    ("module", "全局模块", 260, "w"),
     ("status", "状态", 80, "center"),
 )
 SCRIPT_CATEGORY_LABELS = {

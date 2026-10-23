@@ -498,7 +498,7 @@ class RecordingDisplayTests(unittest.TestCase):
         root.tk.call.assert_any_call("tk", "scaling", 120 / 72.0)
         app._rebuild_ui_for_display_change.assert_called_once_with()
 
-    def test_watch_display_dpi_refits_window_when_work_area_changes(self):
+    def test_watch_display_dpi_recenters_fixed_window_when_work_area_changes(self):
         app, root = self._dpi_watch_app(96 / 72.0)
         app._apply_display_dpi = Mock()
         app._persist_sidebar_settings = Mock()
@@ -509,7 +509,8 @@ class RecordingDisplayTests(unittest.TestCase):
         with package_patch('app', 'get_window_dpi', return_value=96), \
              package_patch('app', 'get_monitor_work_area_for_window', return_value=new_area):
             app._watch_display_dpi()
-        root.geometry.assert_called_once_with("1920x1040+0+0")
+        # 固定尺寸不变，只在新工作区里重新居中。
+        root.geometry.assert_called_once_with(app._fixed_main_geometry(new_area))
         self.assertEqual(app._display_work_area, new_area)
 
     def test_watch_display_dpi_moves_saved_mini_position_with_work_area(self):
