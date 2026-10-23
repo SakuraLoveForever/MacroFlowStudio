@@ -34,7 +34,8 @@ def main():
         stack.enter_context(patch.object(mss, 'MSS', side_effect=unavailable))
         stack.enter_context(patch.object(wininput.user32, 'SendInput', side_effect=unavailable))
         stack.enter_context(patch.object(detect_overlay, '_ensure_window', side_effect=ensure_mock_window))
-        suite = unittest.defaultTestLoader.discover(str(ROOT / 'tests'), top_level_dir=str(ROOT))
+        suite = (unittest.defaultTestLoader.loadTestsFromNames(sys.argv[1:]) if sys.argv[1:]
+                 else unittest.defaultTestLoader.discover(str(ROOT / 'tests'), top_level_dir=str(ROOT)))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 

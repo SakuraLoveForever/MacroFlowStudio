@@ -4,6 +4,7 @@ from macroflow.core.models import ACTION_ID_KEY, DEFAULT_WORKFLOW_REPEAT_INTERVA
 from macroflow.core.resolution import build_resolution_action
 from macroflow.ui.dialogs.actions import DurationDialog, ScheduleDialog
 from macroflow.ui.dialogs.foreground_processes import ForegroundProcessesDialog
+from macroflow.ui.dialogs.base import DurationVar
 from macroflow.ui.dialogs.workflow_plugins import ProcessAbsencePluginDialog
 from macroflow.core.workflow_plugins import PROCESS_ABSENCE_RESTART, process_absence_label
 from macroflow.ui.dialogs.app_dialogs import WorkflowBatchSettingsDialog, WorkflowRepeatDialog
@@ -20,6 +21,7 @@ from .base import _UI_SCALE, workflow_script_name
 from .constants import COLOR_SURFACE, COLOR_TEXT, FONT_FAMILY, FONT_SUBTITLE, WORKFLOW_TREE_COLUMNS
 from .script_edit import module_objects_snapshot
 from .startup import instance_command, spawn_new_instance
+from .workflow_history import WorkflowEditHistory, workflow_edit
 
 # 已经量过列宽的 (tree, column)：普通编辑刷新不再重测整列文本。
 _AUTOSIZED_COLUMNS: set[tuple[int, str]] = set()
@@ -28,6 +30,7 @@ _AUTOSIZED_COLUMNS: set[tuple[int, str]] = set()
 class WorkflowMixin:
     """Studio authoring behavior."""
 
+    @workflow_edit
     def edit_foreground_minimize_processes(self):
         settings = ForegroundProcessesDialog(
             self.root, self.workflow.foreground_minimize_processes,
@@ -39,6 +42,7 @@ class WorkflowMixin:
             self.workflow.foreground_minimize_interval_ms = interval_ms
             self._schedule_workflow_draft_save()
 
+    @workflow_edit
     def _apply_workflow_restart_default(self, _event=None):
         """把控件当前选择写入工作流的统一默认跳转行并落盘草稿。"""
         combo = getattr(self, "workflow_restart_default_combo", None)
@@ -234,7 +238,6 @@ class WorkflowMixin:
     def new_workflow(self):
         self.workflow = Workflow()
         self.workflow_path = None
-        self._clear_workflow_delete_history()
         self.workflow_name_var.set(self.workflow.name)
         self.workflow_start_var.set("")
         self.workflow_start_delay_enabled_var.set(False)
@@ -243,6 +246,7 @@ class WorkflowMixin:
         self._toggle_workflow_start_delay_control(persist=False)
         self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
+        self._clear_workflow_history()
         self._persist_workflow_draft()
         self._workflow_saved()
 
@@ -260,7 +264,6 @@ class WorkflowMixin:
         """切换当前工作流到指定对象并同步工作流页全部 UI 状态。"""
         self.workflow = workflow
         self.workflow_path = path
-        self._clear_workflow_delete_history()
         self.workflow_name_var.set(workflow.name)
         self.workflow_start_var.set(workflow.start_at)
         self.workflow_start_delay_enabled_var.set(workflow.start_delay_enabled)
@@ -271,6 +274,7 @@ class WorkflowMixin:
         self._toggle_workflow_start_delay_control(persist=False)
         self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
+        self._clear_workflow_history()
         self._persist_workflow_draft()
         self._log(log_text)
         self._workflow_saved()
@@ -289,6 +293,7 @@ class WorkflowMixin:
                 action = getattr(self.workflow, field, None) or {}
                 variable.set(str(action.get("name") or "不修改"))
 
+    @workflow_edit
     def _set_workflow_resolution(self, phase: str):
         variable = getattr(self, f"workflow_{phase}_resolution_var")
         choice = variable.get()
@@ -298,6 +303,7 @@ class WorkflowMixin:
         setattr(self.workflow, f"{phase}_resolution", action)
         self._persist_workflow_draft()
 
+    @workflow_edit
     def rename_workflow(self):
         """弹窗修改当前工作流名称；确认后立即保存（文件同步改名，绝不覆盖已有文件）。"""
         current = self.workflow_name_var.get().strip() or self.workflow.name
@@ -416,6 +422,7 @@ class WorkflowMixin:
         else:
             self._insert_workflow_step_at(path, index)
 
+    @workflow_edit
     def add_workflow_module_step(self):
         actions = ModulePickerDialog(
             self.root, categories=("switch", "special"), multi_select=True,
@@ -470,6 +477,7 @@ class WorkflowMixin:
             self.global_tree.see(str(len(self._global_module_steps()) - 1))
         self._set_status(f"已添加 {count} 个工作流全局模块", "success")
 
+    @workflow_edit
     def _append_global_module(self, config: dict | None = None, script: str = "",
                               refresh: bool = True):
         step = {
@@ -501,6 +509,7 @@ class WorkflowMixin:
             "step_id": new_action_id(),
         }
 
+    @workflow_edit
     def _append_workflow_step(self, path: Path):
         self.workflow.steps.append(self._new_workflow_script_step(path))
         self.rebuild_workflow_tree()
@@ -591,6 +600,7 @@ class WorkflowMixin:
     def _insert_workflow_task_at(self, step: dict, index: int):
         self._insert_workflow_tasks_at([step], index)
 
+    @workflow_edit
     def _insert_workflow_tasks_at(self, steps: list[dict], index: int):
         """把一批步骤插入到指定下标（工作流列表按脚本/模块计，不含全局模块）。"""
         script_steps = self._workflow_only_steps()
@@ -644,6 +654,7 @@ class WorkflowMixin:
             foreground=[("selected", foreground)],
         )
 
+    @workflow_edit
     def _edit_workflow_cell(self, event):
         # 最左边两列是「片段竖条」与「步骤」序号，双击它们不编辑任何单元格。
         row = self.workflow_tree.identify_row(event.y)
@@ -739,6 +750,7 @@ class WorkflowMixin:
         self._update_workflow_selection_color()
         self._persist_workflow_draft()
 
+    @workflow_edit
     def toggle_selected_workflow_step(self):
         indices = self._selected_workflow_indices()
         if not indices:
@@ -759,6 +771,7 @@ class WorkflowMixin:
         state = "启用" if enabled else "禁用"
         self._set_status(f"已{state} {len(indices)} 个工作流任务", "success")
 
+    @workflow_edit
     def set_all_workflow_step_options(self):
         workflow_steps = self._workflow_only_steps()
         if not workflow_steps:
@@ -785,6 +798,7 @@ class WorkflowMixin:
         self._persist_workflow_draft()
         self._set_status(f"已统一设置 {len(workflow_steps)} 个工作流任务", "success")
 
+    @workflow_edit
     def restore_workflow_step_count(self, index: int) -> None:
         steps = self._workflow_only_steps()
         if not 0 <= index < len(steps) or steps[index].get("unlimited", False):
@@ -801,6 +815,7 @@ class WorkflowMixin:
         if row:
             self.restore_workflow_step_count(int(row))
 
+    @workflow_edit
     def restore_all_workflow_counts(self) -> None:
         steps = self._workflow_only_steps()
         for step in steps:
@@ -810,6 +825,7 @@ class WorkflowMixin:
         self._persist_workflow_draft()
         self._set_status("已恢复全部工作流计次行", "success")
 
+    @workflow_edit
     def delete_workflow_step(self):
         indices = self._selected_workflow_indices()
         if not indices:
@@ -818,12 +834,8 @@ class WorkflowMixin:
         indices = [index for index in indices if 0 <= index < len(workflow_steps)]
         if not indices:
             return
-        history = getattr(self, "workflow_delete_undo_stack", None)
-        if history is None:
-            history = self.workflow_delete_undo_stack = []
         for index in reversed(indices):
-            removed = workflow_steps.pop(index)
-            history.append((index, copy.deepcopy(removed)))
+            workflow_steps.pop(index)
         self.workflow.steps = self._global_module_steps() + workflow_steps
         self.rebuild_workflow_tree()
         if workflow_steps:
@@ -831,27 +843,8 @@ class WorkflowMixin:
             self.workflow_tree.selection_set(str(target))
             self.workflow_tree.see(str(target))
             self._update_workflow_selection_color()
-        self._update_workflow_delete_undo_buttons()
         self._persist_workflow_draft()
-        self._set_status(f"已删除 {len(indices)} 个工作流任务，可逐项撤销", "warning")
-
-    def undo_delete_workflow_step(self):
-        history = getattr(self, "workflow_delete_undo_stack", [])
-        if not history:
-            self._update_workflow_delete_undo_buttons()
-            return
-        index, removed = history.pop()
-        workflow_steps = self._workflow_only_steps()
-        target = min(max(0, int(index)), len(workflow_steps))
-        workflow_steps.insert(target, copy.deepcopy(removed))
-        self.workflow.steps = self._global_module_steps() + workflow_steps
-        self.rebuild_workflow_tree()
-        self.workflow_tree.selection_set(str(target))
-        self.workflow_tree.see(str(target))
-        self._update_workflow_selection_color()
-        self._update_workflow_delete_undo_buttons()
-        self._persist_workflow_draft()
-        self._set_status(f"已撤销删除，恢复工作流第 {target + 1} 行", "success")
+        self._set_status(f"已删除 {len(indices)} 个工作流任务，可撤销", "warning")
 
     def move_workflow_step(self, offset: int):
         selected = self._selected_workflow_indices()
@@ -874,6 +867,7 @@ class WorkflowMixin:
         if row is not None:
             self._move_selected_workflow_steps(selected, row - 1)
 
+    @workflow_edit
     def _move_selected_workflow_steps(self, selected: list[int], target: int):
         if selected != list(range(selected[0], selected[-1] + 1)):
             self._notify("无法移动", "请选择连续的多行工作流任务后再移动。")
@@ -892,6 +886,7 @@ class WorkflowMixin:
         self._update_workflow_selection_color()
         self._persist_workflow_draft()
 
+    @workflow_edit
     def _workflow_drag_start(self, event):
         row = self.workflow_tree.identify_row(event.y)
         modifiers = getattr(event, "state", 0) & 0x0005
@@ -978,6 +973,7 @@ class WorkflowMixin:
         finally:
             menu.grab_release()
 
+    @workflow_edit
     def _open_module_object_editor(self, module_key: str, workflow_step: dict | None = None):
         """Open one referenced module object directly in this MacroFlow window."""
         key = str(module_key).strip()
@@ -1027,6 +1023,7 @@ class WorkflowMixin:
         self._log(f"已在新窗口打开全局模块：{key}")
         self._set_status("已在新窗口打开全局模块", "success")
 
+    @workflow_edit
     def edit_selected_global_module(self):
         index = self._selected_global_index()
         modules = self._global_module_steps()
@@ -1055,6 +1052,7 @@ class WorkflowMixin:
         self._persist_workflow_draft()
         self._set_status("已更换工作流全局模块对象", "success")
 
+    @workflow_edit
     def toggle_selected_global_module(self):
         indices = self._selected_global_indices()
         modules = self._global_module_steps()
@@ -1073,6 +1071,7 @@ class WorkflowMixin:
         state = "启用" if enabled else "禁用"
         self._set_status(f"已{state} {len(indices)} 个全局模块", "success")
 
+    @workflow_edit
     def delete_global_module(self):
         indices = self._selected_global_indices()
         modules = self._global_module_steps()
@@ -1080,56 +1079,90 @@ class WorkflowMixin:
         if not indices:
             self._notify("未选择全局模块", "请先单击选择一个全局模块。")
             return
-        history = getattr(self, "global_delete_undo_stack", None)
-        if history is None:
-            history = self.global_delete_undo_stack = []
         for index in reversed(indices):
-            removed = modules.pop(index)
-            history.append((index, copy.deepcopy(removed)))
+            modules.pop(index)
         self.workflow.steps = modules + self._workflow_only_steps()
         self.rebuild_workflow_tree()
         if modules:
             target = min(indices[0], len(modules) - 1)
             self.global_tree.selection_set(str(target))
             self.global_tree.see(str(target))
-        self._update_workflow_delete_undo_buttons()
         self._persist_workflow_draft()
-        self._set_status(f"已删除 {len(indices)} 个全局模块，可逐项撤销", "warning")
+        self._set_status(f"已删除 {len(indices)} 个全局模块，可撤销", "warning")
 
-    def undo_delete_global_module(self):
-        history = getattr(self, "global_delete_undo_stack", [])
-        if not history:
-            self._update_workflow_delete_undo_buttons()
+    def _workflow_edit_snapshot(self):
+        fields = {}
+        for name in ('workflow_name_var', 'workflow_start_var',
+                     'workflow_start_delay_enabled_var', 'workflow_start_delay_seconds_var'):
+            variable = self.__dict__.get(name)
+            if variable is not None:
+                fields[name] = variable._raw() if isinstance(variable, DurationVar) else variable.get()
+        delay = self.__dict__.get('workflow_start_delay_seconds_var')
+        unit = delay.unit.get() if delay is not None and hasattr(delay, 'unit') else None
+        return {'workflow': vars(self.workflow), 'fields': fields, 'unit': unit}
+
+    def _clear_workflow_history(self):
+        self._workflow_history = WorkflowEditHistory(self._workflow_edit_snapshot())
+        self._update_workflow_undo_buttons()
+
+    def _record_workflow_edit(self):
+        history = self.__dict__.get('_workflow_history')
+        if history is None or self.__dict__.get('workflow_was_dragged', False):
             return
-        index, removed = history.pop()
-        modules = self._global_module_steps()
-        target = min(max(0, int(index)), len(modules))
-        modules.insert(target, copy.deepcopy(removed))
-        self.workflow.steps = modules + self._workflow_only_steps()
+        worker = self.__dict__.get('worker')
+        if worker is not None and worker.is_alive():
+            # Playback changes remaining counts; never undo across those changes.
+            self._clear_workflow_history()
+            return
+        history.record(self._workflow_edit_snapshot())
+        self._update_workflow_undo_buttons()
+
+    def _update_workflow_undo_buttons(self):
+        history = self.__dict__.get('_workflow_history')
+        worker = self.__dict__.get('worker')
+        enabled = bool(history is not None and history.undo) and not (worker is not None and worker.is_alive())
+        for name in ('workflow_undo_button', 'global_undo_button'):
+            button = self.__dict__.get(name)
+            if button is not None:
+                button.configure(state='normal' if enabled else 'disabled')
+
+    def undo_workflow_edit(self, _event=None):
+        worker = self.__dict__.get('worker')
+        if worker is not None and worker.is_alive():
+            return 'break'
+        self._record_workflow_edit()  # Include text still waiting for its draft timer.
+        history = self.__dict__.get('_workflow_history')
+        state = history.step() if history is not None else None
+        if state is None:
+            return 'break'
+        selections = {name: tuple(getattr(self, name).selection())
+                      for name in ('workflow_tree', 'global_tree')}
+        self.workflow = Workflow(**state['workflow'])
+        delay = self.__dict__.get('workflow_start_delay_seconds_var')
+        if delay is not None and state['unit'] is not None:
+            delay.unit.set(state['unit'])
+        for name, value in state['fields'].items():
+            getattr(self, name).set(value)
+        self._toggle_workflow_start_delay_control(persist=False)
+        self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
-        self.global_tree.selection_set(str(target))
-        self.global_tree.see(str(target))
-        self._update_workflow_delete_undo_buttons()
+        for name, steps in (('workflow_tree', self._workflow_only_steps()),
+                            ('global_tree', self._global_module_steps())):
+            rows = tuple(str(min(int(row), len(steps) - 1)) for row in selections[name] if steps)
+            if rows:
+                tree = getattr(self, name)
+                tree.selection_set(*dict.fromkeys(rows))
+                tree.see(rows[0])
+        self._update_workflow_selection_color()
         self._persist_workflow_draft()
-        self._set_status(f"已撤销删除，恢复全局模块第 {target + 1} 行", "success")
+        self._update_workflow_undo_buttons()
+        save_state = self.__dict__.get('_workflow_save_state')
+        if save_state is not None:
+            save_state.refresh()
+        self._set_status('已撤销上一次工作流修改', 'success')
+        return 'break'
 
-    def _update_workflow_delete_undo_buttons(self):
-        workflow_button = getattr(self, "workflow_delete_undo_button", None)
-        if workflow_button is not None:
-            workflow_button.configure(
-                state="normal" if getattr(self, "workflow_delete_undo_stack", []) else "disabled",
-            )
-        global_button = getattr(self, "global_delete_undo_button", None)
-        if global_button is not None:
-            global_button.configure(
-                state="normal" if getattr(self, "global_delete_undo_stack", []) else "disabled",
-            )
-
-    def _clear_workflow_delete_history(self):
-        self.workflow_delete_undo_stack = []
-        self.global_delete_undo_stack = []
-        self._update_workflow_delete_undo_buttons()
-
+    @workflow_edit
     def choose_workflow_start(self):
         selected = ScheduleDialog(self.root, self.workflow_start_var.get()).show()
         if selected is not None:

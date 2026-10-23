@@ -1033,11 +1033,11 @@ class ShellMixin:
             global_toolbar, text="删除", command=self.delete_global_module,
             bootstyle="danger-outline",
         ).pack(side="left", padx=px(5))
-        self.global_delete_undo_button = ttk.Button(
-            global_toolbar, text="↶ 撤销删除", command=self.undo_delete_global_module,
+        self.global_undo_button = ttk.Button(
+            global_toolbar, text="↶ 撤销", command=self.undo_workflow_edit,
             style="CompactGhost.TButton", state="disabled",
         )
-        self.global_delete_undo_button.pack(side="left")
+        self.global_undo_button.pack(side="left")
         ttk.Label(
             global_toolbar, text="双击行编辑插件 / 更换模块", style="Muted.TLabel",
         ).pack(side="left", padx=pad(10, 0))
@@ -1137,11 +1137,11 @@ class ShellMixin:
         ttk.Button(edit_toolbar, text="移到行…", command=self.move_workflow_step_to_row,
                    style="CompactGhost.TButton").pack(side="left", padx=pad(5, 0))
         ttk.Button(edit_toolbar, text="删除", command=self.delete_workflow_step, bootstyle="danger-outline").pack(side="left", padx=px(5))
-        self.workflow_delete_undo_button = ttk.Button(
-            edit_toolbar, text="↶ 撤销删除", command=self.undo_delete_workflow_step,
+        self.workflow_undo_button = ttk.Button(
+            edit_toolbar, text="↶ 撤销", command=self.undo_workflow_edit,
             style="CompactGhost.TButton", state="disabled",
         )
-        self.workflow_delete_undo_button.pack(side="left")
+        self.workflow_undo_button.pack(side="left")
         ttk.Label(edit_toolbar, text="提示：双击单元格可直接修改", style="Muted.TLabel").pack(side="right")
 
         frame = ttk.Frame(workflow_box, style="Surface.TFrame")
@@ -1174,7 +1174,13 @@ class ShellMixin:
         self.workflow_tree.bind("<<TreeviewSelect>>", self._update_workflow_selection_color, add="+")
         self.workflow_tree.bind("<<TreeviewSelect>>", self._refresh_workflow_segment_bar, add="+")
         self.workflow_tree.bind("<Control-a>", self._select_all_workflow_steps)
+        self.workflow_tree.bind("<Control-z>", self.undo_workflow_edit)
+        self.global_tree.bind("<Control-z>", self.undo_workflow_edit)
         self.workflow_tree.bind("<Button-3>", self._show_workflow_context_menu, add="+")
+        if self.__dict__.get('_workflow_history') is None:
+            self._clear_workflow_history()
+        else:
+            self._update_workflow_undo_buttons()
 
 
     def _create_variables(self):

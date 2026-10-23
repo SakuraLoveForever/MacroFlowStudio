@@ -136,7 +136,7 @@ class RuntimeWorkflowMixin:
         step.setdefault("original_repeats", int(step.get("repeats", 0)))
         step["repeats"] = remaining
         self._refresh_one_workflow_row(index)
-        self._persist_workflow_draft()
+        self._persist_workflow_draft(record_history=False)
         if self.workflow_path is not None:
             try:
                 save_workflow(self.workflow, self.workflow_path)
@@ -201,7 +201,7 @@ class RuntimeWorkflowMixin:
             self._refresh_one_workflow_row(index)
         else:
             self.rebuild_workflow_tree()
-        self._persist_workflow_draft()
+        self._persist_workflow_draft(record_history=False)
 
     @staticmethod
     def _workflow_global_module_key(step: dict) -> str:

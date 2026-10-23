@@ -141,8 +141,7 @@ class RuntimeShellMixin:
         self.action_segment_painted: tuple[int, int] | None = None
         self.workflow_segment_painted: tuple[int, int] | None = None
         self.workflow_was_dragged = False
-        self.workflow_delete_undo_stack: list[tuple[int, dict]] = []
-        self.global_delete_undo_stack: list[tuple[int, dict]] = []
+        self._workflow_history = None
         self.workflow_draft_after_id = None
         self.workflow_insert_position_var = tk.StringVar(value="below")
         self._configure_client_startup()

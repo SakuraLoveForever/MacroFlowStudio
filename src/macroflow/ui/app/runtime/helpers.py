@@ -580,9 +580,14 @@ class RuntimeHelpersMixin:
         self._read_workflow_start_delay(validate=False)
         return self.workflow.to_dict()
 
-    def _persist_workflow_draft(self) -> None:
+    def _persist_workflow_draft(self, *, record_history: bool = True) -> None:
+        if self.workflow_draft_after_id is not None:
+            self.root.after_cancel(self.workflow_draft_after_id)
         self.workflow_draft_after_id = None
         self._persist_sidebar_settings()
+        record = getattr(self, '_record_workflow_edit' if record_history else '_clear_workflow_history', None)
+        if record is not None:
+            record()
 
     def _schedule_workflow_draft_save(self, _event=None) -> None:
         if self.workflow_draft_after_id is not None:

@@ -63,8 +63,9 @@ _BOUND_METHODS = (
     "_measure_text_width", "_measure_font", "_autosize_tree_column",
     "_selected_workflow_index", "_selected_workflow_indices",
     "move_workflow_step", "delete_workflow_step",
-    "undo_delete_workflow_step", "toggle_selected_workflow_step",
-    "_clear_workflow_delete_history", "_update_workflow_delete_undo_buttons",
+    "undo_workflow_edit", "toggle_selected_workflow_step",
+    "_clear_workflow_history", "_update_workflow_undo_buttons",
+    "_record_workflow_edit", "_workflow_edit_snapshot",
 )
 
 

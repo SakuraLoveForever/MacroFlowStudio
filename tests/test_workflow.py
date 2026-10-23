@@ -725,8 +725,9 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app._persist_workflow_draft = Mock()
         app._update_workflow_selection_color = Mock()
         app._set_status = Mock()
-        app.workflow_delete_undo_stack = []
-        app.global_delete_undo_stack = []
+        app.workflow_tree.selection.return_value = ()
+        app.global_tree.selection.return_value = ()
+        app._persist_workflow_draft.side_effect = app._record_workflow_edit
         return app
 
     def test_workflow_delete_selects_neighbor_and_undo_restores_row(self):
@@ -738,17 +739,19 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         ])
         app.workflow_tree.selection.return_value = ("1",)
 
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_workflow_step()
 
         self.assertEqual([step["step_id"] for step in app.workflow.steps], ["a", "c"])
         app.workflow_tree.selection_set.assert_called_with("1")
         app.workflow_tree.see.assert_called_with("1")
 
-        app.undo_delete_workflow_step()
+        app.undo_workflow_edit()
 
         self.assertEqual([step["step_id"] for step in app.workflow.steps], ["a", "b", "c"])
         app.workflow_tree.selection_set.assert_called_with("1")
-        self.assertEqual(app.workflow_delete_undo_stack, [])
+        self.assertEqual(app._workflow_history.undo, [])
 
     def test_workflow_delete_last_row_selects_previous_row(self):
         app = self._app()
@@ -758,6 +761,8 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         ])
         app.workflow_tree.selection.return_value = ("1",)
 
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_workflow_step()
 
         app.workflow_tree.selection_set.assert_called_once_with("0")
@@ -782,11 +787,13 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         ])
         app.workflow_tree.selection.return_value = ("0", "2")
 
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_workflow_step()
 
         self.assertEqual([step["step_id"] for step in app.workflow.steps], ["b"])
-        app.undo_delete_workflow_step()
-        app.undo_delete_workflow_step()
+        app.undo_workflow_edit()
+        app.undo_workflow_edit()
         self.assertEqual([step["step_id"] for step in app.workflow.steps], ["a", "b", "c"])
 
     def test_global_multi_delete_removes_all_selected_and_undo_restores(self):
@@ -799,11 +806,13 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         ])
         app.global_tree.selection.return_value = ("0", "2")
 
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_global_module()
 
         self.assertEqual([step["step_id"] for step in app._global_module_steps()], ["g2"])
-        app.undo_delete_global_module()
-        app.undo_delete_global_module()
+        app.undo_workflow_edit()
+        app.undo_workflow_edit()
         self.assertEqual(
             [step["step_id"] for step in app._global_module_steps()], ["g1", "g2", "g3"],
         )
@@ -887,6 +896,8 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         ])
         app.global_tree.selection.return_value = ("1",)
 
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_global_module()
         self.assertEqual(
             [step["step_id"] for step in app._global_module_steps()], ["g1", "g3"],
@@ -894,17 +905,19 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app.global_tree.selection_set.assert_called_with("1")
 
         app.global_tree.selection.return_value = ("1",)
+        if app.__dict__.get('_workflow_history') is None:
+            app._clear_workflow_history()
         app.delete_global_module()
         self.assertEqual([step["step_id"] for step in app._global_module_steps()], ["g1"])
         app.global_tree.selection_set.assert_called_with("0")
 
-        app.undo_delete_global_module()
-        app.undo_delete_global_module()
+        app.undo_workflow_edit()
+        app.undo_workflow_edit()
 
         self.assertEqual(
             [step["step_id"] for step in app._global_module_steps()], ["g1", "g2", "g3"],
         )
-        self.assertEqual(app.global_delete_undo_stack, [])
+        self.assertEqual(app._workflow_history.undo, [])
 
     def test_workflow_global_module_key_only_accepts_module_reference(self):
         self.assertEqual(
@@ -1683,7 +1696,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app.workflow_start_delay_seconds_var.get.return_value = "5000"
         app.workflow_start_delay_seconds_var.unit = Mock()
         app._read_workflow_start_delay = Mock(return_value=0)
-        app._clear_workflow_delete_history = Mock()
+        app._clear_workflow_history = Mock()
         app._toggle_workflow_start_delay_control = Mock()
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
