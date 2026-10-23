@@ -281,18 +281,23 @@ class PluginCard(tk.Canvas):
 
 class PluginsPage(ttk.Frame):
     def __init__(self, parent, app):
-        super().__init__(parent, padding=px(16))
+        super().__init__(parent, style="App.TFrame")
         from .plugins_runtime import get_interval_plugins
         self.app, self.plugins = app, get_interval_plugins(app)
         get_disconnect_monitor(app)
         ttk.Style().configure("Plugin.TCheckbutton", background=COLOR_SURFACE)
         ttk.Style().configure("PluginEnabled.TCheckbutton", background="#142C25")
-        toolbar = ttk.Frame(self)
-        toolbar.pack(fill="x", pady=pad(0, 10))
-        ttk.Button(toolbar, text="新增定时插件", command=self.add_plugin,
-                   style="CompactGhost.TButton").pack(side="left")
+        header = ttk.Frame(self, style="App.TFrame")
+        header.pack(fill="x")
+        titles = ttk.Frame(header, style="App.TFrame")
+        titles.pack(side="left")
+        ttk.Label(titles, text="插件", style="PageTitle.TLabel").pack(anchor="w")
+        ttk.Label(titles, text="定时执行的自动化模块；卡片右上角开关即启用/停用",
+                  style="PageSubtitle.TLabel").pack(anchor="w", pady=pad(1, 0))
+        ttk.Button(header, text="新增定时插件", command=self.add_plugin,
+                   style="Ghost.TButton").pack(side="right")
         self.grid_body = ScrolledFrame(self, autohide=True, padding=0, bootstyle="dark")
-        self.grid_body.pack(fill="both", expand=True)
+        self.grid_body.pack(fill="both", expand=True, pady=pad(12, 0))
         self._columns, self.job, self.cards = 0, None, []
         self.grid_body.bind("<Configure>", self.relayout, add="+")
         self.bind("<Destroy>", self.destroyed, add="+")

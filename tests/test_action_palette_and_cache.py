@@ -42,20 +42,25 @@ class ModuleCacheTests(unittest.TestCase):
 
 
 class ActionPaletteTests(unittest.TestCase):
-    def test_palette_creates_categories_and_wires_every_action_button(self):
+    def test_palette_creates_segmented_categories_and_wires_every_action_button(self):
         from macroflow.ui.app.action_palette import ACTION_CATEGORIES
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
         specs = app._script_action_button_specs()
         callbacks = {}
         for _label, command, _style in specs:
             callbacks[command] = Mock()
             setattr(app, command, callbacks[command])
-        with patch('macroflow.ui.app.shell.ttk.Notebook') as notebook, \
+        with patch('macroflow.ui.app.shell.SegmentedControl') as segmented, \
+                patch('macroflow.ui.app.shell.FlowFrame') as flow_class, \
                 patch('macroflow.ui.app.shell.ttk.Frame'), \
                 patch('macroflow.ui.app.shell.ttk.Button') as button:
             app._build_action_palette(Mock())
-        self.assertEqual([call.kwargs['text'] for call in notebook.return_value.add.call_args_list],
+        options = segmented.call_args.kwargs['options']
+        self.assertEqual([label for label, _value in options],
                          [item[0] for item in ACTION_CATEGORIES])
+        self.assertEqual(len(flow_class.call_args_list), len(ACTION_CATEGORIES))
+        self.assertEqual(flow_class.call_args.kwargs['max_rows'], 1)
         for call in button.call_args_list:
             callback = call.kwargs.get('command')
             if callback is not None:
@@ -77,32 +82,10 @@ class ActionPaletteTests(unittest.TestCase):
         for command in commands:
             self.assertTrue(callable(getattr(MacroFlowApp, command)))
 
-    def test_width_fills_row_and_only_overflow_is_collapsed(self):
-        from macroflow.ui.app.action_palette import action_button_positions
-        self.assertEqual(action_button_positions(212, [50, 50, 50, 50], 40, False, gap=4),
-                         ([(0, 0), (54, 0), (108, 0), (162, 0)], None))
-        self.assertEqual(action_button_positions(211, [50, 50, 50, 50], 40, False, gap=4),
-                         ([(0, 0), (54, 0), (108, 0), None], (162, 0)))
-        self.assertEqual(action_button_positions(120, [50, 50, 50, 50], 40, True, gap=4),
-                         ([(0, 0), (0, 1), (54, 1), (0, 2)], (54, 0)))
-        self.assertEqual(action_button_positions(40, [50], 40, False), ([None], (0, 0)))
-
-    def test_expansion_and_resize_relayout_buttons(self):
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.action_palette = Mock()
-        tab = Mock(action_expanded=False, action_layout=None)
-        tab.winfo_width.return_value = 200
-        tab.action_buttons = [Mock() for _ in range(4)]
-        for button in (*tab.action_buttons, tab.action_toggle):
-            button.winfo_reqwidth.return_value = 50
-            button.winfo_reqheight.return_value = 25
-        app._layout_action_category(tab)
-        tab.action_buttons[-1].place_forget.assert_called_once()
-        app._toggle_action_category(tab)
-        tab.action_buttons[-1].place.assert_called_once()
-        tab.action_toggle.configure.assert_called_with(text='收起 ▴')
-        tab.winfo_width.return_value = 1000
-        app._layout_action_category(tab)
-        tab.action_toggle.place_forget.assert_called_once()
-        for button in tab.action_buttons:
-            self.assertEqual(button.place.call_args.kwargs['y'], tab.action_buttons[0].place.call_args.kwargs['y'])
+    def test_palette_stays_flat_without_notebook_widgets(self):
+        import inspect
+        from macroflow.ui.app import shell
+        source = inspect.getsource(shell.ShellMixin._build_action_palette)
+        self.assertIn('SegmentedControl', source)
+        self.assertIn('FlowFrame', source)
+        self.assertNotIn('ttk.Notebook', source)

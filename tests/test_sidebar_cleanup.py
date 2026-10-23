@@ -8,16 +8,24 @@ from macroflow.ui.app import shell
 
 
 class SidebarCleanupTests(unittest.TestCase):
-    def test_sidebar_removes_obsolete_sections(self):
-        source = inspect.getsource(shell.ShellMixin._build_sidebar)
-        for removed in ("启动与备份", "hotkey_summary_var", "专注执行：", "add_disconnect_monitor"):
-            self.assertNotIn(removed, source)
-        self.assertIn("_configure_hotkey_scripts", source)
-
-    def test_plugins_are_fourth_tab(self):
+    def test_shell_uses_rail_and_page_stack_instead_of_sidebar(self):
         source = inspect.getsource(shell.ShellMixin._build_ui)
-        self.assertLess(source.index('text="运行日志"'), source.index('text="插件"'))
-        self.assertIn("build_plugins_page(self.plugins_tab, self)", source)
+        for removed in ("_build_sidebar", "启动与备份", "hotkey_summary_var", "ttk.Notebook"):
+            self.assertNotIn(removed, source)
+        self.assertIn("PageStack", source)
+        self.assertIn("_build_rail", source)
+
+    def test_settings_page_holds_configuration_sections(self):
+        source = inspect.getsource(shell.ShellMixin._build_settings_page)
+        self.assertIn("_configure_hotkey_scripts", source)
+        self.assertIn("hotkey_summary_var", source)
+        for removed in ("启动与备份", "专注执行："):
+            self.assertNotIn(removed, source)
+
+    def test_plugins_are_fourth_page(self):
+        source = inspect.getsource(shell.ShellMixin._build_ui)
+        self.assertLess(source.index('"运行日志"'), source.index('"插件"'))
+        self.assertIn('build_plugins_page(self.plugins_tab, self)', source)
 
     def button(self):
         button = object.__new__(shell.SidebarButton)
