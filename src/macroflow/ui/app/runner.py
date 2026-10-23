@@ -66,7 +66,7 @@ class MacroFlowRunner(ExecutionController):
                         command=self._toggle_activation_enabled).pack(side="left")
         ttk.Button(prewindow, text="选择…", command=self.choose_activation_window).pack(side="left", padx=5)
         ttk.Label(prewindow, text="间隔（秒）").pack(side="left")
-        interval = ttk.Entry(prewindow, textvariable=self.activation_interval_var, width=6)
+        interval = ttk.Entry(prewindow, textvariable=self.activation_interval_var, width=4)
         interval.pack(side="left", padx=5)
         interval.bind("<FocusOut>", self._save_activation_interval)
         controls = ttk.Frame(self.script_tab)

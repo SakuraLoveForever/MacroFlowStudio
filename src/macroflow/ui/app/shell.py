@@ -571,7 +571,7 @@ class ShellMixin:
         interval_row.pack(fill="x", pady=pad(0, 4))
         ttk.Label(interval_row, text="两次前置间隔", style="CardHint.TLabel").pack(side="left")
         interval_entry = ttk.Entry(interval_row, textvariable=self.activation_interval_var,
-                                   width=9)
+                                   width=4)
         interval_entry.pack(side="left", padx=pad(8, 4))
         interval_entry.bind("<FocusOut>", self._save_activation_interval)
         interval_entry.bind("<Return>", self._save_activation_interval)
