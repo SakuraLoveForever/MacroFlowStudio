@@ -747,7 +747,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
             }, module)
         guard = app.global_guards["workflow:m1"]
         self.assertEqual(guard["threshold"], 1.0)
-        self.assertEqual(guard["interval_ms"], 100)
+        self.assertEqual(guard["interval_ms"], 1000)
         self.assertEqual(guard["hold_ms"], 600000)
         self.assertEqual(guard["delay_ms"], 200)
         self.assertEqual(guard["template"], Path("images/g.png"))

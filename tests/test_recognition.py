@@ -1314,7 +1314,7 @@ class OcrTests(unittest.TestCase):
         form.not_equal_click_count = Mock(); form.not_equal_click_count.get.return_value = "1"
         form.not_equal_jump_target = Mock(); form.not_equal_jump_target.get.return_value = "第 2 行 · 点击"
         form.timeout = Mock(); form.timeout.get.return_value = "3000"
-        form.interval = Mock(); form.interval.get.return_value = "500"
+        form.interval = Mock(); form.interval.get.return_value = "3000"
         form.on_timeout = Mock(); form.on_timeout.get.return_value = "继续执行"
         form.timeout_jump_target = Mock(); form.timeout_jump_target.get.return_value = ""
         form.show_result_notice = Mock(); form.show_result_notice.get.return_value = True
@@ -1384,7 +1384,7 @@ class OcrTests(unittest.TestCase):
         form.button = Mock(); form.button.get.return_value = "left"
         form.click_count = Mock(); form.click_count.get.return_value = "4"
         form.timeout = Mock(); form.timeout.get.return_value = "3000"
-        form.interval = Mock(); form.interval.get.return_value = "500"
+        form.interval = Mock(); form.interval.get.return_value = "3000"
         form.on_timeout = Mock(); form.on_timeout.get.return_value = "continue"
         form.show_result_notice = Mock(); form.show_result_notice.get.return_value = True
         form.failure_segment_enabled = Mock(); form.failure_segment_enabled.get.return_value = True
@@ -1902,7 +1902,7 @@ class OcrTests(unittest.TestCase):
         form.timeout = Mock()
         form.timeout.get.return_value = "3000"
         form.interval = Mock()
-        form.interval.get.return_value = "500"
+        form.interval.get.return_value = "3000"
         form.on_found = Mock()
         form.on_found.get.return_value = "跳转到目标动作"
         form.found_jump_target = Mock()
@@ -1928,7 +1928,7 @@ class OcrTests(unittest.TestCase):
         self.assertEqual(form.result["expected_text"], "体力不足")
         self.assertEqual(form.result["match_mode"], "contains")
         self.assertEqual(form.result["timeout_ms"], 3000)
-        self.assertEqual(form.result["interval_ms"], 500)
+        self.assertEqual(form.result["interval_ms"], 3000)
         self.assertEqual(form.result["on_found"], "jump")
         self.assertEqual(form.result["found_jump_action_id"], "aid1")
         self.assertEqual(form.result["on_timeout"], "continue")
@@ -1950,7 +1950,7 @@ class OcrTests(unittest.TestCase):
         form.timeout = Mock()
         form.timeout.get.return_value = "3000"
         form.interval = Mock()
-        form.interval.get.return_value = "500"
+        form.interval.get.return_value = "3000"
         form.on_found = Mock()
         form.on_found.get.return_value = "跳转到目标动作"
         form.found_jump_target = Mock()
@@ -1988,7 +1988,7 @@ class OcrTests(unittest.TestCase):
         form.timeout = Mock()
         form.timeout.get.return_value = "3000"
         form.interval = Mock()
-        form.interval.get.return_value = "500"
+        form.interval.get.return_value = "3000"
         form.on_found = Mock()
         form.on_found.get.return_value = "继续执行"
         form.found_jump_target = Mock()

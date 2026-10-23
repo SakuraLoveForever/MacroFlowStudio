@@ -65,7 +65,7 @@ class ForegroundGuardTests(unittest.TestCase):
                 patch('macroflow.ui.app.execution.activate_window') as activate:
             app._start_foreground_minimize_watch(['chrome.exe'])
             activate.assert_called_once_with(99)
-            app.root.after.assert_called_once_with(500, app._poll_foreground_minimize_watch)
+            app.root.after.assert_called_once_with(3000, app._poll_foreground_minimize_watch)
             app._log.assert_called_once()
 
     def test_pause_does_not_minimize_and_stop_cancels_timer(self):
@@ -154,15 +154,15 @@ class ForegroundGuardTests(unittest.TestCase):
             self.assertEqual(app.workflow.foreground_minimize_interval_ms, 1250)
             app._schedule_workflow_draft_save.assert_called_once()
 
-    def test_interval_defaults_to_half_second_and_roundtrips(self):
-        self.assertEqual(Workflow().foreground_minimize_interval_ms, 500)
+    def test_interval_defaults_to_three_seconds_and_roundtrips(self):
+        self.assertEqual(Workflow().foreground_minimize_interval_ms, 3000)
         workflow = Workflow.from_dict({'foreground_minimize_interval_ms': 1250})
         self.assertEqual(workflow.foreground_minimize_interval_ms, 1250)
         self.assertEqual(Workflow.from_dict(workflow.to_dict()), workflow)
-        for invalid in (None, 'bad', 0, -100, 99, 60001, float('inf')):
+        for invalid in (None, 'bad', 0, -100, 99, 999, 60001, float('inf')):
             with self.subTest(invalid=invalid):
                 self.assertEqual(Workflow.from_dict({'foreground_minimize_interval_ms': invalid})
-                                 .foreground_minimize_interval_ms, 500)
+                                 .foreground_minimize_interval_ms, 3000)
 
     def test_watch_uses_configured_interval_after_pause_and_resume(self):
         app = self.app()
@@ -178,7 +178,7 @@ class ForegroundGuardTests(unittest.TestCase):
 
     def test_interval_dialog_rejects_invalid_input_without_saving(self):
         from macroflow.ui.dialogs.foreground_processes import ForegroundProcessesDialog
-        for value in ('bad', '0', '99', '60001'):
+        for value in ('bad', '0', '99', '500', '999', '60001'):
             dialog = SimpleNamespace(interval=Mock(), processes=Mock(), destroy=Mock(), result=None)
             dialog.interval.get.return_value = value
             with self.subTest(value=value), \
@@ -188,11 +188,11 @@ class ForegroundGuardTests(unittest.TestCase):
                 dialog.destroy.assert_not_called()
                 self.assertIsNone(dialog.result)
 
-    def test_interval_dialog_saves_names_and_half_second(self):
+    def test_interval_dialog_saves_names_and_whole_seconds(self):
         from macroflow.ui.dialogs.foreground_processes import ForegroundProcessesDialog
         dialog = SimpleNamespace(interval=Mock(), processes=Mock(), destroy=Mock(), result=None)
-        dialog.interval.get.return_value = '500'
+        dialog.interval.get.return_value = '3000'
         dialog.processes.get.return_value = ('chrome.exe',)
         ForegroundProcessesDialog._save(dialog)
-        self.assertEqual(dialog.result, (['chrome.exe'], 500))
+        self.assertEqual(dialog.result, (['chrome.exe'], 3000))
         dialog.destroy.assert_called_once()

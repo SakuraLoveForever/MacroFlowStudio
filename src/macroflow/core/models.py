@@ -299,7 +299,7 @@ class Workflow:
     start_resolution: dict[str, Any] | None = None
     end_resolution: dict[str, Any] | None = None
     foreground_minimize_processes: list[str] = field(default_factory=list)
-    foreground_minimize_interval_ms: int = 500
+    foreground_minimize_interval_ms: int = 3000
     # 「重新执行工作流」默认跳转行（1 基，0 = 未设置，按第 1 行处理）。
     # 在工作流页面统一设置，随工作流文件保存；动作级跳转行优先于它。
     restart_default_row: int = 0
@@ -321,11 +321,11 @@ class Workflow:
             steps.append(step)
         ensure_workflow_step_ids(steps)
         try:
-            foreground_minimize_interval_ms = int(data.get("foreground_minimize_interval_ms", 500))
-            if not 100 <= foreground_minimize_interval_ms <= 60000:
-                foreground_minimize_interval_ms = 500
+            foreground_minimize_interval_ms = int(data.get("foreground_minimize_interval_ms", 3000))
+            if not 1000 <= foreground_minimize_interval_ms <= 60000:
+                foreground_minimize_interval_ms = 3000
         except (TypeError, ValueError, OverflowError):
-            foreground_minimize_interval_ms = 500
+            foreground_minimize_interval_ms = 3000
         try:
             restart_default_row = max(0, int(data.get("restart_default_row", 0) or 0))
         except (TypeError, ValueError):

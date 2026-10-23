@@ -5,9 +5,10 @@ from macroflow.core.page_state import (
     PAGE_DEFAULT_THRESHOLD, PAGE_LIBRARY_DIR,
 )
 from macroflow.core.storage import BASE_DIR
+from macroflow.ui.form_controls import integer_seconds_spinbox
 from .base import (
-    COLOR_MUTED, ModalDialog, app_windows, dark_checkbutton, duration_var, pad, px,
-    show_floating_notice,
+    COLOR_MUTED, ModalDialog, app_windows, dark_checkbutton, duration_var,
+    interval_var, pad, px, show_floating_notice,
 )
 from .helpers import image_jump_target_options
 from .screen_pickers import ScreenPointPicker
@@ -66,7 +67,7 @@ class PageActionDialog(ModalDialog):
             self, str(self.data.get("threshold", PAGE_DEFAULT_THRESHOLD)),
         )
         self.timeout = duration_var(self.data.get("timeout_ms", 3000))
-        self.interval = duration_var(self.data.get("interval_ms", 150))
+        self.interval = interval_var(self.data.get("interval_ms", 3000))
         self.wait_forever = tk.BooleanVar(
             self, int(self.data.get("timeout_ms", 3000) or 0) <= 0,
         )
@@ -208,11 +209,13 @@ class PageActionDialog(ModalDialog):
         self.timeout_row_index = labeled("超时时间", self.timeout_row)
 
         self.interval_row = ttk.Frame(body)
-        interval_entry = ttk.Entry(self.interval_row, textvariable=self.interval, width=8)
-        interval_entry.pack(side="left")
+        self.interval_spinbox = integer_seconds_spinbox(
+            self.interval_row, textvariable=self.interval, to=10,
+        )
+        self.interval_spinbox.pack(side="left")
         self.interval_row_index = labeled(
-            "检测间隔", self.interval_row,
-            "每次判断的间隔；150 ms 左右对界面切换足够灵敏。",
+            "检测间隔（秒）", self.interval_row,
+            "每次判断之间的整数秒数，默认 3 秒；越小越灵敏，越大越省资源。",
         )
 
         self.click_row = ttk.Frame(body)
@@ -367,7 +370,7 @@ class PageActionDialog(ModalDialog):
             mode = self._mode_key()
             timeout_ms = 0 if self.wait_forever.get() or mode == "check" \
                 else max(0, int(self.timeout.get()))
-            interval_ms = max(50, int(self.interval.get()))
+            interval_ms = max(1000, int(self.interval.get()))
             click = bool(self.click_enabled.get())
             click_point = []
             if click:

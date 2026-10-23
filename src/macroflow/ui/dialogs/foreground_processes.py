@@ -2,15 +2,16 @@ import tkinter as tk
 from tkinter import ttk
 
 from macroflow.core.models import normalize_foreground_processes
+from macroflow.ui.form_controls import integer_seconds_spinbox
 from .base import (
-    COLOR_SURFACE, COLOR_TEXT, ModalDialog, pad, duration_var,
+    COLOR_SURFACE, COLOR_TEXT, ModalDialog, interval_var, pad,
     show_floating_notice,
 )
 from .process_names import ProcessNamePicker
 
 
 class ForegroundProcessesDialog(ModalDialog):
-    def __init__(self, parent, names, interval_ms=500):
+    def __init__(self, parent, names, interval_ms=3000):
         super().__init__(parent, '工作流防遮挡进程', width=560, height=420)
         frame = ttk.Frame(self, padding=pad(16))
         frame.pack(fill='both', expand=True)
@@ -19,10 +20,12 @@ class ForegroundProcessesDialog(ModalDialog):
                   '留空关闭此功能；保存后下次运行生效。', justify='left').pack(anchor='w')
         interval_row = ttk.Frame(frame)
         interval_row.pack(fill='x', pady=pad(10, 0))
-        ttk.Label(interval_row, text='检测间隔').pack(side='left')
-        self.interval = duration_var(interval_ms)
-        ttk.Entry(interval_row, textvariable=self.interval, width=10).pack(
-            side='left', padx=pad(8, 0))
+        ttk.Label(interval_row, text='检测间隔（秒）').pack(side='left')
+        self.interval = interval_var(interval_ms)
+        self.interval_spinbox = integer_seconds_spinbox(
+            interval_row, textvariable=self.interval,
+        )
+        self.interval_spinbox.pack(side='left', padx=pad(8, 0))
         row = ttk.Frame(frame)
         row.pack(fill='x', pady=pad(10, 8))
         self.name = tk.StringVar(self)
@@ -59,10 +62,10 @@ class ForegroundProcessesDialog(ModalDialog):
     def _save(self):
         try:
             interval_ms = int(self.interval.get())
-            if not 100 <= interval_ms <= 60000:
+            if not 1000 <= interval_ms <= 60000:
                 raise ValueError
         except (ValueError, OverflowError):
-            show_floating_notice(self, '检测间隔无效', '请输入 0.1–60 秒之间的检测间隔。')
+            show_floating_notice(self, '检测间隔无效', '请输入 1–60 秒之间的整数检测间隔。')
             return
         self.result = (list(self.processes.get(0, 'end')), interval_ms)
         self.destroy()

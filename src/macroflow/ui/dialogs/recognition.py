@@ -22,7 +22,9 @@ from macroflow.core.storage import (
     save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from tkinter import filedialog, messagebox, simpledialog, ttk
-from macroflow.ui.form_controls import compact_combobox, integer_spinbox
+from macroflow.ui.form_controls import (
+    compact_combobox, integer_seconds_spinbox, integer_spinbox,
+)
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
     get_monitor_work_area_for_point,
@@ -51,6 +53,7 @@ from .base import (
     app_windows,
     dark_checkbutton,
     duration_var,
+    interval_var,
     fit_scrollable_window_to_content,
     monitor_work_area_for,
     pad,
@@ -507,7 +510,7 @@ class GlobalDetectDialog(ModalDialog):
         self.module_name = tk.StringVar(value=module_display_name(saved_module_key, saved_module))
         self.template = tk.StringVar(value=str(action.get("template", "")))
         self.threshold = tk.StringVar(value=str(action.get("threshold", 0.85)))
-        self.interval = duration_var(action.get("interval_ms", 500))
+        self.interval = interval_var(action.get("interval_ms", 3000))
         self.region = tk.StringVar(value=region_text)
         self.hold = duration_var(action.get("hold_ms", 1000))
         self.click_point = tk.StringVar(value=click_text)
@@ -554,17 +557,20 @@ class GlobalDetectDialog(ModalDialog):
                 side="left", padx=pad(6, 0),
             )
 
-        rows = [
-            ("相似度", self.threshold, 0.1, 1.0, 0.05),
-            ("检测间隔", self.interval, 100, 10000, 100),
-            ("持续超过", self.hold, 0, 60000, 100),
-        ]
-        for offset, (label, variable, low, high, increment) in enumerate(rows, start=1):
-            ttk.Label(body, text=label).grid(row=offset, column=0, sticky="w", pady=px(8))
-            ttk.Spinbox(
-                body, from_=low, to=high, increment=increment,
-                textvariable=variable, width=10,
-            ).grid(row=offset, column=1, sticky="ew")
+        ttk.Label(body, text="相似度").grid(row=1, column=0, sticky="w", pady=px(8))
+        ttk.Spinbox(
+            body, from_=0.1, to=1.0, increment=0.05,
+            textvariable=self.threshold, width=10,
+        ).grid(row=1, column=1, sticky="ew")
+        ttk.Label(body, text="检测间隔（秒）").grid(row=2, column=0, sticky="w", pady=px(8))
+        integer_seconds_spinbox(
+            body, textvariable=self.interval, to=60,
+        ).grid(row=2, column=1, sticky="ew")
+        ttk.Label(body, text="持续超过").grid(row=3, column=0, sticky="w", pady=px(8))
+        ttk.Spinbox(
+            body, from_=0, to=60000, increment=100,
+            textvariable=self.hold, width=10,
+        ).grid(row=3, column=1, sticky="ew")
         if self.require_click:
             ttk.Label(body, text="点击后延时").grid(row=4, column=0, sticky="w", pady=px(8))
             ttk.Spinbox(
@@ -764,7 +770,7 @@ class GlobalDetectDialog(ModalDialog):
             if not template:
                 raise ValueError("请从列表中选择模板")
             threshold = max(0.1, min(1.0, float(self.threshold.get())))
-            interval = max(100, min(10000, int(self.interval.get())))
+            interval = max(1000, min(10000, int(self.interval.get())))
             hold = max(0, min(60000, int(self.hold.get())))
             if module_binding is not None:
                 region_mode = "template"
@@ -886,7 +892,7 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
         self.template = tk.StringVar(value=str(action.get("template", "")))
         self.threshold = tk.StringVar(value=str(action.get("threshold", 0.85)))
         self.timeout = duration_var(default_timeout)
-        self.interval = duration_var(action.get("interval_ms", 250))
+        self.interval = interval_var(action.get("interval_ms", 3000))
         self.region_mode = tk.StringVar(value=str(action.get("region_mode", "screen")))
         self.region = tk.StringVar(value=",".join(map(str, region)))
         self.on_found = tk.StringVar(value=default_on_found)
@@ -938,7 +944,7 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
         rows = [
             ("相似度 (0.1–1.0)", self.threshold, None),
             ("等待超时", self.timeout, None),
-            ("检测间隔", self.interval, None),
+            ("检测间隔（秒）", self.interval, None),
             ("找到后", self.on_found, ("continue", "click", "jump")),
             ("找到后跳转目标动作", self.found_jump_target,
              tuple(label for label, _ in found_jump_options)),
@@ -978,8 +984,12 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
                 elif variable is self.timeout_jump_target:
                     self.timeout_jump_entry = combo
             else:
-                entry = ttk.Entry(body, textvariable=variable)
-                entry.grid(row=offset, column=1, sticky="ew")
+                if variable is self.interval:
+                    spinbox = integer_seconds_spinbox(body, textvariable=variable, to=60)
+                    spinbox.grid(row=offset, column=1, sticky="ew")
+                else:
+                    entry = ttk.Entry(body, textvariable=variable)
+                    entry.grid(row=offset, column=1, sticky="ew")
                 if variable is self.timeout:
                     self.timeout_entry = entry
                 elif variable is self.timeout_delay:
@@ -1023,7 +1033,7 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
             text="显示识别结果浮动提醒",
             variable=self.show_result_notice,
         ).grid(row=20, column=0, columnspan=2, sticky="w", pady=pad(6, 0))
-        ttk.Label(body, text="一直等待时：主模板超过切换超时未出现则改用备用模板，在模板的检测区域里识别；备用模板出现时可选是否点击，出现后回到主模板检测或直接退出识别。幕布选取只记录坐标；最小检测间隔为 50 ms。", foreground=COLOR_MUTED, wraplength=px(560)).grid(row=21, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
+        ttk.Label(body, text="一直等待时：主模板超过切换超时未出现则改用备用模板，在模板的检测区域里识别；备用模板出现时可选是否点击，出现后回到主模板检测或直接退出识别。幕布选取只记录坐标。", foreground=COLOR_MUTED, wraplength=px(560)).grid(row=21, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
         self._build_failure_segment_controls(body, row=22)
         buttons = ttk.Frame(body)
         buttons.grid(row=24, column=0, columnspan=2, sticky="ew", pady=pad(14, 0))
@@ -1187,7 +1197,7 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
             if not 0.1 <= threshold <= 1:
                 raise ValueError("相似度必须在 0.1 到 1.0 之间")
             timeout = max(0, int(self.timeout.get()))
-            interval = max(50, int(self.interval.get()))
+            interval = max(1000, int(self.interval.get()))
             found_delay = max(0, int(self.found_delay.get()))
             timeout_delay = max(0, int(self.timeout_delay.get()))
             registry = load_template_regions()
@@ -1333,7 +1343,7 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
         self.expected_text = tk.StringVar(value=str(action.get("expected_text", "")))
         self.match_mode = tk.StringVar(value=saved_match_label)
         self.timeout = duration_var(action.get("timeout_ms", 3000))
-        self.interval = duration_var(action.get("interval_ms", 500))
+        self.interval = interval_var(action.get("interval_ms", 3000))
         self.on_found = tk.StringVar(value=saved_on_found_label)
         self.found_jump_target = tk.StringVar(value=selected_found_target)
         self.found_delay = duration_var(action.get("found_delay_ms", 0))
@@ -1358,7 +1368,10 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
 
         def entry_row(row, label, variable):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
-            entry = ttk.Entry(body, textvariable=variable)
+            if variable is self.interval:
+                entry = integer_seconds_spinbox(body, textvariable=variable, to=60)
+            else:
+                entry = ttk.Entry(body, textvariable=variable)
             entry.grid(row=row, column=1, sticky="ew")
             return entry
 
@@ -1376,7 +1389,7 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
         combo_row(3, "匹配方式", self.match_mode,
                   tuple(label for label, _ in self.MATCH_MODE_OPTIONS))
         self.timeout_entry = entry_row(4, "等待超时（0 = 只识别一次）", self.timeout)
-        entry_row(5, "检测间隔（未命中时多久再试一次）", self.interval)
+        entry_row(5, "检测间隔（秒）", self.interval)
         combo_row(6, "找到后", self.on_found,
                   tuple(label for label, _ in self.ON_FOUND_OPTIONS),
                   bind=lambda _event: self._update_jump_controls())
@@ -1399,7 +1412,7 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
         ttk.Label(
             body,
             text="识别区域留空表示全屏；“绑定窗口”在播放时对绑定目标窗口的区域做识别，"
-            "没有绑定窗口时回退全屏。每次识别约需几百毫秒，检测间隔不建议小于 200 ms。"
+            "没有绑定窗口时回退全屏。每次识别约需几百毫秒，检测间隔建议 1 秒以上。"
             "期望文字支持“包含 / 等于”，等于时忽略大小写与首尾空白。",
             foreground=COLOR_MUTED, wraplength=px(560),
         ).grid(row=13, column=0, columnspan=2, sticky="w", pady=pad(10, 0))
@@ -1450,7 +1463,7 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
                 raise ValueError("识别区域需要四个非负整数：x,y,w,h（留空表示全屏）")
             expected_text = self.expected_text.get().strip()
             timeout = max(0, int(self.timeout.get()))
-            interval = max(200, int(self.interval.get()))
+            interval = max(1000, int(self.interval.get()))
             found_delay = max(0, int(self.found_delay.get()))
             timeout_delay = max(0, int(self.timeout_delay.get()))
             found_jump_action_id = self.jump_target_ids.get(
@@ -1532,7 +1545,7 @@ class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
             value=target_label(str(action.get("not_equal_jump_action_id", "")).strip()),
         )
         self.timeout = duration_var(action.get("timeout_ms", 3000))
-        self.interval = duration_var(action.get("interval_ms", 500))
+        self.interval = interval_var(action.get("interval_ms", 3000))
         self.on_timeout = tk.StringVar(
             value=_option_label(str(action.get("on_timeout", "continue")), self.TIMEOUT_OPTIONS, "继续执行"),
         )
@@ -1552,6 +1565,8 @@ class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
             holder.columnconfigure(0, weight=1)
             if variable in (self.equal_click_count, self.not_equal_click_count):
                 entry = integer_spinbox(holder, textvariable=variable, from_=1, to=9999)
+            elif variable is self.interval:
+                entry = integer_seconds_spinbox(holder, textvariable=variable, to=60)
             else:
                 entry = ttk.Entry(holder, textvariable=variable)
             entry.grid(row=0, column=0, sticky="ew")
@@ -1598,7 +1613,7 @@ class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
             lambda _event: self._update_timeout_controls(),
         )
         entry_row(11, "等待超时", self.timeout)
-        entry_row(12, "检测间隔", self.interval)
+        entry_row(12, "检测间隔（秒）", self.interval)
         self.timeout_jump_combo = combo_row(
             13, "超时跳转目标", self.timeout_jump_target,
             tuple(label for label, _value in jump_options),
@@ -1687,7 +1702,7 @@ class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
             if not separator:
                 raise ValueError("分隔符不能为空")
             timeout = max(0, int(self.timeout.get()))
-            interval = max(200, int(self.interval.get()))
+            interval = max(1000, int(self.interval.get()))
             equal_behavior, equal_count, equal_target = branch(
                 "相等", self.equal_action, self.equal_click_count, self.equal_jump_target,
             )
@@ -1911,7 +1926,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
         self.button = tk.StringVar(value=str(action.get("button", "left")))
         self.click_count = tk.StringVar(value=str(action.get("click_count", 1)))
         self.timeout = duration_var(action.get("timeout_ms", 3000))
-        self.interval = duration_var(action.get("interval_ms", 500))
+        self.interval = interval_var(action.get("interval_ms", 3000))
         self.on_timeout = tk.StringVar(
             value=_option_label(str(action.get("on_timeout", "continue")), self.TIMEOUT_OPTIONS, "继续执行"),
         )
@@ -1920,7 +1935,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
         self._entry_row(click_frame, 1, "连续点击次数", self.click_count)
         self._combo_row(click_frame, 2, "点击按钮", self.button, ("left", "right", "middle"))
         self._entry_row(click_frame, 3, "等待超时", self.timeout)
-        self._entry_row(click_frame, 4, "检测间隔", self.interval)
+        self._entry_row(click_frame, 4, "检测间隔（秒）", self.interval)
         self._combo_row(
             click_frame, 5, "超时后", self.on_timeout,
             tuple(label for label, _value in self.TIMEOUT_OPTIONS),
@@ -1951,6 +1966,8 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
         holder.columnconfigure(0, weight=1)
         if variable is self.click_count:
             entry = integer_spinbox(holder, textvariable=variable, from_=1, to=9999)
+        elif variable is self.interval:
+            entry = integer_seconds_spinbox(holder, textvariable=variable, to=60)
         else:
             entry = ttk.Entry(holder, textvariable=variable)
         entry.grid(row=0, column=0, sticky="ew")
@@ -2087,7 +2104,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
             click_region = self._parse_region(self.click_region.get(), "点击区域")
             click_count = max(1, min(9999, int(self.click_count.get())))
             timeout = max(0, int(self.timeout.get()))
-            interval = max(200, int(self.interval.get()))
+            interval = max(1000, int(self.interval.get()))
             on_timeout = _option_value(self.on_timeout.get(), self.TIMEOUT_OPTIONS, "continue")
         except (TypeError, ValueError) as exc:
             show_floating_notice(self, "参数错误", str(exc))

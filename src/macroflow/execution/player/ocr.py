@@ -57,7 +57,7 @@ class OcrMixin:
         expected = str(action.get("expected_text", "")).strip()
         match_mode = str(action.get("match_mode", "contains"))
         timeout_ms = max(0, int(action.get("timeout_ms", 3000)))
-        interval_ms = max(200, int(action.get("interval_ms", 500)))
+        interval_ms = max(1000, int(action.get("interval_ms", 3000)))
         start = time.perf_counter()
         last_ocr_observation = None
         while True:
@@ -138,7 +138,7 @@ class OcrMixin:
         click_region = self._scale_region(tuple(map(int, raw_click_region)))
         separator = str(action.get("separator", "/")).strip() or "/"
         timeout_ms = max(0, int(action.get("timeout_ms", 3000)))
-        interval_ms = max(200, int(action.get("interval_ms", 500)))
+        interval_ms = max(1000, int(action.get("interval_ms", 3000)))
         start = time.perf_counter()
         while True:
             if self.stop_event.is_set():
@@ -214,7 +214,7 @@ class OcrMixin:
             raise RuntimeError("多条件识图点击区域的宽高必须大于零")
         click_region = self._scale_region(click_values)
         timeout_ms = max(0, int(action.get("timeout_ms", 3000)))
-        interval_ms = max(200, int(action.get("interval_ms", 500)))
+        interval_ms = max(1000, int(action.get("interval_ms", 3000)))
         start = time.perf_counter()
         while True:
             if self.stop_event.is_set():

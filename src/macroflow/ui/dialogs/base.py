@@ -9,6 +9,7 @@ from macroflow.input.wininput import (
     window_from_point,
 )
 import ctypes
+from math import ceil
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -181,6 +182,12 @@ class DurationVar(tk.StringVar):
 
 def duration_var(value=0) -> DurationVar:
     return DurationVar(value)
+
+
+def interval_var(value=3000) -> DurationVar:
+    """Detection interval in whole seconds: 3 s by default, never shown as a decimal."""
+    seconds = max(1, ceil(int(value or 0) / 1000))
+    return duration_var(seconds * 1000)
 
 
 VK_NAMES = {

@@ -54,6 +54,7 @@ from .base import (
     clamp_to_work_area,
     dark_checkbutton,
     duration_var,
+    interval_var,
     fit_scrollable_window_to_content,
     fit_window_to_content,
     monitor_work_area_for,
@@ -62,7 +63,9 @@ from .base import (
     scrollable_dialog_body,
     show_floating_notice,
 )
-from macroflow.ui.form_controls import compact_combobox, integer_spinbox
+from macroflow.ui.form_controls import (
+    compact_combobox, integer_seconds_spinbox, integer_spinbox,
+)
 from .helpers import (
     _app_via_parent,
     bind_wheel_to_scroll_tree,
@@ -322,8 +325,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.ocr_offset_left_var = tk.StringVar(value=str(obj.get("ocr_offset_left", 0)))
         self.ocr_offset_right_var = tk.StringVar(value=str(obj.get("ocr_offset_right", 0)))
         self.threshold_var = tk.StringVar(value=str(obj.get("threshold", 0.85)))
-        # 新建模块的「检测间隔」默认 1 秒；编辑已有模块时沿用对象里保存的值。
-        self.interval_var = duration_var(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))
+        # 新建模块的「检测间隔」默认 3 秒；编辑已有模块时沿用对象里保存的值。
+        self.interval_var = interval_var(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))
         self.start_delay_var = duration_var(obj.get("start_delay_ms", 0))
         self.cooldown_var = duration_var(
             obj.get("cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS),
@@ -535,9 +538,9 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         row += 1
         self.row_interval = self._labeled_row(
-            body, row, "检测间隔",
-            lambda m: ttk.Entry(m, textvariable=self.interval_var, width=14),
-            "每两次识别之间的等待毫秒数，越小响应越快、越耗资源；新建模块默认 1 秒。",
+            body, row, "检测间隔（秒）",
+            lambda m: integer_seconds_spinbox(m, textvariable=self.interval_var, to=10),
+            "每两次识别之间的等待秒数（整数），越小响应越快、越耗资源；新建模块默认 3 秒。",
         )
         row += 1
         self.row_cooldown = self._labeled_row(
@@ -1263,9 +1266,9 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             show_floating_notice(self, "识别前等待无效", "请输入 0–86400 秒以内的时间。")
             return
         try:
-            interval = max(50, int(self.interval_var.get()))
+            interval = max(1000, min(10000, int(self.interval_var.get())))
         except ValueError:
-            show_floating_notice(self, "检测间隔格式错误", "检测间隔必须是不小于 50 的整数（毫秒）。")
+            show_floating_notice(self, "检测间隔格式错误", "检测间隔必须是 1–10 之间的整数秒。")
             return
         try:
             cooldown = max(0, min(86400000, int(self.cooldown_var.get())))

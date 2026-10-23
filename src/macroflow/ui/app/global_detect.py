@@ -146,7 +146,7 @@ class GlobalDetectMixin:
                 if str(obj.get("template", "")).strip():
                     template_path = resolve_path(str(obj["template"]))
                 config["threshold"] = obj.get("threshold", 0.85)
-                config["interval_ms"] = obj.get("interval_ms", 250)
+                config["interval_ms"] = obj.get("interval_ms", 3000)
                 config["cooldown_ms"] = obj.get(
                     "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
                 )
@@ -169,7 +169,7 @@ class GlobalDetectMixin:
                     config[field] = obj.get(field, 0)
         try:
             threshold = max(0.1, min(1.0, float(config.get("threshold", 0.85))))
-            interval = max(100, min(10000, int(config.get("interval_ms", 500))))
+            interval = max(1000, min(10000, int(config.get("interval_ms", 3000))))
             cooldown = max(0, min(86400000, int(config.get(
                 "cooldown_ms", DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
             ))))

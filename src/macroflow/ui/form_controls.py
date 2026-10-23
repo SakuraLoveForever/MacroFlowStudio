@@ -50,3 +50,16 @@ def integer_spinbox(parent, *, textvariable, from_=0, to=2147483647, **kwargs):
     return ttk.Spinbox(
         parent, textvariable=textvariable, from_=from_, to=to, increment=1, **kwargs,
     )
+
+
+def integer_seconds_spinbox(parent, *, textvariable, from_=1, to=60, **kwargs):
+    """Integer-seconds spinbox: arrows step one second and decimals are rejected."""
+    def accept(proposed: str) -> bool:
+        return proposed == "" or proposed.isdigit()
+
+    validate = (parent.register(accept), "%P")
+    kwargs.setdefault("width", 10)
+    return ttk.Spinbox(
+        parent, textvariable=textvariable, from_=from_, to=to, increment=1,
+        validate="key", validatecommand=validate, **kwargs,
+    )

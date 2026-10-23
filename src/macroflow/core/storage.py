@@ -426,9 +426,9 @@ MODULE_AFTER_ACTIONS = (
     "run_actions",       # 旧格式：仅执行代码段；加载时迁移为 continue + 附加代码段
 )
 DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS = 5000
-# 模块对象的「检测间隔」默认值：新建模块按 1 秒轮询（识别一次约几百毫秒，
-# 1 秒间隔对挂机足够灵敏，又不会让 CPU/截图开销堆在一起）。
-DEFAULT_MODULE_INTERVAL_MS = 1000
+# 模块对象的「检测间隔」默认值：新建模块按 3 秒轮询（识别一次约几百毫秒，
+# 3 秒间隔对挂机足够灵敏，又不会让 CPU/截图开销堆在一起）。
+DEFAULT_MODULE_INTERVAL_MS = 3000
 DEFAULT_MODULE_TRIGGER_COOLDOWN_MS = 2000
 # 识别确认：首次识别结束后等待多久再做第二次识别。默认 5 秒，用户可按模块改。
 DEFAULT_MODULE_RECHECK_DELAY_MS = 5000
@@ -529,7 +529,7 @@ def _normalize_object(value, key: str = ""):
     except (TypeError, ValueError):
         obj["threshold"] = 0.85
     try:
-        obj["interval_ms"] = max(50, min(10000, int(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))))
+        obj["interval_ms"] = max(1000, min(10000, int(obj.get("interval_ms", DEFAULT_MODULE_INTERVAL_MS))))
     except (TypeError, ValueError):
         obj["interval_ms"] = DEFAULT_MODULE_INTERVAL_MS
     try:

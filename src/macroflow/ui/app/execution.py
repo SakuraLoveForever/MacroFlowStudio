@@ -35,7 +35,7 @@ class ExecutionMixin:
             if names:
                 self._ui(self._stop_foreground_minimize_watch)
 
-    def _start_foreground_minimize_watch(self, names, interval_ms=500):
+    def _start_foreground_minimize_watch(self, names, interval_ms=3000):
         self._stop_foreground_minimize_watch()
         self._foreground_minimize_names = list(names)
         self._foreground_minimize_interval_ms = interval_ms

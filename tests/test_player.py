@@ -1246,10 +1246,10 @@ class PlayerTests(unittest.TestCase):
                 "wait_forever": True,
                 "on_found": "continue",
                 "show_result_notice": False,
-                "interval_ms": 100,
+                "interval_ms": 1000,
             }, None)
         self.assertIsNone(result)
-        self.assertEqual(waits, [100, 100, 0])
+        self.assertEqual(waits, [1000, 1000, 0])
 
     def test_image_wait_forever_switches_to_fallback_after_timeout(self):
         player = MacroPlayer()
@@ -2259,7 +2259,7 @@ class PlayerTests(unittest.TestCase):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
                 "timeout_ms": 100,
-                "interval_ms": 300,
+                "interval_ms": 1000,
                 "on_found": "continue",
                 "on_timeout": "continue",
                 "timeout_delay_ms": 50,
@@ -2267,7 +2267,7 @@ class PlayerTests(unittest.TestCase):
             }, None)
         self.assertIsNone(result)
         # 第一次识别后未命中 → 等 interval 重试 → 重试后已超时 → 等 timeout_delay。
-        self.assertEqual(waits, [300, 50])
+        self.assertEqual(waits, [1000, 50])
 
     def test_ocr_miss_timeout_jumps(self):
         player = MacroPlayer()
@@ -2329,13 +2329,13 @@ class PlayerTests(unittest.TestCase):
             result = player._execute_text_ocr({
                 "expected_text": "体力不足",
                 "timeout_ms": 3000,
-                "interval_ms": 300,
+                "interval_ms": 1000,
                 "on_found": "continue",
                 "on_timeout": "continue",
                 "show_result_notice": False,
             }, None)
         self.assertIsNone(result)
-        self.assertEqual(waits, [300, 300, 0])
+        self.assertEqual(waits, [1000, 1000, 0])
 
     def test_ocr_custom_region_scaled_and_passed(self):
         # 自定义区域经 DPI 缩放后传给截屏识别。
@@ -3433,7 +3433,7 @@ class PlayerTests(unittest.TestCase):
         player._wait = Mock()
         module = {
             "name": "游戏大厅", "template": "images/lobby.png",
-            "region": [], "blocking": False, "interval_ms": 50,
+            "region": [], "blocking": False, "interval_ms": 1000,
             "threshold": 0.85, "not_found_timeout_ms": 10000,
             "hold_enabled": True, "hold_ms": 1000,
             "delay_ms": 8000, "after_action": "continue",
@@ -3461,7 +3461,7 @@ class PlayerTests(unittest.TestCase):
             ["1s", None],
         )
         self.assertEqual([call.args[0] for call in player._wait.call_args_list], [
-            50, 0,
+            1000, 0,
         ])
 
     def test_module_failure_signal_uses_object_timeout_then_jumps(self):

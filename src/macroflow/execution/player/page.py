@@ -26,7 +26,7 @@ PAGE_MODES = ("enter", "leave", "check")
 PAGE_SOURCE_SCREEN = "screen"
 PAGE_SOURCE_BATTLE = "battle_ui"
 PAGE_SOURCES = (PAGE_SOURCE_BATTLE, PAGE_SOURCE_SCREEN)
-PAGE_ACTION_DEFAULT_INTERVAL_MS = 150
+PAGE_ACTION_DEFAULT_INTERVAL_MS = 3000
 PAGE_ACTION_DEFAULT_TIMEOUT_MS = 3000
 
 
@@ -146,7 +146,7 @@ class PageMixin:
         if mode not in PAGE_MODES:
             mode = "enter"
         try:
-            interval_ms = max(50, int(action.get("interval_ms", PAGE_ACTION_DEFAULT_INTERVAL_MS)))
+            interval_ms = max(1000, int(action.get("interval_ms", PAGE_ACTION_DEFAULT_INTERVAL_MS)))
         except (TypeError, ValueError):
             interval_ms = PAGE_ACTION_DEFAULT_INTERVAL_MS
         try:
@@ -266,7 +266,7 @@ class PageMixin:
             mode = "enter"
         try:
             interval_ms = max(
-                50, int(action.get("interval_ms", PAGE_ACTION_DEFAULT_INTERVAL_MS)),
+                1000, int(action.get("interval_ms", PAGE_ACTION_DEFAULT_INTERVAL_MS)),
             )
         except (TypeError, ValueError):
             interval_ms = PAGE_ACTION_DEFAULT_INTERVAL_MS

@@ -941,7 +941,7 @@ class TemplateRegionTests(unittest.TestCase):
         form.start_delay_var.get.return_value = "0"
         form.row_start_delay = Mock()
         form.interval_var = Mock()
-        form.interval_var.get.return_value = "1000"
+        form.interval_var.get.return_value = "3000"
         form.cooldown_var = Mock()
         form.cooldown_var.get.return_value = "2000"
         form.recheck_enabled_var = Mock()
@@ -1093,7 +1093,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(obj["after_action"], "click_match")
         self.assertFalse(obj["run_code_after_action"])
         self.assertEqual(obj["threshold"], 0.85)
-        self.assertEqual(obj["interval_ms"], 1000)
+        self.assertEqual(obj["interval_ms"], 3000)
         self.assertEqual(obj["cooldown_ms"], 2000)
         self.assertFalse(obj["recheck_enabled"])
         self.assertEqual(obj["recheck_delay_ms"], 5000)
@@ -1128,19 +1128,19 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(form.result[2]["hold_ms"], 1000)
         notice.assert_not_called()
 
-    def test_new_module_detection_interval_defaults_to_one_second(self):
-        # 以后新建的模块「检测间隔」默认 1 秒：新建表单与新建对象都读这个默认值。
+    def test_new_module_detection_interval_defaults_to_three_seconds(self):
+        # 新建的模块「检测间隔」默认 3 秒：新建表单与新建对象都读这个默认值。
         import macroflow.core.storage as storage_module
         import macroflow.ui.dialogs.module_objects as dialogs_module
 
-        self.assertEqual(storage_module.DEFAULT_MODULE_INTERVAL_MS, 1000)
-        self.assertEqual(dialogs_module.DEFAULT_MODULE_INTERVAL_MS, 1000)
+        self.assertEqual(storage_module.DEFAULT_MODULE_INTERVAL_MS, 3000)
+        self.assertEqual(dialogs_module.DEFAULT_MODULE_INTERVAL_MS, 3000)
         self.assertIs(
             dialogs_module.DEFAULT_MODULE_INTERVAL_MS,
             storage_module.DEFAULT_MODULE_INTERVAL_MS,
             "表单默认值必须与模块仓库默认值同源，不能各写一份",
         )
-        self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["interval_ms"], 1000)
+        self.assertEqual(storage_module.DEFAULT_MODULE_OBJECT["interval_ms"], 3000)
 
     def test_new_module_trigger_cooldown_defaults_to_two_seconds(self):
         import macroflow.core.storage as storage_module

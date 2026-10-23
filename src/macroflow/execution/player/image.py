@@ -132,7 +132,7 @@ class ImageMixin:
         timeout_ms = max(0, int(action.get("timeout_ms", 3000)))
         wait_forever = bool(action.get("wait_forever", False))
         blocking_timeout_enabled = False
-        interval_ms = max(50, int(action.get("interval_ms", 250)))
+        interval_ms = max(1000, int(action.get("interval_ms", 3000)))
         threshold = min(1.0, max(0.1, float(action.get("threshold", 0.85))))
         if module_obj is not None:
             module_blocking = bool(module_obj.get("blocking", False))
@@ -140,7 +140,7 @@ class ImageMixin:
                 action.get("blocking_timeout_enabled", False)
             )
             wait_forever = module_blocking and not blocking_timeout_enabled
-            interval_ms = max(50, int(module_obj.get("interval_ms", 250)))
+            interval_ms = max(1000, int(module_obj.get("interval_ms", 3000)))
             threshold = min(1.0, max(0.1, float(module_obj.get("threshold", 0.85))))
             if blocking_timeout_enabled:
                 try:
@@ -180,7 +180,7 @@ class ImageMixin:
                 )
         # OCR 单次约几百毫秒，文字和数字模式的轮询间隔不能太短。
         if text_module or number_module:
-            interval_ms = max(interval_ms, 200)
+            interval_ms = max(interval_ms, 1000)
         expected_number = None
         if number_module:
             if "expected_number" not in action:
@@ -647,7 +647,7 @@ class ImageMixin:
             return None
         second_path = resolve_path(second)
         threshold = min(1.0, max(0.1, float(obj.get("threshold", 0.85))))
-        interval_ms = max(50, int(obj.get("interval_ms", 250)))
+        interval_ms = max(1000, int(obj.get("interval_ms", 3000)))
 
         region = None
         # 二次模板沿用它在模块对象仓库中登记的搜索区域；未登记有效区域则全屏。
