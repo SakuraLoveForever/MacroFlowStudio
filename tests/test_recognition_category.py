@@ -58,14 +58,6 @@ class PluginDeletionTests(unittest.TestCase):
 
 
 class CompactLayoutTests(unittest.TestCase):
- def test_long_combobox_text_gets_horizontal_scrollbar(self):
-  from macroflow.ui.app.shell import attach_combobox_scrollbar
-  combo=Mock()
-  with patch('macroflow.ui.app.shell.ttk.Scrollbar') as factory:
-   bar=attach_combobox_scrollbar(Mock(),combo)
-  update=combo.configure.call_args.kwargs['xscrollcommand']
-  update('0','0.4');bar.pack.assert_called_once_with(fill='x')
-  update('0','1');bar.pack_forget.assert_called_once_with()
  def test_card_measures_checkbox_and_content_and_colors_enabled_state(self):
   card=object.__new__(plugins_page.PluginCard)
   card.title='定时插件';card.detail='每 1 h';card.status='待配置';card.hover=False

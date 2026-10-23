@@ -23,18 +23,6 @@ from .design import (
 from .action_palette import action_category_specs
 
 
-def attach_combobox_scrollbar(parent, combo):
-    scrollbar = ttk.Scrollbar(parent, bootstyle="dark", orient="horizontal", command=combo.xview)
-    def changed(first, last):
-        scrollbar.set(first, last)
-        if float(first) > 0 or float(last) < 1:
-            scrollbar.pack(fill="x")
-        else:
-            scrollbar.pack_forget()
-    combo.configure(xscrollcommand=changed)
-    return scrollbar
-
-
 def fit_sidebar_scrollregion(canvas):
     bounds = canvas.bbox("all")
     if bounds is None:
@@ -1128,7 +1116,6 @@ class ShellMixin:
             restart_field, state="readonly", width=16,
         )
         self.workflow_restart_default_combo.pack(fill="x")
-        attach_combobox_scrollbar(restart_field, self.workflow_restart_default_combo)
         self.workflow_restart_default_combo.bind(
             "<<ComboboxSelected>>", self._apply_workflow_restart_default)
         self._sync_workflow_restart_default_ui()
@@ -1143,7 +1130,6 @@ class ShellMixin:
             state="readonly", width=14, postcommand=self._refresh_workflow_resolution_options,
         )
         self.workflow_start_resolution_combo.pack(fill="x")
-        attach_combobox_scrollbar(start_resolution_field, self.workflow_start_resolution_combo)
         self.workflow_start_resolution_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("start"))
         ttk.Label(resolution_bar, text="停止后恢复", style="CardLabel.TLabel").pack(side="left")
@@ -1154,7 +1140,6 @@ class ShellMixin:
             state="readonly", width=14, postcommand=self._refresh_workflow_resolution_options,
         )
         self.workflow_end_resolution_combo.pack(fill="x")
-        attach_combobox_scrollbar(end_resolution_field, self.workflow_end_resolution_combo)
         self.workflow_end_resolution_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("end"))
         ttk.Button(resolution_bar, text="编辑分辨率样式",
