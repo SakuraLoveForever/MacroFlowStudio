@@ -6,7 +6,7 @@ import threading
 import time
 
 from .ssjj_navigation import Route, RouteContext, _valid, follow_route
-from .ssjj_state import GameUnavailable, SSJJReader
+from .memory_plugin import MemoryPluginUnavailable, plugin
 from .player.control import PlaybackStopped
 from macroflow.core.models import SCRIPT_START_TARGET_ID, NEXT_WORKFLOW_STEP_TARGET_ID
 from .player.control import (
@@ -520,7 +520,7 @@ class RecordedReplay:
             follow_route(self.context, Route(self.map_id, [current.position, current.position]),
                          reader=self.reader, final_yaw=last['yaw'], final_pitch=last['pitch'])
             current = self.session.check_state(self.map_id)
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             # 终点验收只是收尾校验：人不在这局游戏里（切出去/换图/退出）就跳过，
             # 不把整条脚本打断。
             self.player._log_event(f'终点验收跳过：{exc}')
@@ -542,14 +542,17 @@ def run_recording_action(player, action, hwnd=None, script_stack=None, depth=0):
         raise RuntimeError('路线脚本动作嵌套过深')
     total = len(action['inputs'])
     try:
-        reader = SSJJReader()
-    except GameUnavailable as exc:
+        reader = plugin.SSJJReader()
+    except MemoryPluginUnavailable as exc:
+        player._log_event(f'跳过键鼠连续路线：{exc}')
+        return None
+    except plugin.GameUnavailable as exc:
         player._log_event(f'跳过键鼠连续路线：{exc}')
         return None
     with reader as active:
         try:
             active.require_foreground()
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             player._log_event(f'跳过键鼠连续路线：{exc}')
             return None
         session = ReplayInputs(player, active)
@@ -563,7 +566,7 @@ def run_recording_action(player, action, hwnd=None, script_stack=None, depth=0):
         except PlaybackStopped:
             player._log_event(f'已停止路线回放：{replay.stage}，已发送 {session.sent_count}/{total}')
             raise
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             player._log_event(
                 f'路线中断（已发送 {session.sent_count}/{total} 条输入）：{exc}；'
                 '跳过剩余步骤，脚本继续执行')

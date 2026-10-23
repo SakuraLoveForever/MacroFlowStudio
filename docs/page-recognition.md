@@ -7,7 +7,7 @@
 ## 战斗界面（内存）
 
 - 读取链路（只读）：`FreeUiManager._instance._uis` 是 `Dictionary<string, SimpleFreeUI>`，键是服务端下发的中文界面名（如 `小地图UI`、`对战战绩UI`），值是 `SimpleFreeUI`，其 `_visible` 表示是否显示。
-- 读取器：`src/macroflow/execution/ssjj_ui_state.py` 的 `SSJJUIState`，只连 `SSJJ_BattleClient_Unity.exe`（见 `src/macroflow/execution/ssjj_state.py`），GameGuard 运行期间也只做 `OpenProcess`/`ReadProcessMemory`。
+- 读取器：由本机内存插件提供（`local_plugins/ssjj_memory_plugin`），只连 `SSJJ_BattleClient_Unity.exe`；未安装插件时「读取当前」会提示不可用，动作按 3 秒退避重试。
 - 不在对局时读不到内存：动作不会报错打断脚本，而是按 3 秒退避重试；超时提示里会说明「当前不在对局或读不到战斗内存」。
 - 界面名取自游戏真实下发值，**用对话框的「读取当前」按钮抓**：进入对局 → 打开动作对话框 → 点「读取当前」，下拉里会出现当前存在的全部界面（可见的会列在提示里）。
 - 执行期也会每 250 ms 读一次战斗界面（与截图跟踪共用节流），变化时写日志「战斗界面：小地图UI、对战战绩UI」。

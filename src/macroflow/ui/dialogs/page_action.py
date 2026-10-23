@@ -298,9 +298,9 @@ class PageActionDialog(ModalDialog):
 
     def _read_current_ui(self):
         """只读探针：抓一次当前战斗界面可见状态，填进下拉。"""
-        from macroflow.execution.ssjj_ui_state import read_battle_uis
+        from macroflow.execution.memory_plugin import plugin
         try:
-            snapshot = read_battle_uis()
+            snapshot = plugin.read_battle_uis()
         except Exception as exc:
             show_floating_notice(
                 self, "读不到战斗界面", f"需要先进入对局再读取：{exc}",

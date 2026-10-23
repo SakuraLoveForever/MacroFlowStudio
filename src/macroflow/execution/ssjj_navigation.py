@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ssjj_state import GameUnavailable, SSJJReader
+from .memory_plugin import MemoryPluginUnavailable, plugin
 
 
 @dataclass
@@ -63,7 +63,7 @@ PULSE_MIN = .02
 def _valid(sample, map_id):
     if sample.map_id != map_id:
         # 换图/换场景了：这一局的路线已经无效，调用方可以跳过而不是整场失败。
-        raise GameUnavailable('地图已变化，停止跑图')
+        raise plugin.GameUnavailable('地图已变化，停止跑图')
     if sample.dead:
         raise RuntimeError('角色已死亡，停止跑图')
     if not all(math.isfinite(v) for v in (*sample.position, sample.yaw, sample.pitch)):
@@ -701,21 +701,24 @@ def run_route_action(player, action):
     """
     route = Route(action['map_id'], action['points'])
     try:
-        reader = SSJJReader()
-    except GameUnavailable as exc:
+        reader = plugin.SSJJReader()
+    except MemoryPluginUnavailable as exc:
+        player._log_event(f'跳过坐标跑图：{exc}')
+        return None
+    except plugin.GameUnavailable as exc:
         player._log_event(f'跳过坐标跑图：{exc}')
         return None
     with reader as active:
         try:
             active.require_foreground()
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             player._log_event(f'跳过坐标跑图：{exc}')
             return None
         context = RouteContext(player, active, route.map_id)
         try:
             follow_route(context, route, reader=active, final_yaw=action.get('final_yaw'),
                          final_pitch=action.get('final_pitch'))
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             player._log_event(f'坐标跑图中断：{exc}；跳过剩余路径，脚本继续执行')
             return None
         finally:
@@ -732,7 +735,7 @@ def main():
         parser.error('delay 必须在 0 到 60 秒之间')
     print(f'{args.delay:g} 秒后开始录制，请切回游戏，手动走一段平地路线。', flush=True)
     time.sleep(args.delay)
-    with SSJJReader() as reader:
+    with plugin.SSJJReader() as reader:
         route = record_route(reader, args.seconds)
     route.save(args.output)
     print(f'已保存地图 {route.map_id} 的 {len(route.points)} 个点：{args.output}', flush=True)

@@ -1204,12 +1204,18 @@ class ScriptsMixin:
             panel.close()
 
     def _ensure_ssjj_coordinate_panel(self):
-        from macroflow.ui.dialogs.ssjj_coordinates import SSJJCoordinatePanel
+        from macroflow.execution.memory_plugin import MemoryPluginUnavailable, plugin
         panel = getattr(self, '_ssjj_coordinates', None)
         if panel is not None and panel.window.winfo_exists():
             panel.show()
             return
-        self._ssjj_coordinates = SSJJCoordinatePanel(self)
+        try:
+            panel = plugin.create_coordinate_panel(self)
+        except MemoryPluginUnavailable as exc:
+            self._set_status("未安装本地内存插件", "danger")
+            self._log(str(exc))
+            return
+        self._ssjj_coordinates = panel
 
     def _quit_app(self):
         panel = getattr(self, '_ssjj_coordinates', None)

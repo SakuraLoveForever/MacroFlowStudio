@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+from ..memory_plugin import MemoryPluginUnavailable, plugin
+
 BATTLE_STATE_RETRY_S = 3.0
 
 
@@ -24,11 +26,13 @@ class BattleStateMixin:
         now = time.perf_counter()
         if not force and now < getattr(self, "_battle_reader_retry_at", 0.0):
             return None
-        from macroflow.execution.ssjj_state import GameUnavailable, SSJJReader
-
         try:
-            reader = SSJJReader()
-        except GameUnavailable as exc:
+            reader = plugin.SSJJReader()
+        except MemoryPluginUnavailable as exc:
+            self._battle_reader_retry_at = now + BATTLE_STATE_RETRY_S
+            self._log_battle_once(f"战斗内存不可用：{exc}")
+            return None
+        except plugin.GameUnavailable as exc:
             self._battle_reader_retry_at = now + BATTLE_STATE_RETRY_S
             self._log_battle_once(f"战斗内存不可用：{exc}")
             return None
@@ -67,21 +71,17 @@ class BattleStateMixin:
             return None
         state = getattr(self, "_battle_ui_state_cache", None)
         if state is None or getattr(state, "reader", None) is not reader:
-            from macroflow.execution.ssjj_ui_state import SSJJUIState
-
-            state = self._battle_ui_state_cache = SSJJUIState(reader)
+            state = self._battle_ui_state_cache = plugin.SSJJUIState(reader)
         return state
 
     def battle_ui_snapshot(self) -> dict[str, bool] | None:
         """当前战斗界面可见状态 {UI 名: 是否可见}；不在对局返回 None。"""
-        from macroflow.execution.ssjj_state import GameUnavailable
-
         state = self._battle_ui_state()
         if state is None:
             return None
         try:
             return state.ui_snapshot()
-        except GameUnavailable as exc:
+        except plugin.GameUnavailable as exc:
             self._log_battle_once(f"战斗内存不可用：{exc}")
             self._battle_reset()
             return None
@@ -102,13 +102,10 @@ class BattleStateMixin:
 
         不在对局或读取失败时抛 GameUnavailable/RuntimeError，供界面提示。
         """
-        from macroflow.execution.ssjj_state import GameUnavailable
-        from macroflow.execution.ssjj_ui_state import SSJJUIState
-
         reader = self._battle_reader(force=True)
         if reader is None:
-            raise GameUnavailable("当前不在对局中，读不到战斗内存")
-        snapshot = SSJJUIState(reader).ui_snapshot()
+            raise plugin.GameUnavailable("当前不在对局中，读不到战斗内存")
+        snapshot = plugin.SSJJUIState(reader).ui_snapshot()
         summary: dict = {}
         try:
             summary["map_id"] = reader.map_id()

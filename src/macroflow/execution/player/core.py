@@ -1180,8 +1180,8 @@ class CoreMixin:
                 return "action_id", target_id
             return "row", max(1, int(action.get("jump_row", 1)))
         elif kind == "ssjj_wait_mobs_absent":
-            from macroflow.execution.ssjj_pve import wait_mobs_absent
-            return wait_mobs_absent(self, action)
+            from macroflow.execution.memory_plugin import plugin
+            return plugin.wait_mobs_absent(self, action)
         elif kind == "ssjj_route":
             from macroflow.execution.ssjj_navigation import run_route_action
             return run_route_action(self, action)
