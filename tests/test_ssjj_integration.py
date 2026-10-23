@@ -63,7 +63,7 @@ class CaptureTests(unittest.TestCase):
         self.assertTrue(any(method == 'open_ssjj_coordinates'
                             for _, method, _ in ShellMixin._script_action_button_specs()))
         categories = action_category_specs(ShellMixin._script_action_button_specs())
-        recording = next(primary for label, primary, _ in categories if label == '录制/脚本')
+        recording = next(primary for label, primary, _ in categories if label == '录制')
         self.assertIn('open_ssjj_coordinates', [method for _, method, _ in recording])
 
     def test_route_summary_shows_map_and_point_count(self):
