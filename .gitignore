@@ -8,6 +8,9 @@ workflows/
 images/
 backups/
 
+# ---- 本地插件（外部导入，只留在本机，不进源码仓库） ----
+plugins/
+
 # ---- 打包产物与运行时数据（含 EXE、脚本副本、日志） ----
 dist/
 build/

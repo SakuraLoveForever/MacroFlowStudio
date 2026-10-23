@@ -1,11 +1,14 @@
 """Studio plugin configuration."""
 import copy
 from decimal import Decimal, InvalidOperation
+import os
+import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 import ttkbootstrap as ttk
 from ttkbootstrap.scrolled import ScrolledFrame
 
+from macroflow.core.external_plugins import discover_plugins, import_plugin, remove_plugin as delete_plugin_file
 from macroflow.core.storage import registered_module_object
 from macroflow.ui.dialogs.base import ModalDialog
 from macroflow.ui.dialogs.plugin_actions import ActionListEditor
@@ -215,25 +218,33 @@ class PluginSettingsDialog(ModalDialog):
 
 
 class PluginCard(tk.Canvas):
-    def __init__(self, parent, title, edit, toggle):
+    def __init__(self, parent, title, edit, toggle=None, run=None):
         super().__init__(parent, width=px(228), height=px(84), background=COLOR_BG, autostyle=False,
                          highlightthickness=0, borderwidth=0, takefocus=True, cursor="hand2")
-        self.title, self.edit, self.toggle = title, edit, toggle
+        self.title, self.edit, self.toggle, self.run = title, edit, toggle, run
         self.detail, self.status, self.enabled = "", "未启用", False
         self.hover = False
         self.enabled_var = tk.BooleanVar(master=self, value=False)
-        self.checkbox = ttk.Checkbutton(self, variable=self.enabled_var, style="Plugin.TCheckbutton",
-                                        command=lambda: self.toggle(bool(self.enabled_var.get())))
-        self.checkbox.place(x=px(12), y=px(12))
-        self.checkbox.bind("<Button-3>", lambda _event: self.edit())
+        self.checkbox = None
+        if toggle is not None:
+            self.checkbox = ttk.Checkbutton(self, variable=self.enabled_var, style="Plugin.TCheckbutton",
+                                            command=lambda: self.toggle(bool(self.enabled_var.get())))
+            self.checkbox.place(x=px(12), y=px(12))
+            self.checkbox.bind("<Button-3>", lambda _event: self.edit())
         self.bind("<Configure>", self._draw)
         self.bind("<Button-3>", lambda _event: self.edit())
-        self.bind("<Return>", lambda _event: self.edit())
-        self.bind("<space>", lambda _event: self.edit())
+        self.bind("<Return>", self._primary)
+        self.bind("<space>", self._primary)
+        if run is not None:
+            self.bind("<Button-1>", self._primary)
         self.bind("<Enter>", lambda _event: self._hover(True))
         self.bind("<Leave>", lambda _event: self._hover(False))
         self.bind("<FocusIn>", self._draw)
         self.bind("<FocusOut>", self._draw)
+
+    def _primary(self, _event=None):
+        self.focus_set()
+        (self.run if self.run is not None else self.edit)()
 
     def _hover(self, value):
         self.hover = value
@@ -243,8 +254,9 @@ class PluginCard(tk.Canvas):
         state = (detail, status, enabled)
         if state != (self.detail, self.status, self.enabled):
             self.detail, self.status, self.enabled = state
-            self.enabled_var.set(enabled)
-            self.checkbox.configure(style="PluginEnabled.TCheckbutton" if enabled else "Plugin.TCheckbutton")
+            if self.checkbox is not None:
+                self.enabled_var.set(enabled)
+                self.checkbox.configure(style="PluginEnabled.TCheckbutton" if enabled else "Plugin.TCheckbutton")
             self._draw()
 
     def _draw(self, _event=None):
@@ -253,11 +265,13 @@ class PluginCard(tk.Canvas):
         if width < 2:
             return
         # Use the actual themed checkbox width; its indicator changes with DPI.
-        title_x = inset + self.checkbox.winfo_reqwidth() + px(8)
+        checkbox_width = self.checkbox.winfo_reqwidth() + px(8) if self.checkbox is not None else 0
+        checkbox_height = self.checkbox.winfo_reqheight() if self.checkbox is not None else 0
+        title_x = inset + checkbox_width
         title = self.create_text(title_x, inset, anchor="nw", text=self.title,
                                  width=max(1, width-title_x-inset), fill=COLOR_TEXT,
                                  font=(FONT_FAMILY, FONT_BODY))
-        title_bottom = max(self.bbox(title)[3], inset + self.checkbox.winfo_reqheight())
+        title_bottom = max(self.bbox(title)[3], inset + checkbox_height)
         detail = self.create_text(inset, title_bottom+px(6), anchor="nw", text=self.detail,
                                  width=max(1, width-2*inset), fill=COLOR_MUTED,
                                  font=(FONT_FAMILY, FONT_BODY))
@@ -296,9 +310,12 @@ class PluginsPage(ttk.Frame):
                   style="PageSubtitle.TLabel").pack(anchor="w", pady=pad(1, 0))
         ttk.Button(header, text="新增定时插件", command=self.add_plugin,
                    style="Ghost.TButton").pack(side="right")
+        ttk.Button(header, text="导入插件", command=self.import_external_plugin,
+                   style="Ghost.TButton").pack(side="right", padx=pad(8, 0))
         self.grid_body = ScrolledFrame(self, autohide=True, padding=0, bootstyle="dark")
         self.grid_body.pack(fill="both", expand=True, pady=pad(12, 0))
         self._columns, self.job, self.cards = 0, None, []
+        self.entries, self.external_status = [], {}
         self.grid_body.bind("<Configure>", self.relayout, add="+")
         self.bind("<Destroy>", self.destroyed, add="+")
         self.rebuild_cards()
@@ -307,12 +324,25 @@ class PluginsPage(ttk.Frame):
     def rebuild_cards(self):
         for card in self.cards:
             card.destroy()
-        self.card_ids = [*self.plugins, 'disconnect']
-        self.cards = [PluginCard(self.grid_body,
-                                "战斗端断线检测" if key == 'disconnect' else self.plugins[key].config['name'],
-                                lambda key=key: self.edit(key),
-                                lambda enabled, key=key: self.toggle_enabled(key, enabled))
-                      for key in self.card_ids]
+        self.entries = ([("interval", key) for key in self.plugins]
+                        + [("disconnect", "")]
+                        + [("external", plugin) for plugin in discover_plugins()])
+        cards = []
+        for kind, value in self.entries:
+            if kind == "interval":
+                plugin = self.plugins[value]
+                cards.append(PluginCard(self.grid_body, plugin.config['name'],
+                                        lambda key=value: self.edit(key),
+                                        toggle=lambda enabled, key=value: self.toggle_enabled(key, enabled)))
+            elif kind == "disconnect":
+                cards.append(PluginCard(self.grid_body, "战斗端断线检测",
+                                        lambda: self.edit('disconnect'),
+                                        toggle=lambda enabled: self.toggle_enabled('disconnect', enabled)))
+            else:
+                cards.append(PluginCard(self.grid_body, value.name,
+                                        lambda plugin=value: self.plugin_menu(plugin),
+                                        run=lambda plugin=value: self.run_plugin(plugin)))
+        self.cards = cards
         for column in range(3):
             self.grid_body.columnconfigure(column, weight=0)
         self._columns = 0
@@ -328,6 +358,73 @@ class PluginsPage(ttk.Frame):
             return
         self.rebuild_cards()
         self.edit(key)
+
+    def import_external_plugin(self):
+        path = filedialog.askopenfilename(
+            title="导入插件", parent=self.app.root,
+            filetypes=(("Python 插件", "*.py"), ("所有文件", "*.*")))
+        if not path:
+            return
+        try:
+            plugin = import_plugin(path)
+        except (OSError, ValueError) as exc:
+            self.app._notify("无法导入插件", str(exc))
+            return
+        self.rebuild_cards()
+        self.app._notify("插件已导入", f"{plugin.name}：{plugin.path.name}")
+
+    def run_plugin(self, plugin):
+        self.external_status[str(plugin.path)] = "运行中…"
+        self.refresh_cards()
+        action = {"type": "python_script", "path": str(plugin.path)}
+
+        def execute():
+            try:
+                self.app.player.play([action], script_name=f"插件 · {plugin.name}", activate_target=False)
+                result = "已停止" if self.app.player.stop_event.is_set() else "完成"
+            except Exception as exc:  # noqa: BLE001 - 插件失败要回显在卡片上
+                result = f"失败：{exc}"
+            self._settle_plugin(plugin, result)
+
+        self.app.worker = threading.Thread(target=execute, name="MacroFlowExternalPlugin", daemon=True)
+        self.app.worker.start()
+
+    def _settle_plugin(self, plugin, result):
+        def settle():
+            self.external_status[str(plugin.path)] = result
+            self.refresh_cards()
+        try:
+            self.app._ui(settle)
+        except (AttributeError, RuntimeError, tk.TclError):
+            self.external_status[str(plugin.path)] = result
+
+    def plugin_menu(self, plugin):
+        menu = tk.Menu(self, tearoff=False)
+        menu.add_command(label="运行", command=lambda: self.run_plugin(plugin))
+        menu.add_command(label="打开所在文件夹", command=lambda: self.reveal_plugin(plugin))
+        menu.add_separator()
+        menu.add_command(label="移除插件", command=lambda: self.remove_external_plugin(plugin))
+        try:
+            menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def reveal_plugin(self, plugin):
+        try:
+            os.startfile(str(plugin.path.parent))
+        except OSError as exc:
+            self.app._notify("无法打开文件夹", str(exc))
+
+    def remove_external_plugin(self, plugin):
+        if not messagebox.askyesno("移除插件", f"确定从插件目录删除「{plugin.name}」？", parent=self.app.root):
+            return
+        try:
+            delete_plugin_file(plugin)
+        except (OSError, ValueError) as exc:
+            self.app._notify("无法移除插件", str(exc))
+            return
+        self.external_status.pop(str(plugin.path), None)
+        self.rebuild_cards()
 
     def edit(self, plugin_id):
         PluginSettingsDialog(self.app.root, self.app, plugin_id).show()
@@ -358,18 +455,22 @@ class PluginsPage(ttk.Frame):
                       padx=px(6), pady=px(6))
 
     def refresh_cards(self):
-        for key, card in zip(self.card_ids, self.cards):
-            if key == 'disconnect':
+        for (kind, value), card in zip(self.entries, self.cards):
+            if kind == 'disconnect':
                 enabled = bool(self.app.disconnect_monitor_enabled)
                 card.update_status("战斗端连接", "已启用" if enabled else "未启用", enabled)
-            else:
-                plugin = self.plugins[key]
+            elif kind == 'interval':
+                plugin = self.plugins[value]
                 title = plugin.config['name']
                 if card.title != title:
                     card.title = title
                     card._draw()
                 hours, minutes = period_display(plugin.config['interval_ms'])
                 card.update_status(f"每 {hours} h {minutes} min", plugin.status(), plugin.config['enabled'])
+            else:
+                status = self.external_status.get(str(value.path), "点击卡片运行")
+                card.update_status(value.description or str(value.path.parent), status,
+                                   status.startswith(("运行中", "完成")))
 
     def refresh_status(self):
         self.refresh_cards()
