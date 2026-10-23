@@ -4,6 +4,18 @@ import tkinter.font as tkfont
 from tkinter import ttk
 
 
+def bind_vertical_mousewheel(widget, target):
+    """Scroll the target instead of changing a control's value under the pointer."""
+    def scroll(event):
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            units = max(1, abs(delta) // 120)
+            target.yview_scroll(-units if delta > 0 else units, "units")
+        return "break"
+
+    widget.bind("<MouseWheel>", scroll)
+
+
 def combobox_width(font, current, values, maximum):
     """Return ttk character units using the actual font's pixel measurements."""
     texts = (str(current),) if current else tuple(str(value) for value in values)

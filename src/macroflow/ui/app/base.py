@@ -5,6 +5,7 @@ from pathlib import Path
 import ctypes
 import tkinter as tk
 import ttkbootstrap as ttk
+from macroflow.ui.form_controls import bind_vertical_mousewheel
 
 from .constants import ACTION_ICONS, COLOR_HOVER, FLOATING_NOTICE_HEIGHT, FLOATING_NOTICE_WIDTH, SCRIPT_CATEGORY_LABELS, TARGET_MAIN_HEIGHT, TARGET_MAIN_WIDTH
 
@@ -127,6 +128,7 @@ def attach_autohide_scrollbar(tree, scrollbar) -> None:
         scrollbar.set(first, last)
 
     tree.configure(yscrollcommand=on_yscrollcommand)
+    bind_vertical_mousewheel(scrollbar, tree)
 def bind_tree_hover(tree, tag: str = "hover") -> None:
     """Highlight the row under the cursor so long lists stay easy to follow."""
     tree.tag_configure(tag, background=COLOR_HOVER)

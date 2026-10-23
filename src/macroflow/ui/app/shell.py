@@ -7,6 +7,7 @@ import sys
 from macroflow.core.storage import resolve_path
 import tkinter as tk
 import ttkbootstrap as ttk
+from macroflow.ui.form_controls import bind_vertical_mousewheel
 
 from .base import apply_pointer_cursors, attach_autohide_scrollbar, bind_tree_hover, pad, px
 from .constants import (
@@ -35,15 +36,12 @@ def fit_sidebar_scrollregion(canvas):
 
 def _bind_canvas_wheel(canvas, widget):
     """Route mouse wheel scrolling inside a canvas page to the canvas."""
-    def scroll(event):
-        if event.delta:
-            canvas.yview_scroll(-int(event.delta / 120), "units")
-
     def bind(inner):
-        inner.bind("<MouseWheel>", scroll, add="+")
+        bind_vertical_mousewheel(inner, canvas)
         for child in inner.winfo_children():
             bind(child)
 
+    bind_vertical_mousewheel(canvas, canvas)
     bind(widget)
 
 
@@ -395,7 +393,6 @@ class ShellMixin:
 
         canvas.bind("<Configure>", resize_content)
         body.bind("<Configure>", update_region)
-        _bind_canvas_wheel(canvas, body)
 
         ttk.Label(body, text="设置", style="PageTitle.TLabel").pack(anchor="w")
         ttk.Label(body, text="录制、目标窗口、执行行为与快捷键脚本集中在这里；运行时常用的"
@@ -628,6 +625,8 @@ class ShellMixin:
             ttk.Label(row, text=text, style="CardHint.TLabel").pack(side="left")
 
         self._watch_settings_saves(body)
+        _bind_canvas_wheel(canvas, body)
+        bind_vertical_mousewheel(scrollbar, canvas)
         update_region()
 
     # --------------------------------------------------------- action palette
