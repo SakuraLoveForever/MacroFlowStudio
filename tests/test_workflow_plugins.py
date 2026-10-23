@@ -78,7 +78,6 @@ class ProcessAbsencePluginTests(GuardTestHelpers, unittest.TestCase):
         app, guard = self._app(duration_ms=1000)
         app.workflow_running = True
         app.current_workflow_step_index = 0
-        app.workflow.restart_default_row = 5
         queued = []
         app._ui = lambda callback, *args: queued.append((callback, args))
         app.player.on_restart_workflow_request = app._on_restart_workflow_request

@@ -19,9 +19,6 @@ class WorkflowHistoryTests(unittest.TestCase):
         ])
         app.workflow_name_var = FakeVar(app.workflow.name)
         app.workflow_start_var = FakeVar('')
-        app.workflow_start_delay_enabled_var = FakeVar(False)
-        app.workflow_start_delay_seconds_var = FakeVar('5000')
-        app.workflow_start_delay_seconds_var.unit = FakeVar('ms')
         app.workflow_insert_position_var = FakeVar('below')
         app.workflow_path = None
         app.workflow_draft_after_id = None
@@ -34,7 +31,6 @@ class WorkflowHistoryTests(unittest.TestCase):
         app.rebuild_workflow_tree = Mock()
         app._refresh_one_workflow_row = Mock()
         app._update_workflow_selection_color = Mock()
-        app._toggle_workflow_start_delay_control = Mock()
         app._sync_workflow_resolution_ui = Mock()
         app._persist_sidebar_settings = Mock(side_effect=lambda: app._workflow_snapshot())
         app._notify = Mock()
@@ -106,11 +102,11 @@ class WorkflowHistoryTests(unittest.TestCase):
         app.workflow_name_var.set('新名称')
         app.undo_workflow_edit()
         self.assertEqual(app.workflow_name_var.get(), '未命名工作流')
-        app.workflow.restart_default_row = 2
+        app.workflow.start_at = '2026-01-01 12:00:00'
         app._persist_workflow_draft()
         app._workflow_saved()
         app.undo_workflow_edit()
-        self.assertEqual(app.workflow.restart_default_row, 0)
+        self.assertEqual(app.workflow.start_at, '')
 
     def test_pending_name_edit_and_following_add_are_separate_undo_steps(self):
         app = self.app()

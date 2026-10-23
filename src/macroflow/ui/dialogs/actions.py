@@ -69,7 +69,6 @@ from .base import (
     vk_to_key_name,
 )
 from .helpers import (
-    _app_workflow_default_row,
     image_jump_target_options,
 )
 from .module_objects import (
@@ -1701,9 +1700,7 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
     kind = action.get("type")
     if kind == "restart_workflow":
         return preserve_identity(
-            RestartWorkflowTargetDialog(
-                parent, action, default_row=_app_workflow_default_row(parent),
-            ).show(),
+            RestartWorkflowTargetDialog(parent, action).show(),
         )
     if kind in ("end_current_script", "jump_current_script_last", "block", "rebind_window"):
         message = (
@@ -1755,6 +1752,7 @@ def edit_action(parent, action: dict, all_actions: list[dict] | None = None,
         except ValueError as exc:
             show_floating_notice(parent, "无法编辑这条路线", str(exc))
             return None
+
     if kind == "ssjj_wait_mobs_absent":
         value = DurationDialog(parent, "等待小怪消失",
                                "连续未检测到小怪才继续（含精英，不含 BOSS）：",

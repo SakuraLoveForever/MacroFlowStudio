@@ -1277,10 +1277,9 @@ class TemplateRegionTests(unittest.TestCase):
         labels, mapping = restart_workflow_row_options(
             [{"kind": "script", "script": "scripts/a.json"},
              {"kind": "module", "action": {"module_name": "可领取"}}],
-            default_row=2,
         )
         self.assertEqual(mapping[labels[0]], 0)
-        self.assertIn("（使用默认跳转行：第 2 行）", labels[0])
+        self.assertEqual(labels[0], "（从第 1 行开始）")
         self.assertEqual(mapping["第 1 行 · a"], 1)
         self.assertEqual(mapping["第 2 行 · 模块 可领取"], 2)
 

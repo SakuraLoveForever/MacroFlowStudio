@@ -76,31 +76,6 @@ class RuntimeWorkflowMixin:
         )
         return f"模块 {name or '未设置'}"
 
-    def _workflow_restart_default_options(self) -> tuple[list[str], dict[str, int]]:
-        """工作流页「重新执行默认跳转行」下拉选项：未设置 + 各步骤行。"""
-        labels = ["（未设置：按第 1 行）"]
-        mapping = {labels[0]: 0}
-        for index, step in enumerate(self._workflow_only_steps()):
-            label = f"第 {index + 1} 行 · {workflow_step_label(step)}"
-            labels.append(label)
-            mapping[label] = index + 1
-        return labels, mapping
-
-    def _sync_workflow_restart_default_ui(self):
-        """按当前工作流刷新默认跳转行控件（行列表变化 / 打开 / 新建时调用）。"""
-        combo = getattr(self, "workflow_restart_default_combo", None)
-        if combo is None:
-            return
-        labels, mapping = self._workflow_restart_default_options()
-        self.workflow_restart_default_ids = mapping
-        combo.configure(values=labels)
-        row = max(0, int(getattr(self.workflow, "restart_default_row", 0) or 0))
-        selected = next(
-            (label for label, saved in mapping.items() if saved == row),
-            labels[0],  # 保存的行号不在当前行列表里时按未设置显示（运行时仍会收敛）。
-        )
-        combo.set(selected)
-
     @staticmethod
     def _script_trigger_config(script) -> dict:
         """全局脚本的触发条件：优先 settings["trigger"]，旧脚本回退扫描全局检测动作。
@@ -220,30 +195,6 @@ class RuntimeWorkflowMixin:
             return "missing"
         return "enabled" if bool(module_obj.get("enabled", True)) else "disabled"
 
-    def _read_workflow_start_delay(self, *, validate: bool) -> int | None:
-        enabled_var = getattr(self, "workflow_start_delay_enabled_var", None)
-        seconds_var = getattr(self, "workflow_start_delay_seconds_var", None)
-        enabled = bool(enabled_var.get()) if enabled_var is not None else False
-        raw = seconds_var.get().strip() if seconds_var is not None else "5000"
-        try:
-            milliseconds = int(raw)
-            if milliseconds < 0 or milliseconds > 86400000:
-                raise ValueError
-            # 存储精度是整秒：向上取整保证亚秒延时不被 round 截断成 0
-            # （500ms → 1s，2500ms → 3s），延时只多不少。
-            seconds = -(-milliseconds // 1000)
-        except (TypeError, ValueError):
-            if validate:
-                self._notify("启动延时无效", "启动延时请输入 0–86400000 ms（1440 分钟）以内的时间。")
-                return None
-            workflow = getattr(self, "workflow", None)
-            seconds = int(getattr(workflow, "start_delay_seconds", 5))
-        workflow = getattr(self, "workflow", None)
-        if workflow is not None:
-            workflow.start_delay_enabled = enabled
-            workflow.start_delay_seconds = seconds
-        return seconds if enabled else 0
-
     def run_workflow(self, start_index: int = 0, start_repeat: int = 0,
                      resume_action_index: int | None = None,
                      preserve_global_cooldowns: bool = False,
@@ -319,15 +270,6 @@ class RuntimeWorkflowMixin:
                 test_mode_var = getattr(self, "workflow_test_mode_var", None)
                 test_mode = bool(test_mode_var.get()) if test_mode_var is not None else False
             self.workflow_test_mode_active = bool(test_mode)
-            start_delay_seconds = self._read_workflow_start_delay(validate=True)
-            if start_delay_seconds is None:
-                self._shutdown_detection_worker()
-                return
-            if getattr(self, "_automatic_restarting", False):
-                start_delay_seconds = 0
-        else:
-            # 全局模块断点恢复与“重新执行工作流”属于同一次运行，不重复等待。
-            start_delay_seconds = 0
         self._workflow_snapshot()
         self._persist_workflow_draft()
         self.rebuild_workflow_tree()
@@ -417,7 +359,7 @@ class RuntimeWorkflowMixin:
             args=(steps, start_at, hwnd, focus_enabled,
                   activate_target, start_index, global_modules,
                   start_repeat, resume_action_index, workflow_activation_hwnd,
-                  self.workflow_test_mode_active, start_delay_seconds,
+                  self.workflow_test_mode_active,
                   workflow_activation_allowed, segment_end, segment_rounds),
             kwargs={"workflow_activation_interval_ms": workflow_activation_interval_ms,
                     "script_globals_enabled": script_globals_enabled,
@@ -463,7 +405,7 @@ class RuntimeWorkflowMixin:
                              focus_enabled=False, activate_target=True,
                              start_index=0, global_modules=None, start_repeat=0,
                              resume_action_index=None, workflow_activation_hwnd=None,
-                             test_mode=False, start_delay_seconds=0,
+                             test_mode=False,
                              activation_allowed=True, segment_end=None,
                              segment_repeats=1,
                              workflow_activation_interval_ms=0,
@@ -479,15 +421,6 @@ class RuntimeWorkflowMixin:
                 self._ui(self._log, f"工作流等待至 {start_at:%Y-%m-%d %H:%M:%S} 开始。")
                 if not self._guard_wait(seconds):
                     return
-            if start_delay_seconds > 0:
-                delay_text = f"工作流启动延时 {start_delay_seconds} 秒，等待结束后执行。"
-                self._ui(self._set_status, delay_text, "warning")
-                self._ui(self._set_execution_progress, f"{delay_text} · F12 停止")
-                self._ui(self._append_mini_step, delay_text)
-                self._ui(self._log, delay_text)
-                if not self._guard_wait(start_delay_seconds):
-                    return
-                self._ui(self._log, "工作流启动延时结束，开始执行。")
             if self.workflow_stop.is_set():
                 return
             display_run_started = True

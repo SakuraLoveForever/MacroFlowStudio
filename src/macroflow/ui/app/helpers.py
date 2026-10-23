@@ -32,9 +32,7 @@ class HelpersMixin:
 
     def _workflow_save_values(self):
         return {**vars(self.workflow), 'name': self.workflow_name_var.get().strip() or '未命名工作流',
-                'start_at': self.workflow_start_var.get().strip(),
-                'start_delay_enabled': bool(self.workflow_start_delay_enabled_var.get()),
-                'start_delay_seconds': int(self.workflow_start_delay_seconds_var.get()) / 1000}
+                'start_at': self.workflow_start_var.get().strip()}
 
     def _workflow_saved(self):
         state = self.__dict__.get('_workflow_save_state')
@@ -166,16 +164,17 @@ class HelpersMixin:
         else:
             self._set_status("游戏设置说明保存失败", "danger")
 
-    def _configure_resolution_styles(self):
+    def _configure_resolution_styles(self, parent=None) -> list[dict] | None:
         result = ResolutionStylesDialog(
-            self.root, {"resolution_styles": self.resolution_styles},
+            parent or self.root, {"resolution_styles": self.resolution_styles},
         ).show()
         if result is None:
-            return
+            return None
         self.resolution_styles = result
         self._refresh_resolution_styles_summary()
-        self._refresh_workflow_resolution_options()
+        self._sync_workflow_resolution_ui()
         if self._persist_sidebar_settings(show_feedback=True):
             self._set_status("分辨率样式已保存", "success")
             self._log(f"已保存 {len(result)} 个分辨率样式。")
+        return self.resolution_styles
 

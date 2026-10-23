@@ -589,7 +589,6 @@ class RuntimeHelpersMixin:
     def _workflow_snapshot(self) -> dict:
         self.workflow.name = self.workflow_name_var.get().strip() or "未命名工作流"
         self.workflow.start_at = self.workflow_start_var.get().strip()
-        self._read_workflow_start_delay(validate=False)
         return self.workflow.to_dict()
 
     def _persist_workflow_draft(self, *, record_history: bool = True) -> None:

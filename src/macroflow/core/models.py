@@ -294,15 +294,10 @@ class Workflow:
     name: str = "未命名工作流"
     steps: list[dict[str, Any]] = field(default_factory=list)
     start_at: str = ""
-    start_delay_enabled: bool = False
-    start_delay_seconds: int = 5
     start_resolution: dict[str, Any] | None = None
     end_resolution: dict[str, Any] | None = None
     foreground_minimize_processes: list[str] = field(default_factory=list)
     foreground_minimize_interval_ms: int = 3000
-    # 「重新执行工作流」默认跳转行（1 基，0 = 未设置，按第 1 行处理）。
-    # 在工作流页面统一设置，随工作流文件保存；动作级跳转行优先于它。
-    restart_default_row: int = 0
     version: int = WORKFLOW_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -327,14 +322,6 @@ class Workflow:
         except (TypeError, ValueError, OverflowError):
             foreground_minimize_interval_ms = 3000
         try:
-            restart_default_row = max(0, int(data.get("restart_default_row", 0) or 0))
-        except (TypeError, ValueError):
-            restart_default_row = 0
-        try:
-            start_delay_seconds = max(0, min(86400, int(data.get("start_delay_seconds", 5))))
-        except (TypeError, ValueError):
-            start_delay_seconds = 5
-        try:
             version = int(data.get("version", WORKFLOW_VERSION))
         except (TypeError, ValueError):
             version = WORKFLOW_VERSION
@@ -342,8 +329,6 @@ class Workflow:
             name=str(data.get("name", "未命名工作流")),
             steps=steps,
             start_at=str(data.get("start_at", "")),
-            start_delay_enabled=bool(data.get("start_delay_enabled", False)),
-            start_delay_seconds=start_delay_seconds,
             start_resolution=(dict(data["start_resolution"])
                               if isinstance(data.get("start_resolution"), dict) else None),
             end_resolution=(dict(data["end_resolution"])
@@ -351,6 +336,5 @@ class Workflow:
             foreground_minimize_processes=normalize_foreground_processes(
                 data.get("foreground_minimize_processes", [])),
             foreground_minimize_interval_ms=foreground_minimize_interval_ms,
-            restart_default_row=restart_default_row,
             version=version,
         )

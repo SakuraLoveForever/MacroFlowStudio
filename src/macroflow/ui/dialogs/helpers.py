@@ -380,17 +380,12 @@ def workflow_step_label(step: dict) -> str:
     return f"模块 {name or '未设置'}"
 
 
-def restart_workflow_row_options(workflow_steps: list[dict], default_row: int = 0,
-                                 default_label: str = RESTART_USE_DEFAULT_ROW_LABEL,
-                                 ) -> tuple[list[str], dict[str, int]]:
+def restart_workflow_row_options(workflow_steps: list[dict]) -> tuple[list[str], dict[str, int]]:
     """构建「重新执行工作流」跳转行下拉选项（第 N 行 · 名称，行号 1 基）。
 
-    返回 (labels, label→row 映射)；row 0 表示使用默认跳转行。default_row 非 0
-    时在默认项里标注当前默认行号，方便用户知道不选时跳到哪里。
+    返回 (labels, label→row 映射)；row 0 表示未指定，执行时从第 1 行开始。
     """
-    default_row = max(0, int(default_row or 0))
-    first_label = f"（使用默认跳转行：第 {default_row} 行）" if default_row else default_label
-    mapping = {first_label: 0}
+    mapping = {RESTART_USE_DEFAULT_ROW_LABEL: 0}
     for index, step in enumerate(workflow_steps):
         label = f"第 {index + 1} 行 · {workflow_step_label(step)}"
         mapping[label] = index + 1
@@ -440,29 +435,6 @@ def _app_workflow_steps(parent) -> list[dict]:
         except (AttributeError, tk.TclError):
             break
     return []
-
-
-def _app_workflow_default_row(parent) -> int:
-    """取主应用当前工作流统一设置的「重新执行工作流」默认跳转行（0 = 未设置）。"""
-    window = parent
-    seen = set()
-    while window is not None and len(seen) < 20:
-        identity = id(window)
-        if identity in seen:
-            break
-        seen.add(identity)
-        app = getattr(window, "_macroflow_app", None)
-        workflow = getattr(app, "workflow", None)
-        if workflow is not None:
-            try:
-                return max(0, int(getattr(workflow, "restart_default_row", 0) or 0))
-            except (TypeError, ValueError):
-                return 0
-        try:
-            window = window.master
-        except (AttributeError, tk.TclError):
-            break
-    return 0
 
 
 def segment_row_label(action: dict) -> str:

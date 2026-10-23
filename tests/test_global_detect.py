@@ -211,7 +211,15 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         app._workflow_only_steps = Mock(return_value=[{"kind": "script", "enabled": True}])
         app._global_module_steps = Mock(return_value=[])
         app._begin_detection_run = Mock()
-        app._read_workflow_start_delay = Mock(return_value=None)
+        # 用非法的定时开始时间触发校验提前返回；启动延时设置已删除。
+        app.workflow = Workflow(steps=[])
+        app.workflow_start_var = Mock()
+        app.workflow_start_var.get.return_value = "not-a-time"
+        app._workflow_snapshot = Mock()
+        app._persist_workflow_draft = Mock()
+        app.rebuild_workflow_tree = Mock()
+        app._set_status = Mock()
+        app._log = Mock()
         worker = DetectionWorker(lambda _run_id, _config_version: None)
         app._detection_worker = worker
         app._ensure_detection_worker = Mock()

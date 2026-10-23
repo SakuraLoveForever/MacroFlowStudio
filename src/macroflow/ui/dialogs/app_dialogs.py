@@ -284,19 +284,16 @@ class WorkflowRepeatDialog(ModalDialog):
 
 
 class RestartWorkflowTargetDialog(ModalDialog):
-    """配置「重新执行工作流」动作的跳转目标：行对象或使用默认跳转行。
+    """配置「重新执行工作流」动作的跳转目标：工作流里的行对象或自定义行号。
 
-    row=0 表示使用默认：按当前工作流页面统一设置的默认跳转行
-    （default_row，工作流文件里的 restart_default_row），未设置则从第 1 行开始。
+    row=0 表示未指定，执行时从第 1 行开始。
     """
 
     def __init__(self, parent, action: dict | None = None,
-                 workflow_steps: list[dict] | None = None,
-                 default_row: int = 0):
+                 workflow_steps: list[dict] | None = None):
         super().__init__(parent, "重新执行工作流跳转目标", 600, 300)
         self.workflow_steps = list(workflow_steps if workflow_steps is not None
                                    else _app_workflow_steps(parent))
-        self.default_row = max(0, int(default_row or 0))
         try:
             saved_row = max(0, int((action or {}).get("restart_workflow_target_row", 0) or 0))
         except (TypeError, ValueError):
@@ -319,7 +316,7 @@ class RestartWorkflowTargetDialog(ModalDialog):
         ttk.Label(
             body,
             text=("选择工作流里的行对象，触发后从该行重新执行工作流；"
-                  "选“使用默认跳转行”时按工作流页面统一设置的默认决定。"
+                  "不选择行对象时从第 1 行开始。"
                   "未打开工作流时可勾选“自定义行号…”直接输入。"),
             foreground=COLOR_MUTED, wraplength=px(540),
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=pad(4, 0))
@@ -332,27 +329,13 @@ class RestartWorkflowTargetDialog(ModalDialog):
         )
         self.row_spin.pack(side="left", padx=pad(8, 0))
         self._on_row_selected()
-        hint_frame = ttk.Frame(body)
-        hint_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=pad(14, 0))
-        self.default_label = ttk.Label(
-            hint_frame,
-            text=self._default_hint(), foreground=COLOR_MUTED,
-        )
-        self.default_label.pack(side="left")
         buttons = ttk.Frame(body)
-        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(20, 0))
+        buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=pad(20, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
         ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
 
-    def _default_hint(self) -> str:
-        if not self.default_row:
-            return "工作流默认：未设置（按第 1 行处理）"
-        return f"工作流默认：第 {self.default_row} 行（在工作流页面统一设置）"
-
     def _reload_options(self, selected_row: int = 0):
-        labels, self.row_ids = restart_workflow_row_options(
-            self.workflow_steps, self.default_row,
-        )
+        labels, self.row_ids = restart_workflow_row_options(self.workflow_steps)
         self.row_labels = labels + ["自定义行号…"]
         selected = next(
             (label for label, row in self.row_ids.items() if row == selected_row),
@@ -377,6 +360,73 @@ class RestartWorkflowTargetDialog(ModalDialog):
                 show_floating_notice(self, "行号格式错误", "请输入 1–99999 之间的行号。")
                 return
         self.result = {"type": "restart_workflow", "restart_workflow_target_row": row}
+        self.destroy()
+
+
+class WorkflowResolutionDialog(ModalDialog):
+    """工作流启动 / 结束分辨率设置：选择样式，并可跳转样式管理。"""
+
+    NO_CHANGE = "不修改"
+
+    def __init__(self, parent, start_name: str = NO_CHANGE,
+                 end_name: str = NO_CHANGE, styles: list[dict] | None = None,
+                 edit_styles=None):
+        super().__init__(parent, "工作流分辨率设置", 470, 300)
+        self.styles = list(styles or [])
+        self.edit_styles = edit_styles
+        choices = self._choices()
+        self.start_var = tk.StringVar(value=self._valid(start_name, choices))
+        self.end_var = tk.StringVar(value=self._valid(end_name, choices))
+
+        body = ttk.Frame(self, padding=px(16))
+        body.pack(fill="both", expand=True)
+        ttk.Label(
+            body,
+            text=("工作流开始时切换到所选样式，结束后按“停止后恢复”切换；"
+                  "选择“不修改”时保持系统当前显示。"),
+            foreground=COLOR_MUTED, wraplength=px(420),
+        ).pack(anchor="w", pady=pad(0, 12))
+        self.start_combo = self._add_row(body, "启动分辨率", self.start_var, choices, pad(0, 10))
+        self.end_combo = self._add_row(body, "停止后恢复", self.end_var, choices, pad(0, 10))
+        ttk.Button(
+            body, text="编辑分辨率样式…", command=self._open_style_manager,
+        ).pack(anchor="w", pady=pad(2, 0))
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=pad(16, 0))
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="确定", command=self.save).pack(side="right", padx=px(8))
+
+    def _choices(self) -> list[str]:
+        return [self.NO_CHANGE, *(str(style.get("name", "")).strip() for style in self.styles)]
+
+    def _valid(self, name: str, choices: list[str]) -> str:
+        return name if name in choices else self.NO_CHANGE
+
+    def _add_row(self, body, label: str, variable: tk.StringVar,
+                 choices: list[str], pady) -> ttk.Combobox:
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=pady)
+        ttk.Label(row, text=label, width=10).pack(side="left")
+        combo = ttk.Combobox(row, textvariable=variable, values=choices,
+                             state="readonly", width=24)
+        combo.pack(side="left", fill="x", expand=True)
+        return combo
+
+    def _open_style_manager(self):
+        if self.edit_styles is None:
+            return
+        styles = self.edit_styles(self)
+        if styles is None:
+            return
+        self.styles = list(styles)
+        choices = self._choices()
+        for combo in (self.start_combo, self.end_combo):
+            combo.configure(values=choices)
+        self.start_var.set(self._valid(self.start_var.get(), choices))
+        self.end_var.set(self._valid(self.end_var.get(), choices))
+
+    def save(self):
+        self.result = (self.start_var.get(), self.end_var.get())
         self.destroy()
 
 

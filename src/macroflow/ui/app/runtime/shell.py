@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from macroflow.core.storage import BASE_DIR, ensure_dirs, migrate_workflow_templates, DIRECTION_SCRIPTS_DIR, load_app_settings, resolve_path
 from macroflow.core.models import Workflow
-from macroflow.ui.dialogs.base import DurationVar
 from macroflow.input.input_guard import FocusInputGuard
 from macroflow.execution.player import MacroPlayer
 from pathlib import Path
@@ -337,12 +336,6 @@ class RuntimeShellMixin:
         self.record_count_var = tk.StringVar(value="0 个动作")
         self.workflow_name_var = tk.StringVar(value=self.workflow.name)
         self.workflow_start_var = tk.StringVar(value=self.workflow.start_at)
-        self.workflow_start_delay_enabled_var = tk.BooleanVar(
-            value=bool(self.workflow.start_delay_enabled),
-        )
-        self.workflow_start_delay_seconds_var = DurationVar(
-            value=int(self.workflow.start_delay_seconds) * 1000,
-        )
         self.workflow_start_resolution_var = tk.StringVar(
             value=str((self.workflow.start_resolution or {}).get("name") or "不修改"),
         )

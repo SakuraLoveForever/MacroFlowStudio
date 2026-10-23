@@ -763,7 +763,7 @@ SECOND_MATCH_CLICK_TARGET_VALUES = {
 SEGMENT_DEPTH_LIMIT = 8
 
 
-RESTART_USE_DEFAULT_ROW_LABEL = "（使用默认跳转行）"
+RESTART_USE_DEFAULT_ROW_LABEL = "（从第 1 行开始）"
 
 
 def scrollable_dialog_body(window, *, padding: int = 12):

@@ -144,9 +144,6 @@ class MacroFlowRunner(ExecutionController):
         self.workflow_path = path
         self.workflow_name_var.set(workflow.name)
         self.workflow_start_var.set(workflow.start_at)
-        self.workflow_start_delay_enabled_var.set(workflow.start_delay_enabled)
-        self.workflow_start_delay_seconds_var.unit.set("ms")
-        self.workflow_start_delay_seconds_var.set(str(workflow.start_delay_seconds * 1000))
         self.runner_kind = "workflow"
         self.rebuild_workflow_tree()
         self._persist_workflow_draft()

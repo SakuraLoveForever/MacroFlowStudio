@@ -315,30 +315,24 @@ class WorkflowDisplayTests(unittest.TestCase):
         self.assertIn("height=6", source)
         self.assertIn("height=10", source)
 
-    def test_restart_resolved_row_prefers_action_then_workflow_default(self):
-        # 「重新执行工作流」跳转行解析：动作级 → 工作流统一默认 → 第 1 行。
+    def test_restart_resolved_row_uses_action_target_or_first_row(self):
+        # 「重新执行工作流」跳转行解析：动作级目标优先，未指定时从第 1 行开始。
         app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(restart_default_row=4)
+        app.workflow = Workflow()
         self.assertEqual(
             app._restart_workflow_resolved_row({"restart_workflow_target_row": 3}),
             3,
         )
         self.assertEqual(
             app._restart_workflow_resolved_row({"type": "restart_workflow"}),
-            4,
-        )
-        app.workflow.restart_default_row = 0
-        self.assertEqual(
-            app._restart_workflow_resolved_row({"type": "restart_workflow"}),
             1,
         )
-        # 非法值一律视为未设置；未挂工作流对象时按第 1 行处理。
-        app.workflow.restart_default_row = 4
+        # 非法值一律视为未设置；未挂工作流对象时同样按第 1 行处理。
         self.assertEqual(
             app._restart_workflow_resolved_row(
                 {"restart_workflow_target_row": "oops"},
             ),
-            4,
+            1,
         )
         del app.workflow
         self.assertEqual(
@@ -356,19 +350,14 @@ class WorkflowDisplayTests(unittest.TestCase):
         self.assertFalse(hasattr(workflow, "restart_target_step_id"))
         self.assertNotIn("restart_target_step_id", workflow.to_dict())
 
-    def test_workflow_restart_default_row_round_trips(self):
-        # 默认跳转行是工作流文件字段（工作流页面统一设置），随文件保存。
+    def test_workflow_restart_default_row_is_ignored(self):
+        # 工作流统一默认跳转行已删除：旧文件字段不再进入模型；未指定时从第 1 行开始。
         workflow = Workflow.from_dict({
             "name": "测试", "restart_default_row": "3",
             "steps": [{"script": "a.json", "step_id": "row-a"}],
         })
-        self.assertEqual(workflow.restart_default_row, 3)
-        self.assertEqual(workflow.to_dict()["restart_default_row"], 3)
-        self.assertEqual(Workflow.from_dict(workflow.to_dict()).restart_default_row, 3)
-        # 非法值按未设置处理。
-        self.assertEqual(
-            Workflow.from_dict({"restart_default_row": "oops"}).restart_default_row, 0,
-        )
+        self.assertFalse(hasattr(workflow, "restart_default_row"))
+        self.assertNotIn("restart_default_row", workflow.to_dict())
 
     def test_workflow_resolution_settings_round_trip(self):
         start = {"type": "set_resolution", "name": "游戏", "width": 1280,
@@ -1557,26 +1546,16 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
                 app.run_workflow()
             app._sound.assert_called_once_with("run_start")
 
-    def test_workflow_start_delay_settings_are_persisted(self):
+    def test_workflow_start_delay_fields_are_ignored(self):
+        # 启动延时已删除：旧文件字段不再进入模型，也不会再写出。
         workflow = Workflow.from_dict({
             "name": "延时工作流", "steps": [],
             "start_delay_enabled": True, "start_delay_seconds": 12,
         })
-        self.assertTrue(workflow.start_delay_enabled)
-        self.assertEqual(workflow.start_delay_seconds, 12)
-        self.assertEqual(workflow.to_dict()["start_delay_seconds"], 12)
-
-    def test_workflow_start_delay_subsecond_rounds_up(self):
-        # 存储精度是整秒：500ms → 1s、2500ms → 3s，亚秒延时不能被截断成 0。
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        app.workflow = Workflow(name="w", steps=[])
-        app.workflow_start_delay_enabled_var = Mock()
-        app.workflow_start_delay_enabled_var.get.return_value = True
-        app.workflow_start_delay_seconds_var = Mock()
-        app.workflow_start_delay_seconds_var.get.return_value = "500"
-        self.assertEqual(app._read_workflow_start_delay(validate=False), 1)
-        app.workflow_start_delay_seconds_var.get.return_value = "2500"
-        self.assertEqual(app._read_workflow_start_delay(validate=False), 3)
+        self.assertFalse(hasattr(workflow, "start_delay_enabled"))
+        self.assertFalse(hasattr(workflow, "start_delay_seconds"))
+        self.assertNotIn("start_delay_enabled", workflow.to_dict())
+        self.assertNotIn("start_delay_seconds", workflow.to_dict())
 
     def test_guard_wait_guard_request_skips_wait_and_continues(self):
         # 步骤间隙等待中，守卫处理段要求结束/推进/跳转：无脚本上下文可作用，
@@ -1610,7 +1589,6 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             app.workflow_start_var = Mock()
             app.workflow_start_var.get.return_value = ""
             app.workflow_path = None
-            app._read_workflow_start_delay = Mock(return_value=0)
             app._persist_workflow_draft = Mock()
             app._set_status = Mock()
             app._log = Mock()
@@ -1631,7 +1609,6 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
             app.workflow_start_var = Mock()
             app.workflow_start_var.get.return_value = ""
             app.workflow_path = old
-            app._read_workflow_start_delay = Mock(return_value=0)
             app._persist_workflow_draft = Mock()
             app._set_status = Mock()
             app._log = Mock()
@@ -1681,14 +1658,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app.workflow_name_var.get.return_value = workflow.name
         app.workflow_start_var = Mock()
         app.workflow_start_var.get.return_value = workflow.start_at
-        app.workflow_start_delay_enabled_var = Mock()
-        app.workflow_start_delay_enabled_var.get.return_value = workflow.start_delay_enabled
-        app.workflow_start_delay_seconds_var = Mock()
-        app.workflow_start_delay_seconds_var.get.return_value = "5000"
-        app.workflow_start_delay_seconds_var.unit = Mock()
-        app._read_workflow_start_delay = Mock(return_value=0)
         app._clear_workflow_history = Mock()
-        app._toggle_workflow_start_delay_control = Mock()
         app.rebuild_workflow_tree = Mock()
         app._persist_workflow_draft = Mock()
         app._set_status = Mock()
@@ -1755,7 +1725,7 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app._notify.assert_called_once()
         self.assertIsNone(app.workflow_path)
 
-    def test_workflow_worker_waits_for_configured_start_delay(self):
+    def test_workflow_worker_starts_without_extra_wait(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         app.workflow_stop = Mock()
         app.workflow_stop.wait.return_value = True
@@ -1768,10 +1738,9 @@ class WorkflowDeleteUndoTests(unittest.TestCase):
         app._finish_execution_visibility = Mock()
         app._ui = lambda callback, *args: callback(*args)
 
-        app._run_workflow_worker([], None, None, False, start_delay_seconds=7)
+        app._run_workflow_worker([], None, None, False)
 
-        app._guard_wait.assert_called_once_with(7)
-        self.assertTrue(any("启动延时 7 秒" in call.args[0] for call in app._log.call_args_list))
+        app._guard_wait.assert_not_called()
 
 
 class WorkflowMoveTests(unittest.TestCase):
@@ -1871,20 +1840,25 @@ class WorkflowResolutionTests(unittest.TestCase):
         self.assertEqual(settle.call_count, 2)
         app.player._wait.assert_not_called()
 
-    def test_resolution_selector_saves_a_snapshot_of_the_style(self):
+    def test_resolution_dialog_saves_a_snapshot_of_the_style(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
+        app.root = Mock()
         app.workflow = Workflow()
         app.resolution_styles = [{"name": "游戏", "width": 1280, "height": 720,
                                   "refresh_rate": 60, "scale_percent": 100}]
-        app.workflow_start_resolution_var = FakeVar("游戏")
+        app.workflow_start_resolution_var = FakeVar("不修改")
         app.workflow_end_resolution_var = FakeVar("不修改")
         app._persist_workflow_draft = Mock()
-        app._set_workflow_resolution("start")
+        with patch("macroflow.ui.app.workflow.WorkflowResolutionDialog") as dialog_cls:
+            dialog_cls.return_value.show.return_value = ("游戏", "不修改")
+            app._configure_workflow_resolution()
         self.assertEqual(app.workflow.start_resolution["width"], 1280)
+        self.assertIsNone(app.workflow.end_resolution)
         app.resolution_styles[0]["width"] = 1600
         self.assertEqual(app.workflow.start_resolution["width"], 1280)
-        app.workflow_start_resolution_var.set("不修改")
-        app._set_workflow_resolution("start")
+        with patch("macroflow.ui.app.workflow.WorkflowResolutionDialog") as dialog_cls:
+            dialog_cls.return_value.show.return_value = ("不修改", "不修改")
+            app._configure_workflow_resolution()
         self.assertIsNone(app.workflow.start_resolution)
 
     def test_selected_row_applies_start_and_end_settings_even_after_manual_stop(self):

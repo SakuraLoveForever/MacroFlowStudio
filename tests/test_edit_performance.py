@@ -109,9 +109,6 @@ class EditFixture:
         self.redo_button = FakeWidget()
         self.workflow_name_var = FakeVar("")
         self.workflow_start_var = FakeVar("")
-        self.workflow_start_delay_enabled_var = FakeVar(False)
-        self.workflow_start_delay_seconds_var = FakeVar("5000")
-        self.workflow_restart_default_var = FakeVar("")
         self.workflow_insert_position_var = FakeVar("below")
         self.status_var = FakeVar("")
         self.dirty = False
@@ -144,12 +141,6 @@ class EditFixture:
 
     def _ui(self, callback, *args):
         return callback(*args)
-
-    def _sync_workflow_restart_default_ui(self):
-        pass
-
-    def _workflow_restart_default_options(self):
-        return [], {}
 
     def _schedule_workflow_draft_save(self, _event=None):
         pass

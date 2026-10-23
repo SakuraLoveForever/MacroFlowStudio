@@ -852,22 +852,15 @@ class GuardsMixin:
         if hwnd and not is_window_process_foreground(hwnd):
             activate_window(hwnd)
     def _restart_workflow_resolved_row(self, action: dict) -> int:
-        """解析「重新执行工作流」的跳转行：动作 → 工作流默认 → 第 1 行。
+        """解析「重新执行工作流」的跳转行：动作级目标，未指定时从第 1 行开始。
 
-        默认跳转行在工作流页面统一设置（随工作流文件保存）；行号是当前
-        工作流里的 1 基行号（对应工作流树里的行对象）；越界时由
+        行号是当前工作流里的 1 基行号（对应工作流树里的行对象）；越界时由
         _launch_workflow_restart 收敛到首尾。
         """
         try:
             row = max(0, int(action.get("restart_workflow_target_row", 0) or 0))
         except (TypeError, ValueError):
             row = 0
-        if not row:
-            workflow = getattr(self, "workflow", None)
-            try:
-                row = max(0, int(getattr(workflow, "restart_default_row", 0) or 0))
-            except (TypeError, ValueError):
-                row = 0
         return max(1, row)
     def _on_restart_workflow_request(self, action: dict) -> bool:
         if self.current_workflow_step_index is None:

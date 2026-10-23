@@ -4,10 +4,13 @@ from macroflow.core.models import ACTION_ID_KEY, DEFAULT_WORKFLOW_REPEAT_INTERVA
 from macroflow.core.resolution import build_resolution_action
 from macroflow.ui.dialogs.actions import DurationDialog, ScheduleDialog
 from macroflow.ui.dialogs.foreground_processes import ForegroundProcessesDialog
-from macroflow.ui.dialogs.base import DurationVar
 from macroflow.ui.dialogs.workflow_plugins import ProcessAbsencePluginDialog
 from macroflow.core.workflow_plugins import PROCESS_ABSENCE_RESTART, process_absence_label
-from macroflow.ui.dialogs.app_dialogs import WorkflowBatchSettingsDialog, WorkflowRepeatDialog
+from macroflow.ui.dialogs.app_dialogs import (
+    WorkflowBatchSettingsDialog,
+    WorkflowRepeatDialog,
+    WorkflowResolutionDialog,
+)
 from macroflow.ui.dialogs.module_objects import ModulePickerDialog, TemplateRegionFormDialog
 from pathlib import Path
 from macroflow.core.storage import WORKFLOWS_DIR, display_path, safe_name, load_script, load_workflow, registered_module_object, resolve_path, save_workflow, update_module_object
@@ -41,18 +44,6 @@ class WorkflowMixin:
             self.workflow.foreground_minimize_processes = names
             self.workflow.foreground_minimize_interval_ms = interval_ms
             self._schedule_workflow_draft_save()
-
-    @workflow_edit
-    def _apply_workflow_restart_default(self, _event=None):
-        """把控件当前选择写入工作流的统一默认跳转行并落盘草稿。"""
-        combo = getattr(self, "workflow_restart_default_combo", None)
-        if combo is None:
-            return
-        label = combo.get()
-        mapping = getattr(self, "workflow_restart_default_ids", {})
-        row = max(0, int(mapping.get(label, 0) or 0))
-        self.workflow.restart_default_row = row
-        self._schedule_workflow_draft_save()
 
     def _refresh_workflow_segment_bar(self, _event=None) -> None:
         """工作流表格选中一段步骤时，在最左边画出那根实心竖条。"""
@@ -112,7 +103,6 @@ class WorkflowMixin:
     def rebuild_workflow_tree(self):
         """整表重建：打开 / 新建 / 替换工作流，或列表结构整体变化时使用。"""
         self._reset_row_segment_bar("workflow_segment_painted")
-        self._sync_workflow_restart_default_ui()
         self.workflow_tree.delete(*self.workflow_tree.get_children())
         module_objects = module_objects_snapshot()
         self.workflow_module_objects = module_objects
@@ -240,10 +230,6 @@ class WorkflowMixin:
         self.workflow_path = None
         self.workflow_name_var.set(self.workflow.name)
         self.workflow_start_var.set("")
-        self.workflow_start_delay_enabled_var.set(False)
-        self.workflow_start_delay_seconds_var.unit.set("ms")
-        self.workflow_start_delay_seconds_var.set("5000")
-        self._toggle_workflow_start_delay_control(persist=False)
         self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
         self._clear_workflow_history()
@@ -266,12 +252,6 @@ class WorkflowMixin:
         self.workflow_path = path
         self.workflow_name_var.set(workflow.name)
         self.workflow_start_var.set(workflow.start_at)
-        self.workflow_start_delay_enabled_var.set(workflow.start_delay_enabled)
-        self.workflow_start_delay_seconds_var.unit.set("ms")
-        self.workflow_start_delay_seconds_var.set(
-            str(int(workflow.start_delay_seconds) * 1000)
-        )
-        self._toggle_workflow_start_delay_control(persist=False)
         self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
         self._clear_workflow_history()
@@ -279,28 +259,45 @@ class WorkflowMixin:
         self._log(log_text)
         self._workflow_saved()
 
-    def _refresh_workflow_resolution_options(self):
-        choices = ["不修改", *(str(style["name"]) for style in self.resolution_styles)]
-        for name in ("workflow_start_resolution_combo", "workflow_end_resolution_combo"):
-            combo = getattr(self, name, None)
-            if combo is not None:
-                combo.configure(values=choices)
-
     def _sync_workflow_resolution_ui(self):
+        names = []
         for phase, field in (("start", "start_resolution"), ("end", "end_resolution")):
+            action = getattr(self.workflow, field, None) or {}
+            name = str(action.get("name") or "不修改")
             variable = getattr(self, f"workflow_{phase}_resolution_var", None)
             if variable is not None:
-                action = getattr(self.workflow, field, None) or {}
-                variable.set(str(action.get("name") or "不修改"))
+                variable.set(name)
+            names.append(name)
+        summary = getattr(self, "workflow_resolution_summary", None)
+        if summary is not None:
+            parts = []
+            if names[0] != "不修改":
+                parts.append(f"启动 {names[0]}")
+            if names[1] != "不修改":
+                parts.append(f"结束后 {names[1]}")
+            summary.configure(
+                text=" · ".join(parts) if parts else "不修改（保持系统当前设置）")
 
     @workflow_edit
-    def _set_workflow_resolution(self, phase: str):
-        variable = getattr(self, f"workflow_{phase}_resolution_var")
-        choice = variable.get()
-        action = None if choice == "不修改" else build_resolution_action(
-            {"resolution_styles": self.resolution_styles}, choice,
-        )
-        setattr(self.workflow, f"{phase}_resolution", action)
+    def _configure_workflow_resolution(self):
+        """弹窗设置工作流启动 / 结束分辨率，页面上只保留摘要入口。"""
+        result = WorkflowResolutionDialog(
+            self.root,
+            self.workflow_start_resolution_var.get(),
+            self.workflow_end_resolution_var.get(),
+            styles=self.resolution_styles,
+            edit_styles=self._configure_resolution_styles,
+        ).show()
+        if result is None:
+            return
+        for phase, name in zip(("start", "end"), result):
+            setattr(
+                self.workflow, f"{phase}_resolution",
+                None if name == "不修改" else build_resolution_action(
+                    {"resolution_styles": self.resolution_styles}, name,
+                ),
+            )
+        self._sync_workflow_resolution_ui()
         self._persist_workflow_draft()
 
     @workflow_edit
@@ -327,7 +324,6 @@ class WorkflowMixin:
         # 先把输入框里的最新内容同步进模型，再深拷贝。
         self.workflow.name = self.workflow_name_var.get().strip() or "未命名工作流"
         self.workflow.start_at = self.workflow_start_var.get().strip()
-        self._read_workflow_start_delay(validate=False)
         new_name = simpledialog.askstring(
             "复制为新工作流",
             "请输入新工作流的名称（原工作流保持不变）：",
@@ -365,8 +361,6 @@ class WorkflowMixin:
     def save_current_workflow(self):
         self.workflow.name = self.workflow_name_var.get().strip() or "未命名工作流"
         self.workflow.start_at = self.workflow_start_var.get().strip()
-        if self._read_workflow_start_delay(validate=True) is None:
-            return None
         target = self.workflow_path
         moved_from = None
         if target is None or target.stem != self.workflow.name:
@@ -1063,14 +1057,11 @@ class WorkflowMixin:
 
     def _workflow_edit_snapshot(self):
         fields = {}
-        for name in ('workflow_name_var', 'workflow_start_var',
-                     'workflow_start_delay_enabled_var', 'workflow_start_delay_seconds_var'):
+        for name in ('workflow_name_var', 'workflow_start_var'):
             variable = self.__dict__.get(name)
             if variable is not None:
-                fields[name] = variable._raw() if isinstance(variable, DurationVar) else variable.get()
-        delay = self.__dict__.get('workflow_start_delay_seconds_var')
-        unit = delay.unit.get() if delay is not None and hasattr(delay, 'unit') else None
-        return {'workflow': vars(self.workflow), 'fields': fields, 'unit': unit}
+                fields[name] = variable.get()
+        return {'workflow': vars(self.workflow), 'fields': fields}
 
     def _clear_workflow_history(self):
         self._workflow_history = WorkflowEditHistory(self._workflow_edit_snapshot())
@@ -1109,12 +1100,8 @@ class WorkflowMixin:
         selections = {name: tuple(getattr(self, name).selection())
                       for name in ('workflow_tree', 'global_tree')}
         self.workflow = Workflow(**state['workflow'])
-        delay = self.__dict__.get('workflow_start_delay_seconds_var')
-        if delay is not None and state['unit'] is not None:
-            delay.unit.set(state['unit'])
         for name, value in state['fields'].items():
             getattr(self, name).set(value)
-        self._toggle_workflow_start_delay_control(persist=False)
         self._sync_workflow_resolution_ui()
         self.rebuild_workflow_tree()
         for name, steps in (('workflow_tree', self._workflow_only_steps()),
@@ -1138,15 +1125,6 @@ class WorkflowMixin:
         selected = ScheduleDialog(self.root, self.workflow_start_var.get()).show()
         if selected is not None:
             self.workflow_start_var.set(selected)
-            self._persist_workflow_draft()
-
-    def _toggle_workflow_start_delay_control(self, persist: bool = True):
-        entry = getattr(self, "workflow_start_delay_entry", None)
-        enabled_var = getattr(self, "workflow_start_delay_enabled_var", None)
-        enabled = bool(enabled_var.get()) if enabled_var is not None else False
-        if entry is not None:
-            entry.configure(state="normal" if enabled else "disabled")
-        if persist:
             self._persist_workflow_draft()
 
     def run_workflow_from_selected(self):

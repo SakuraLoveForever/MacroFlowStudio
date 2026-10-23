@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from macroflow.ui.dialogs.process_names import ProcessLibraryDialog
 from macroflow.ui.dialogs.app_dialogs import CoordinateFlashDialog
-from macroflow.ui.dialogs.base import TIME_UNITS, Tooltip
+from macroflow.ui.dialogs.base import Tooltip
 import sys
 from macroflow.core.storage import resolve_path
 import tkinter as tk
@@ -968,8 +968,7 @@ class ShellMixin:
                 pass
         self._workflow_save_state = SaveState(header_actions, workflow_save_button,
             self._workflow_save_values, baseline=vars(saved_workflow))
-        self._workflow_save_state.watch(self.workflow_name_var, self.workflow_start_var,
-            self.workflow_start_delay_enabled_var, self.workflow_start_delay_seconds_var)
+        self._workflow_save_state.watch(self.workflow_name_var, self.workflow_start_var)
         self.workflow_pause_button = ttk.Button(
             header_actions, text="暂停", command=self.toggle_execution_pause,
             style="Ghost.TButton", state="disabled",
@@ -1037,79 +1036,20 @@ class ShellMixin:
             "留空表示手动运行；设置后到达指定时间自动开始当前工作流。",
         )
 
-        # 运行参数与文件信息同卡，避免在工作流页再占一张整卡的高度。
-        run_settings = ttk.Frame(meta_card.body, style="Card.TFrame")
-        run_settings.pack(fill="x", pady=pad(8, 0))
-        run_settings.columnconfigure((0, 1), weight=1, uniform="run")
-
-        start_delay_bar = ttk.Frame(run_settings, style="Card.TFrame")
-        start_delay_bar.grid(row=0, column=0, sticky="w", pady=pad(0, 6))
-        start_delay_label = ttk.Label(start_delay_bar, text="启动延时", style="CardLabel.TLabel")
-        start_delay_label.pack(side="left")
-        self._attach_tip(
-            start_delay_label,
-            "启用后，从头运行或从选中行运行时都会先等待指定时长再开始。",
+        # 分辨率这两项不常改，折叠成一个摘要 + 一个设置入口，避免页面拥挤。
+        resolution_bar = ttk.Frame(meta_card.body, style="Card.TFrame")
+        resolution_bar.pack(fill="x", pady=pad(8, 0))
+        ttk.Label(resolution_bar, text="分辨率", style="CardLabel.TLabel").pack(side="left")
+        self.workflow_resolution_summary = ttk.Label(
+            resolution_bar, text="", style="CardHint.TLabel",
         )
-        ttk.Checkbutton(
-            start_delay_bar, text="启用", variable=self.workflow_start_delay_enabled_var,
-            command=self._toggle_workflow_start_delay_control, bootstyle="round-toggle",
-        ).pack(side="left", padx=pad(9, 4))
-        self.workflow_start_delay_entry = ttk.Entry(
-            start_delay_bar, textvariable=self.workflow_start_delay_seconds_var, width=8,
-        )
-        self.workflow_start_delay_entry.pack(side="left", padx=pad(6, 3))
-        self.workflow_start_delay_entry.bind("<KeyRelease>", self._schedule_workflow_draft_save)
-        ttk.Combobox(
-            start_delay_bar, textvariable=self.workflow_start_delay_seconds_var.unit,
-            values=TIME_UNITS, state="readonly", width=4,
-        ).pack(side="left", padx=pad(0, 4))
-        self._toggle_workflow_start_delay_control(persist=False)
-
-        restart_default_bar = ttk.Frame(run_settings, style="Card.TFrame")
-        restart_default_bar.grid(row=0, column=1, sticky="w", pady=pad(0, 6))
-        restart_label = ttk.Label(restart_default_bar, text="重新执行默认跳转行",
-                                  style="CardLabel.TLabel")
-        restart_label.pack(side="left")
-        self._attach_tip(
-            restart_label,
-            "动作没有指定跳转行时从这里开始；留空表示第 1 行。",
-        )
-        restart_field = ttk.Frame(restart_default_bar, style="Card.TFrame")
-        restart_field.pack(side="left", padx=pad(8, 8))
-        self.workflow_restart_default_combo = ttk.Combobox(
-            restart_field, state="readonly", width=16,
-        )
-        self.workflow_restart_default_combo.pack(fill="x")
-        self.workflow_restart_default_combo.bind(
-            "<<ComboboxSelected>>", self._apply_workflow_restart_default)
-        self._sync_workflow_restart_default_ui()
-
-        resolution_bar = ttk.Frame(run_settings, style="Card.TFrame")
-        resolution_bar.grid(row=1, column=0, columnspan=2, sticky="w")
-        ttk.Label(resolution_bar, text="启动分辨率", style="CardLabel.TLabel").pack(side="left")
-        start_resolution_field = ttk.Frame(resolution_bar, style="Card.TFrame")
-        start_resolution_field.pack(side="left", padx=pad(8, 10))
-        self.workflow_start_resolution_combo = ttk.Combobox(
-            start_resolution_field, textvariable=self.workflow_start_resolution_var,
-            state="readonly", width=14, postcommand=self._refresh_workflow_resolution_options,
-        )
-        self.workflow_start_resolution_combo.pack(fill="x")
-        self.workflow_start_resolution_combo.bind(
-            "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("start"))
-        ttk.Label(resolution_bar, text="停止后恢复", style="CardLabel.TLabel").pack(side="left")
-        end_resolution_field = ttk.Frame(resolution_bar, style="Card.TFrame")
-        end_resolution_field.pack(side="left", padx=pad(8, 10))
-        self.workflow_end_resolution_combo = ttk.Combobox(
-            end_resolution_field, textvariable=self.workflow_end_resolution_var,
-            state="readonly", width=14, postcommand=self._refresh_workflow_resolution_options,
-        )
-        self.workflow_end_resolution_combo.pack(fill="x")
-        self.workflow_end_resolution_combo.bind(
-            "<<ComboboxSelected>>", lambda _event: self._set_workflow_resolution("end"))
-        ttk.Button(resolution_bar, text="编辑分辨率样式",
-                   command=self._configure_resolution_styles,
-                   style="Ghost.TButton").pack(side="left")
-        self._refresh_workflow_resolution_options()
+        self.workflow_resolution_summary.pack(side="left", padx=pad(8, 8))
+        ttk.Button(
+            resolution_bar, text="分辨率设置…",
+            command=self._configure_workflow_resolution,
+            style="Ghost.TButton",
+        ).pack(side="left")
+        self._sync_workflow_resolution_ui()
 
         # Global modules and workflow steps share a draggable vertical split.
         self.workflow_content_pane = ttk.Panedwindow(outer, orient="vertical")
@@ -1211,29 +1151,37 @@ class ShellMixin:
         self._attach_tip(self.workflow_insert_below_button, "插入到选中步骤下方；未选中时追加到末尾。")
         self._set_workflow_insert_position(False)
 
-        edit_toolbar = ttk.Frame(toolbar, style="Card.TFrame")
+        edit_toolbar = FlowFrame(toolbar, gap=6, row_gap=6, background=COLOR_SURFACE,
+                                 max_rows=2)
         edit_toolbar.pack(fill="x", pady=pad(5, 0))
-        ttk.Label(edit_toolbar, text="编辑 / 排序", style="CardHint.TLabel").pack(
-            side="left", padx=pad(0, 8))
-        ttk.Button(edit_toolbar, text="统一设置参数", command=self.set_all_workflow_step_options,
-                   style="Chip.TButton").pack(side="left")
-        ttk.Button(edit_toolbar, text="恢复全部次数", command=self.restore_all_workflow_counts,
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        ttk.Button(edit_toolbar, text="启用/禁用", command=self.toggle_selected_workflow_step,
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        ttk.Button(edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1),
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 2))
-        ttk.Button(edit_toolbar, text="下移", command=lambda: self.move_workflow_step(1),
-                   style="Chip.TButton").pack(side="left")
-        ttk.Button(edit_toolbar, text="移到行…", command=self.move_workflow_step_to_row,
-                   style="Chip.TButton").pack(side="left", padx=pad(5, 0))
-        ttk.Button(edit_toolbar, text="删除", command=self.delete_workflow_step,
-                   style="ChipDanger.TButton").pack(side="left", padx=px(5))
-        self.workflow_undo_button = ttk.Button(
+        edit_toolbar.add(ttk.Label(edit_toolbar, text="编辑 / 排序",
+                                   style="CardHint.TLabel"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="统一设置参数", command=self.set_all_workflow_step_options,
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="恢复全部次数", command=self.restore_all_workflow_counts,
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="启用/禁用", command=self.toggle_selected_workflow_step,
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="上移", command=lambda: self.move_workflow_step(-1),
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="下移", command=lambda: self.move_workflow_step(1),
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="移到行…", command=self.move_workflow_step_to_row,
+            style="Chip.TButton"))
+        edit_toolbar.add(ttk.Button(
+            edit_toolbar, text="删除", command=self.delete_workflow_step,
+            style="ChipDanger.TButton"))
+        self.workflow_undo_button = edit_toolbar.add(ttk.Button(
             edit_toolbar, text="↶ 撤销", command=self.undo_workflow_edit,
             style="Chip.TButton", state="disabled",
-        )
-        self.workflow_undo_button.pack(side="left")
+        ))
+        edit_toolbar.finish()
 
         frame = ttk.Frame(workflow_box, style="Card.TFrame")
         frame.pack(fill="both", expand=True)

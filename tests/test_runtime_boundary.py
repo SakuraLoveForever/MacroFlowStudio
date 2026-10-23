@@ -54,8 +54,6 @@ print(json.dumps(sorted(sys.modules)))
             for name in ('StringVar', 'IntVar', 'DoubleVar', 'BooleanVar'):
                 stack.enter_context(patch('macroflow.ui.app.runtime.shell.tk.' + name,
                                           side_effect=lambda **kw: FakeVar(kw.get('value'))))
-            stack.enter_context(patch('macroflow.ui.app.runtime.shell.DurationVar',
-                                      side_effect=lambda **kw: FakeVar(kw.get('value'))))
             app._create_variables()
         app._initialize_authoring_state()
         self.assertIsNone(app.recorder)
