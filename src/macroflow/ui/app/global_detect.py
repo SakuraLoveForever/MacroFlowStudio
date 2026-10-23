@@ -103,7 +103,6 @@ class GlobalDetectMixin:
                     cooldowns.pop(key, None)
         for key in key_set:
             hide_overlay(key)
-            hide_overlay(f"{key}:fallback")
         pending = getattr(self, "_pending_global_guard_hits", None)
         if pending and key_set:
             pending[:] = [
@@ -156,9 +155,6 @@ class GlobalDetectMixin:
                 config["recheck_delay_ms"] = obj.get(
                     "recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS,
                 )
-                config["fallback_module_key"] = obj.get("fallback_module_key", "")
-                config["fallback_on_match"] = obj.get("fallback_on_match", "continue")
-                config["fallback_click"] = obj.get("fallback_click", False)
                 config["hold_enabled"] = obj.get("hold_enabled", False)
                 config["hold_ms"] = obj.get("hold_ms", 1000)
                 config["restart_delay_ms"] = 0
@@ -256,6 +252,10 @@ class GlobalDetectMixin:
                     )),
                 )
                 timeout_segment = list(obj.get("on_timeout_actions") or [])
+        if config.get("plugin") == PROCESS_ABSENCE_RESTART:
+            timeout_enabled = True
+            not_found_timeout_ms = int(config["not_found_timeout_ms"])
+            timeout_segment = list(config["on_timeout_actions"])
         if module is not None:
             module_display_name = (
                 str(module.get("name", "")).strip()
@@ -284,13 +284,6 @@ class GlobalDetectMixin:
             "start_delay_ms": start_delay,
             "start_delay_since": time.perf_counter(),
             "start_delay_done": False,
-            "fallback_module_key": str(config.get("fallback_module_key", "")).strip(),
-            "fallback_on_match": str(config.get("fallback_on_match", "continue")).strip(),
-            "fallback_click": bool(config.get("fallback_click", False)),
-            "fallback_click_count": max(1, min(9999, int(config.get("fallback_click_count", 1)))),
-            "fallback_click_interval_ms": max(0, min(60000, int(config.get("fallback_click_interval_ms", 100)))),
-            "fallback_present": False,
-            "fallback_click_since": 0.0,
             "recheck_enabled": bool(config.get("recheck_enabled", False)),
             "recheck_delay_ms": recheck_delay,
             "recognize": str(config.get("recognize", "")),
@@ -351,10 +344,10 @@ class GlobalDetectMixin:
         }
         timing_config = obj if module_ref and obj is not None else config
         if (module_ref and obj is not None) or config.get("plugin") == PROCESS_ABSENCE_RESTART:
-            for field in ("timed_detection", "timed_condition", "timed_duration_ms", "timed_actions", "process_name"):
-                guard[field] = timing_config.get(field)
+            guard["process_name"] = str(timing_config.get("process_name", ""))
         if config.get("plugin") == PROCESS_ABSENCE_RESTART:
             guard["plugin"] = PROCESS_ABSENCE_RESTART
+            guard["not_found_since"] = None
         with self.guards_lock:
             self.global_guards[key] = guard
         self._invalidate_detection_config()
@@ -384,10 +377,6 @@ class GlobalDetectMixin:
                 f"首次识别结束后等 {recheck_delay / 1000:g} 秒，再次识别后决定是否执行 · "
                 + hold_text
             )
-        if guard.get("timed_detection"):
-            condition = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
-            hold_text = f"连续{condition} {guard.get('timed_duration_ms', 30000)} ms；状态变化重新计时"
-            tail = "执行持续状态自定义步骤，同一持续状态仅触发一次。"
         repeat_text = (
             "条件仍存在时按间隔重试，目标消失后停止 · "
             if guard.get("wait_text_absent") else ""

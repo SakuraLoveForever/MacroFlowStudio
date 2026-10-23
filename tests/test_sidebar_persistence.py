@@ -10,9 +10,78 @@ from macroflow.core import storage
 from macroflow.ui.app.main import MacroFlowApp
 from macroflow.ui.app.shell import ShellMixin
 from macroflow.ui.app import disconnect_monitor as monitor_ui
+from macroflow.ui.save_state import SaveState
 
 
 class SidebarPersistenceTests(unittest.TestCase):
+    def editable_app(self):
+        app = self.app()
+        app.activation_interval_var = FakeVar('0')
+        app.switch_english_input_enabled = False
+        app.aim_follow_interval_var = FakeVar('2')
+        app.recorder = None
+        app.script = SimpleNamespace(settings={})
+        app.saved_activation_signature = None
+        app._mark_dirty = Mock()
+        app._log = Mock()
+        app._set_status = Mock()
+        app._sidebar_save_state = SaveState(Mock(), Mock(), app._sidebar_save_values)
+        return app
+
+    def test_every_sidebar_option_remains_saveable_until_explicit_save(self):
+        app = self.editable_app()
+        with patch('macroflow.ui.app.runtime.helpers.save_app_settings'):
+            for name in ('sound_enabled', 'mini_window_enabled', 'execution_mini_enabled',
+                         'focus_mode_enabled', 'activate_target_enabled',
+                         'partial_script_globals', 'partial_workflow_globals', 'activation_enabled'):
+                for checked in (True, False):
+                    with self.subTest(option=name, checked=checked):
+                        getattr(app, name + '_var').set(checked)
+                        app._settings_changed()
+                        app._sidebar_save_state.refresh()
+                        self.assertEqual(app._sidebar_save_state.state, 'normal')
+                        self.assertTrue(app.save_sidebar_config())
+                        self.assertEqual(app._sidebar_save_state.state, 'disabled')
+
+    def test_background_persistence_does_not_consume_pending_sidebar_edits(self):
+        app = self.editable_app()
+        app.focus_mode_enabled_var.set(True)
+        with patch('macroflow.ui.app.runtime.helpers.save_app_settings'):
+            self.assertTrue(app._persist_sidebar_settings())
+        app._sidebar_save_state.refresh()
+        self.assertEqual(app._sidebar_save_state.state, 'normal')
+
+    def test_other_sidebar_values_and_nested_settings_are_tracked(self):
+        for name, value in {
+            'repeat_var': 3, 'activation_interval_var': '1.5',
+            'floating_notice_position_var': '右下角', 'close_action_var': 'tray',
+            'aim_follow_interval_var': '3',
+        }.items():
+            with self.subTest(option=name):
+                app = self.editable_app()
+                getattr(app, name).set(value)
+                app._sidebar_save_state.refresh()
+                self.assertEqual(app._sidebar_save_state.state, 'normal')
+        app = self.editable_app()
+        app.switch_english_input_var = FakeVar(True)
+        app._toggle_english_input()
+        self.assertTrue(app.switch_english_input_enabled)
+        self.assertEqual(app._sidebar_save_state.state, 'normal')
+        app = self.editable_app()
+        app.hotkey_scripts = [{'key': 'F1'}]
+        app._sidebar_save_state.saved()
+        app.hotkey_scripts[0]['key'] = 'F2'
+        app._sidebar_save_state.refresh()
+        self.assertEqual(app._sidebar_save_state.state, 'normal')
+
+    def test_failed_save_keeps_retry_enabled(self):
+        app = self.editable_app()
+        app._notify = Mock()
+        app.focus_mode_enabled_var.set(True)
+        with patch('macroflow.ui.app.runtime.helpers.save_app_settings', side_effect=OSError('denied')):
+            self.assertFalse(app.save_sidebar_config())
+        self.assertEqual(app._sidebar_save_state.state, 'normal')
+
     def app(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
         for name in (

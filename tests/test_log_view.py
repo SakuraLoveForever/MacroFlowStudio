@@ -32,7 +32,7 @@ class LogStreamsTests(unittest.TestCase):
         app.log_view_var.get.return_value = 'trace'
         text = ('普通步骤\n全局检测触发：模块[A]，开始执行处理段。\n'
                 '全局检测处理动作：点击 left。\n全局检测超时：模块[B]。\n'
-                '持续状态触发：执行自定义步骤。\n全局检测：识别到模块[A]。\n')
+                '全局检测：识别到模块[A]。\n')
         app._trace_view_buffer = [text]
         app._insert_log_view(text, 'trace')
         inserts = app.log_text.insert.call_args_list

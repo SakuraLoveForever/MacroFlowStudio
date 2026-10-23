@@ -22,6 +22,7 @@ from macroflow.core.storage import (
     save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from macroflow.ui.form_controls import compact_combobox, integer_spinbox
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
     get_monitor_work_area_for_point,
@@ -537,12 +538,12 @@ class GlobalDetectDialog(ModalDialog):
                 template_row, text="选择模块…", command=self.select_image_module,
             ).pack(side="left", padx=pad(6, 0))
         else:
-            self.template_combo = ttk.Combobox(
+            self.template_combo = compact_combobox(
                 template_row, textvariable=self.template,
                 values=registered_template_options(str(action.get("template", ""))),
                 state="readonly",
             )
-            self.template_combo.pack(side="left", fill="x", expand=True)
+            self.template_combo.pack(side="left", fill="none", expand=False)
             self.template_combo.bind(
                 "<<ComboboxSelected>>", lambda _event: self._clear_image_module_binding(),
             )
@@ -606,7 +607,7 @@ class GlobalDetectDialog(ModalDialog):
                 else:
                     selected_target = GLOBAL_SCRIPT_END_LABEL
                 self.jump_row = tk.StringVar(value=selected_target)
-                self.jump_target_combo = ttk.Combobox(
+                self.jump_target_combo = compact_combobox(
                     jump_row_frame, textvariable=self.jump_row,
                     values=[label for label, _ in jump_options], state="readonly",
                     width=48,
@@ -916,12 +917,12 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
         ttk.Label(body, text="模板").grid(row=0, column=0, sticky="w", pady=px(8))
         template_row = ttk.Frame(body)
         template_row.grid(row=0, column=1, sticky="ew")
-        self.template_combo = ttk.Combobox(
+        self.template_combo = compact_combobox(
             template_row, textvariable=self.template,
             values=registered_template_options(str(action.get("template", ""))),
             state="readonly",
         )
-        self.template_combo.pack(side="left", fill="x", expand=True)
+        self.template_combo.pack(side="left", fill="none", expand=False)
         self.template_combo.bind(
             "<<ComboboxSelected>>", lambda _event: self._clear_image_module_binding(),
         )
@@ -963,8 +964,8 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
                 )
                 self.click_point_button.pack(side="left", padx=pad(8, 0))
             elif options or variable in (self.timeout_jump_target, self.found_jump_target):
-                combo = ttk.Combobox(body, textvariable=variable, values=options, state="readonly")
-                combo.grid(row=offset, column=1, sticky="ew")
+                combo = compact_combobox(body, textvariable=variable, values=options, state="readonly")
+                combo.grid(row=offset, column=1, sticky="w")
                 if variable is self.click_target_mode:
                     combo.bind("<<ComboboxSelected>>", self._click_target_changed)
                 elif variable is self.on_found:
@@ -995,12 +996,12 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
         ttk.Label(body, text="备用模板").grid(row=16, column=0, sticky="w", pady=px(6))
         fallback_row = ttk.Frame(body)
         fallback_row.grid(row=16, column=1, sticky="ew")
-        self.fallback_combo = ttk.Combobox(
+        self.fallback_combo = compact_combobox(
             fallback_row, textvariable=self.fallback_template,
             values=fallback_template_options(str(action.get("fallback_template", ""))),
             state="readonly",
         )
-        self.fallback_combo.pack(side="left", fill="x", expand=True)
+        self.fallback_combo.pack(side="left", fill="none", expand=False)
         ttk.Label(body, text="备用切换超时").grid(row=17, column=0, sticky="w", pady=px(6))
         self.fallback_switch_entry = ttk.Entry(body, textvariable=self.fallback_switch_ms)
         self.fallback_switch_entry.grid(row=17, column=1, sticky="ew")
@@ -1011,7 +1012,7 @@ class ImageActionDialog(FailureSegmentMixin, ModalDialog):
         )
         self.fallback_click_button.grid(row=18, column=0, columnspan=2, sticky="w", pady=pad(6, 0))
         ttk.Label(body, text="备用出现后").grid(row=19, column=0, sticky="w", pady=px(6))
-        self.fallback_action_combo = ttk.Combobox(
+        self.fallback_action_combo = compact_combobox(
             body, textvariable=self.fallback_on_match,
             values=("回到主模板的检测", "直接退出识别"), state="readonly", width=18,
         )
@@ -1348,9 +1349,9 @@ class OcrActionDialog(FailureSegmentMixin, ModalDialog):
 
         def combo_row(row, label, variable, options, bind=None):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
-            combo = ttk.Combobox(body, textvariable=variable, values=options,
+            combo = compact_combobox(body, textvariable=variable, values=options,
                                  state="readonly")
-            combo.grid(row=row, column=1, sticky="ew")
+            combo.grid(row=row, column=1, sticky="w")
             if bind:
                 combo.bind("<<ComboboxSelected>>", bind)
             return combo
@@ -1549,14 +1550,18 @@ class OcrCompareActionDialog(FailureSegmentMixin, ModalDialog):
             holder = ttk.Frame(body)
             holder.grid(row=row, column=1, sticky="ew", pady=px(8))
             holder.columnconfigure(0, weight=1)
-            ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
+            if variable in (self.equal_click_count, self.not_equal_click_count):
+                entry = integer_spinbox(holder, textvariable=variable, from_=1, to=9999)
+            else:
+                entry = ttk.Entry(holder, textvariable=variable)
+            entry.grid(row=0, column=0, sticky="ew")
             if button_text:
                 ttk.Button(holder, text=button_text, command=command).grid(row=0, column=1, padx=pad(8, 0))
 
         def combo_row(row, label, variable, options, bind=None):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
-            combo = ttk.Combobox(body, textvariable=variable, values=options, state="readonly")
-            combo.grid(row=row, column=1, sticky="ew", pady=px(8))
+            combo = compact_combobox(body, textvariable=variable, values=options, state="readonly")
+            combo.grid(row=row, column=1, sticky="w", pady=px(8))
             if bind:
                 combo.bind("<<ComboboxSelected>>", bind)
             return combo
@@ -1820,7 +1825,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
             ))
             dark_checkbutton(frame, text="启用", variable=enabled).grid(row=0, column=0, sticky="w", padx=pad(0, 10))
             ttk.Label(frame, text="类型").grid(row=0, column=1, sticky="w")
-            type_combo = ttk.Combobox(
+            type_combo = compact_combobox(
                 frame, textvariable=self.condition_type[-1], values=type_labels,
                 state="readonly", width=12,
             )
@@ -1839,12 +1844,12 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
                 command=lambda slot=index: self.start_condition_region_selection(slot),
             ).grid(row=0, column=1, padx=pad(8, 0))
             ttk.Label(frame, text="图片模板").grid(row=2, column=0, sticky="w", pady=pad(8, 0))
-            template_combo = ttk.Combobox(
+            template_combo = compact_combobox(
                 frame, textvariable=self.condition_template[-1],
                 values=registered_template_options(str(condition.get("template", ""))),
                 state="readonly", width=48,
             )
-            template_combo.grid(row=2, column=1, columnspan=2, sticky="ew", pady=pad(8, 0))
+            template_combo.grid(row=2, column=1, columnspan=2, sticky="w", pady=pad(8, 0))
             template_combo.bind(
                 "<<ComboboxSelected>>",
                 lambda _event, slot=index: self.condition_module_key[slot].set(""),
@@ -1858,7 +1863,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
             threshold_entry = ttk.Entry(frame, textvariable=self.condition_threshold[-1], width=12)
             threshold_entry.grid(row=3, column=1, sticky="w", pady=pad(8, 0))
             ttk.Label(frame, text="OCR模式").grid(row=4, column=0, sticky="w", pady=pad(8, 0))
-            ocr_mode_combo = ttk.Combobox(
+            ocr_mode_combo = compact_combobox(
                 frame, textvariable=self.condition_ocr_mode[-1], values=ocr_mode_labels,
                 state="readonly", width=12,
             )
@@ -1871,7 +1876,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
             expected_entry = ttk.Entry(frame, textvariable=self.condition_expected[-1])
             expected_entry.grid(row=5, column=1, columnspan=2, sticky="ew", pady=pad(8, 0))
             ttk.Label(frame, text="OCR匹配").grid(row=6, column=0, sticky="w", pady=pad(8, 0))
-            match_combo = ttk.Combobox(
+            match_combo = compact_combobox(
                 frame, textvariable=self.condition_match_mode[-1], values=match_labels,
                 state="readonly", width=12,
             )
@@ -1880,7 +1885,7 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
             separator_entry = ttk.Entry(frame, textvariable=self.condition_separator[-1], width=12)
             separator_entry.grid(row=7, column=1, sticky="w", pady=pad(8, 0))
             ttk.Label(frame, text="数字关系").grid(row=7, column=2, sticky="w", padx=pad(20, 0), pady=pad(8, 0))
-            relation_combo = ttk.Combobox(
+            relation_combo = compact_combobox(
                 frame, textvariable=self.condition_relation[-1], values=relation_labels,
                 state="readonly", width=12,
             )
@@ -1944,14 +1949,18 @@ class MultiConditionClickDialog(FailureSegmentMixin, ModalDialog):
         holder = ttk.Frame(parent)
         holder.grid(row=row, column=1, sticky="ew", pady=px(6))
         holder.columnconfigure(0, weight=1)
-        ttk.Entry(holder, textvariable=variable).grid(row=0, column=0, sticky="ew")
+        if variable is self.click_count:
+            entry = integer_spinbox(holder, textvariable=variable, from_=1, to=9999)
+        else:
+            entry = ttk.Entry(holder, textvariable=variable)
+        entry.grid(row=0, column=0, sticky="ew")
         if picker:
             ttk.Button(holder, text="框选区域…", command=picker).grid(row=0, column=1, padx=pad(8, 0))
 
     @staticmethod
     def _combo_row(parent, row, label, variable, values):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=px(6))
-        ttk.Combobox(parent, textvariable=variable, values=values, state="readonly").grid(
+        compact_combobox(parent, textvariable=variable, values=values, state="readonly").grid(
             row=row, column=1, sticky="w", pady=px(6),
         )
 
@@ -2242,7 +2251,7 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         row_height_holder = ttk.Frame(frame)
         row_height_holder.grid(row=4, column=1, sticky="ew", pady=px(3))
         row_height_holder.columnconfigure(0, weight=1)
-        ttk.Entry(row_height_holder, textvariable=self.row_height).grid(
+        integer_spinbox(row_height_holder, textvariable=self.row_height, from_=1).grid(
             row=0, column=0, sticky="ew",
         )
         ttk.Button(
@@ -2280,7 +2289,7 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         separator_var = getattr(self, f"{side}_separator")
         relation_var = getattr(self, f"{side}_relation")
         ttk.Label(frame, text="类型").grid(row=0, column=0, sticky="w", pady=px(3))
-        type_combo = ttk.Combobox(
+        type_combo = compact_combobox(
             frame, textvariable=type_var,
             values=tuple(label for label, _value in self.CONDITION_TYPES), state="readonly", width=12,
         )
@@ -2302,7 +2311,7 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         expected_entry.grid(row=2, column=1, sticky="ew", pady=px(3))
         match_label = ttk.Label(frame, text="文字匹配")
         match_label.grid(row=3, column=0, sticky="w", pady=px(3))
-        match_combo = ttk.Combobox(
+        match_combo = compact_combobox(
             frame, textvariable=match_var,
             values=tuple(label for label, _value in self.MATCH_MODES), state="readonly", width=12,
         )
@@ -2313,7 +2322,7 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         separator_entry.grid(row=4, column=1, sticky="w", pady=px(3))
         relation_label = ttk.Label(frame, text="数字关系")
         relation_label.grid(row=5, column=0, sticky="w", pady=px(3))
-        relation_combo = ttk.Combobox(
+        relation_combo = compact_combobox(
             frame, textvariable=relation_var,
             values=tuple(label for label, _value in self.RELATIONS), state="readonly", width=12,
         )
@@ -2333,7 +2342,7 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(3, weight=1)
         ttk.Label(frame, text="点击按钮").grid(row=0, column=0, sticky="w", pady=px(3))
-        ttk.Combobox(
+        compact_combobox(
             frame, textvariable=self.button,
             values=("left", "right", "middle"), state="readonly", width=10,
         ).grid(row=0, column=1, sticky="w", pady=px(3))
@@ -2346,31 +2355,31 @@ class RowListConditionClickDialog(FailureSegmentMixin, ModalDialog):
         result_labels = tuple(label for label, _value in MODULE_RESULT_OPTIONS)
         target_labels = tuple(self.jump_target_ids)
         ttk.Label(frame, text="成功后").grid(row=1, column=0, sticky="w", pady=px(3))
-        ttk.Combobox(
+        compact_combobox(
             frame, textvariable=self.on_success,
             values=result_labels, state="readonly", width=18,
-        ).grid(row=1, column=1, sticky="ew", pady=px(3))
+        ).grid(row=1, column=1, sticky="w", pady=px(3))
         ttk.Label(frame, text="成功跳转到").grid(row=1, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
-        self.success_target_combo = ttk.Combobox(
+        self.success_target_combo = compact_combobox(
             frame, textvariable=self.success_target, values=target_labels,
             state="disabled", width=28,
         )
-        self.success_target_combo.grid(row=1, column=3, sticky="ew", pady=px(3))
+        self.success_target_combo.grid(row=1, column=3, sticky="w", pady=px(3))
 
         ttk.Label(frame, text="失败后").grid(row=2, column=0, sticky="w", pady=px(3))
-        ttk.Combobox(
+        compact_combobox(
             frame, textvariable=self.on_failure,
             values=result_labels, state="readonly", width=18,
-        ).grid(row=2, column=1, sticky="ew", pady=px(3))
+        ).grid(row=2, column=1, sticky="w", pady=px(3))
         ttk.Label(frame, text="失败跳转到").grid(row=2, column=2, sticky="w", padx=pad(18, 0), pady=px(3))
-        self.failure_target_combo = ttk.Combobox(
+        self.failure_target_combo = compact_combobox(
             frame, textvariable=self.failure_target, values=target_labels,
             state="disabled", width=28,
         )
-        self.failure_target_combo.grid(row=2, column=3, sticky="ew", pady=px(3))
+        self.failure_target_combo.grid(row=2, column=3, sticky="w", pady=px(3))
 
         ttk.Label(frame, text="无匹配时").grid(row=3, column=0, sticky="w", pady=px(3))
-        ttk.Combobox(
+        compact_combobox(
             frame, textvariable=self.no_match_action,
             values=tuple(label for label, _value in self.NO_MATCH_ACTIONS), state="readonly", width=12,
         ).grid(row=3, column=1, sticky="w", pady=px(3))

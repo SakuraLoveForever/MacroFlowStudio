@@ -21,9 +21,9 @@ def process_absence_guard_config(config: dict) -> dict:
     return {
         "name": "进程缺失重启", "recognize": "process",
         "process_name": settings["process_name"], "interval_ms": 500,
-        "timed_detection": True, "timed_condition": "absent",
-        "timed_duration_ms": settings["duration_ms"],
-        "timed_actions": [{"type": "restart_workflow", "restart_workflow_target_row": 1}],
+        "run_code_on_timeout": True,
+        "not_found_timeout_ms": settings["duration_ms"],
+        "on_timeout_actions": [{"type": "restart_workflow", "restart_workflow_target_row": 1}],
         "plugin": PROCESS_ABSENCE_RESTART,
     }
 

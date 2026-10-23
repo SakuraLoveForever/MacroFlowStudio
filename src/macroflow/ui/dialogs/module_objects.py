@@ -41,8 +41,6 @@ from .base import (
     COLOR_SURFACE,
     COLOR_TEXT,
     DIALOG_FRAME_MARGIN,
-    FALLBACK_ON_MATCH_LABELS,
-    FALLBACK_ON_MATCH_VALUES,
     FONT_BODY,
     FONT_FAMILY,
     FONT_SUBTITLE,
@@ -64,6 +62,7 @@ from .base import (
     scrollable_dialog_body,
     show_floating_notice,
 )
+from macroflow.ui.form_controls import compact_combobox, integer_spinbox
 from .helpers import (
     _app_via_parent,
     bind_wheel_to_scroll_tree,
@@ -333,36 +332,13 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self.recheck_delay_var = duration_var(
             obj.get("recheck_delay_ms", DEFAULT_MODULE_RECHECK_DELAY_MS),
         )
-        fallback_objects = load_module_objects()
-        fallback_key = str(obj.get("fallback_module_key", "")).strip()
-        self.fallback_module_keys = {"（不启用）": ""}
-        for key, value in fallback_objects.items():
-            if key == old_key or value.get("recognize") in ("number", "none", "process") or value.get("pure_action"):
-                continue
-            name = str(value.get("name", "")).strip() or Path(key.replace("\\", "/")).stem
-            label = name if name not in self.fallback_module_keys else f"{name} · {key}"
-            self.fallback_module_keys[label] = key
-        fallback_label = next(
-            (label for label, key in self.fallback_module_keys.items() if key == fallback_key),
-            "（不启用）",
-        )
-        self.fallback_module_key_var = tk.StringVar(value=fallback_label)
-        fallback_on_match = str(obj.get("fallback_on_match", "")).strip()
-        if fallback_on_match not in FALLBACK_ON_MATCH_LABELS:
-            fallback_on_match = "click_continue" if bool(obj.get("fallback_click", False)) else "continue"
-        self.fallback_on_match_var = tk.StringVar(
-            value=FALLBACK_ON_MATCH_LABELS[fallback_on_match],
-        )
-        self.fallback_click_var = tk.BooleanVar(value=fallback_on_match.startswith("click_"))
-        self.fallback_click_count_var = tk.StringVar(value=str(obj.get("fallback_click_count", 1)))
-        self.fallback_click_interval_var = duration_var(obj.get("fallback_click_interval_ms", 100))
         self.wait_rule_var = tk.StringVar(value=(
             "一直等待" if obj.get("blocking", False) else
             "限时等待" if int(obj.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS)) > 0
             else "未命中立即跳过"
         ))
         self.advanced_recognition_var = tk.BooleanVar(value=bool(
-            obj.get("fallback_module_key") or obj.get("hold_enabled")
+            obj.get("hold_enabled")
             or obj.get("recheck_enabled")
         ))
         self.hold_enabled_var = tk.BooleanVar(value=bool(obj.get("hold_enabled", False)))
@@ -405,10 +381,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             obj.get("not_found_timeout_ms", DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS),
         )
         self.timeout_segment = [dict(item) for item in obj.get("on_timeout_actions") or []]
-        self.timed_detection_var = tk.BooleanVar(value=bool(obj.get("timed_detection", False)))
-        self.timed_condition_var = tk.StringVar(value="连续检测到" if obj.get("timed_condition") == "present" else "连续未检测到")
-        self.timed_duration_var = duration_var(obj.get("timed_duration_ms", 30000))
-        self.timed_segment = [dict(item) for item in obj.get("timed_actions") or []]
         # 表单行数多，小屏 / 高 DPI（打包版按真实 DPI 渲染）下固定高度窗口会把
         # 底部的延时、识别成功后动作、点击按钮等行挤出窗口且没有滚动条（用户
         # 报告“相似度、检测间隔、延时、动作、点击按钮等都没有输入的地方”）。
@@ -489,7 +461,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 width=14, set_attr="recognize_combo",
             ),
             "模板图片：按图像匹配；识别文字：截取区域做 OCR；读取数字：把指定区域"
-            "内的数字从左到右拼成整数，并由脚本行判断；无需识图：模块执行到时直接运行；进程检测：按自定义进程名计时。",
+            "内的数字从左到右拼成整数，并由脚本行判断；无需识图：模块执行到时直接运行；进程检测：检查指定进程是否正在运行。",
         )
         self.recognize_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
         row += 1
@@ -590,36 +562,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "不勾选则第一次识别命中就立即执行。",
         )
         row += 1
-        self.row_fallback_module = self._labeled_row(
-            body, row, "备用识别模块",
-            lambda m: self._row_combo(
-                m, self.fallback_module_key_var, tuple(self.fallback_module_keys), width=32,
-                set_attr="fallback_module_combo",
-            ),
-            "主模块等待且尚未超时期间，每轮先识别主模块，再同时识别这里选择的备用图片或文字模块。主命中立即结束；备用命中后继续等待主模块。",
-        )
-        self.fallback_module_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
-        row += 1
-        self.row_fallback_click = self._labeled_row(
-            body, row, "备用命中后",
-            lambda m: self._row_combo(
-                m, self.fallback_on_match_var,
-                tuple(FALLBACK_ON_MATCH_LABELS.values()), width=32,
-                set_attr="fallback_on_match_combo",
-            ),
-            "可选择不点击或点击备用命中位置，并决定继续识别主模块还是直接退出主模块识别。备用持续存在时只处理一次，消失后再次出现才会再次处理。",
-        )
-        self.fallback_on_match_combo.bind("<<ComboboxSelected>>", self._toggle_sections)
-        row += 1
-        self.row_fallback_click_settings = self._labeled_row(
-            body, row, "备用点击参数",
-            lambda m: self._entry_pair_row(
-                m, self.fallback_click_count_var, self.fallback_click_interval_var,
-                "次数", "间隔",
-            ),
-            "备用模块命中后连续点击的次数，以及两次点击之间的等待毫秒数。",
-        )
-        row += 1
         self.action_section_heading = self._section_heading(body, row, "成功后动作")
         row += 1
         self.row_after = self._labeled_row(
@@ -643,7 +585,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         row += 1
         self.row_click_count = self._labeled_row(
             body, row, "点击次数",
-            lambda m: ttk.Entry(m, textvariable=self.click_count_var, width=10),
+            lambda m: integer_spinbox(m, textvariable=self.click_count_var, from_=1, to=9999, width=8),
             "识别成功后在所选位置连续点击多少下，默认 1；"
             "点击识别区域、自定义位置和二次识别点击均使用该次数。",
         )
@@ -715,31 +657,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         row += 1
         self.segment_frame = self._build_segment_panel(body, row)
         row += 1
-        self.timed_heading = self._section_heading(body, row, "持续状态触发")
-        row += 1
-        self.row_timed_detection = self._labeled_row(
-            body, row, "持续状态触发",
-            lambda m: dark_checkbutton(m, "启用", self.timed_detection_var, command=self._toggle_sections),
-            "连续检测到或连续未检测到目标达到设定时长后，只执行下方自定义步骤。状态变化后重新计时；全局模块每段持续状态只触发一次。",
-        )
-        row += 1
-        self.row_timed_condition = self._labeled_row(
-            body, row, "触发条件",
-            lambda m: self._row_combo(m, self.timed_condition_var, ("连续检测到", "连续未检测到")),
-            "根据图片或文字的实际检测结果计时。",
-        )
-        row += 1
-        self.row_timed_duration = self._labeled_row(
-            body, row, "持续时长",
-            lambda m: ttk.Entry(m, textvariable=self.timed_duration_var, width=14),
-            "状态必须持续达到该时长；状态反转或截图失败后重新计时。",
-        )
-        row += 1
-        self.timed_segment_frame = self._build_segment_panel(
-            body, row, segment_attr="timed_segment", listbox_attr="timed_segment_listbox",
-            title="持续状态满足后执行的步骤",
-        )
-        row += 1
         self.timeout_section_heading = self._section_heading(body, row, "未识别超时")
         row += 1
         self.row_run_code_on_timeout = self._labeled_row(
@@ -780,7 +697,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
     def _save_values(self):
         values = {name: value.get() for name, value in self.__dict__.items()
                   if name.endswith('_var') and isinstance(value, tk.Variable)}
-        return values, self.segment, self.timeout_segment, self.timed_segment, self.module_enabled
+        return values, self.segment, self.timeout_segment, self.module_enabled
 
     def _build_hold_control(self, master):
         frame = ttk.Frame(master)
@@ -810,7 +727,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             ("左", self.ocr_offset_left_var), ("右", self.ocr_offset_right_var),
         ):
             ttk.Label(frame, text=label).pack(side="left", padx=(8 if frame.winfo_children() else 0, 3))
-            ttk.Entry(frame, textvariable=variable, width=6).pack(side="left")
+            integer_spinbox(frame, textvariable=variable, width=6).pack(side="left")
         ttk.Button(
             frame, text="拖拽选取…", command=self._pick_ocr_offset,
         ).pack(side="left", padx=pad(10, 0))
@@ -862,7 +779,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             # 说明挂在字段名文字上：悬停文字即显示，不再显示问号角标。
             Tooltip(label_widget, tip, anchor=frame)
         control = control_factory(frame)
-        control.grid(row=0, column=1, sticky="ew")
+        control.grid(row=0, column=1,
+                     sticky="w" if isinstance(control, (ttk.Combobox, ttk.Spinbox)) else "ew")
         return frame
 
     @staticmethod
@@ -911,7 +829,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
     def _row_combo(self, frame, var, values, width: int | None = None,
                    set_attr: str | None = None):
         """行内只读下拉框（真实子控件）。"""
-        combo = ttk.Combobox(
+        combo = compact_combobox(
             frame, textvariable=var, values=list(values),
             state="readonly", **({"width": width} if width else {}),
         )
@@ -935,23 +853,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             )
         return entry
 
-    def _entry_pair_row(self, frame, first_var, second_var, first_label, second_label):
-        """Two compact numeric entries used for count plus interval settings."""
-        row = ttk.Frame(frame)
-        ttk.Entry(row, textvariable=first_var, width=8).grid(row=0, column=0, sticky="w")
-        ttk.Label(row, text=first_label).grid(row=0, column=1, padx=pad(6, 12), sticky="w")
-        ttk.Entry(row, textvariable=second_var, width=10).grid(row=0, column=2, sticky="w")
-        ttk.Label(row, text=second_label).grid(row=0, column=3, padx=pad(6, 0), sticky="w")
-        return row
-
-    def _fallback_on_match_value(self) -> str:
-        variable = getattr(self, "fallback_on_match_var", None)
-        if variable is not None:
-            value = FALLBACK_ON_MATCH_VALUES.get(variable.get())
-            if value:
-                return value
-        return "click_continue" if bool(self.fallback_click_var.get()) else "continue"
-
     def _toggle_sections(self, _event=None):
         after = self.after_action_var.get()
         category = self.category_var.get()
@@ -960,7 +861,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 self.recognize_var.set("模板图片")
             self.after_action_var.set("成功后继续")
             for name in ('run_code_after_action_var', 'run_code_on_timeout_var',
-                         'timed_detection_var', 'recheck_enabled_var'):
+                         'recheck_enabled_var'):
                 variable = self.__dict__.get(name)
                 if variable is not None:
                     variable.set(False)
@@ -977,13 +878,13 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         if hasattr(self, "after_action_combo"):
             self.after_action_combo.configure(values=(
                 ("点击自定义位置", "成功后继续")
-                if direct_mode else ("成功后继续",)
+                if direct_mode or process_mode else ("成功后继续",)
                 if number_mode else tuple(AFTER_ACTION_LABELS.values())
             ))
         if number_mode and after != "成功后继续":
             self.after_action_var.set("成功后继续")
             after = "成功后继续"
-        elif direct_mode and after not in ("点击自定义位置", "成功后继续"):
+        elif (direct_mode or process_mode) and after not in ("点击自定义位置", "成功后继续"):
             self.after_action_var.set("成功后继续")
             after = "成功后继续"
         if text_mode and after == "二次识别后点击":
@@ -1000,34 +901,16 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         self._set_row(self.row_recognize, not pure)
         self._set_row(self.row_expected_text, text_mode)
         self._set_row(self.row_match_mode, text_mode)
-        self._set_row(self.row_wait_text_absent, not pure and not number_mode and not direct_mode)
+        self._set_row(self.row_wait_text_absent, not pure and not number_mode and not direct_mode and not process_mode)
         self._set_row(self.row_threshold, not pure and not text_mode and not number_mode and not direct_mode and not process_mode)
         self._set_row(self.row_start_delay, not pure)
-        self._set_row(self.row_interval, not pure and not direct_mode)
+        self._set_row(self.row_interval, not pure and not direct_mode
+                      and (not process_mode or category in ("工作流全局模块", "脚本全局模块")))
         self._set_row(
             self.row_cooldown,
             not pure and category in ("工作流全局模块", "脚本全局模块"),
         )
         self._set_row(self.row_recheck_confirm, not pure and not number_mode and not direct_mode and not process_mode)
-        fallback_supported = not pure and not number_mode and not direct_mode
-        self._set_row(self.row_fallback_module, fallback_supported)
-        self._set_row(
-            self.row_fallback_click,
-            fallback_supported and bool(
-                getattr(self, "fallback_module_keys", {}).get(
-                    self.fallback_module_key_var.get(),
-                    self.fallback_module_key_var.get().strip(),
-                )
-            ),
-        )
-        self._set_row(
-            getattr(self, "row_fallback_click_settings", None),
-            fallback_supported and self._fallback_on_match_value().startswith("click_") and bool(
-                getattr(self, "fallback_module_keys", {}).get(
-                    self.fallback_module_key_var.get(), self.fallback_module_key_var.get().strip(),
-                )
-            ),
-        )
         wait_for_disappearance = self.target_condition_var.get() == "消失"
         self._set_row(
             self.row_blocking, not pure and not direct_mode and not process_mode
@@ -1076,6 +959,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         )
         timeout_available = (
             not pure and (not direct_mode or direct_global)
+            and not (process_mode and category == "切换模块")
             and not (category == "切换模块" and (
                 self.wait_rule_var.get() == "一直等待" or wait_for_disappearance
             ))
@@ -1090,7 +974,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             and bool(self.run_code_on_timeout_var.get())
         )
         switch_failure_timeout = (
-            category == "切换模块" and not direct_mode
+            category == "切换模块" and not direct_mode and not process_mode
             and self.wait_rule_var.get() == "限时等待"
             and not wait_for_disappearance
         )
@@ -1099,52 +983,33 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             or (timeout_enabled and category != "切换模块"),
         )
         self._set_row(self.timeout_segment_frame, timeout_enabled)
-        timed_available = not pure and not number_mode and not direct_mode
-        timed_enabled = timed_available and (process_mode or self.timed_detection_var.get())
-        for timed_row in (self.timed_heading, self.row_timed_detection):
-            self._set_row(timed_row, timed_available and (not process_mode or timed_row is self.timed_heading))
-        for timed_row in (self.row_timed_condition, self.row_timed_duration, self.timed_segment_frame):
-            self._set_row(timed_row, timed_enabled)
-        if timed_enabled:
-            # 持续状态模式仅执行自己的步骤，不同时应用普通识别的点击与超时行为。
-            for ordinary_row in (self.segment_section_heading, self.row_run_code_after_action,
-                                 self.segment_frame, self.timeout_section_heading,
-                                 self.row_run_code_on_timeout, self.row_not_found_timeout,
-                                 self.timeout_segment_frame, self.row_wait_text_absent,
-                                 self.row_blocking, self.row_recheck_confirm, self.action_section_heading,
-                                 self.row_after, self.row_hold, self.row_button, self.row_click_count,
-                                 self.row_ocr_offset, self.row_click_point, self.row_second_template,
-                                 self.row_second_timeout, self.row_second_click_target,
-                                 self.row_second_click_region, self.row_fallback_module,
-                                 self.row_fallback_click, self.row_fallback_click_settings, self.row_cooldown):
-                self._set_row(ordinary_row, False)
-        advanced_available = not pure and (not direct_mode or direct_global)
+        advanced_available = (
+            not pure and (not direct_mode or direct_global)
+            and not (process_mode and category == "切换模块")
+        )
         self._set_row(self.row_advanced_recognition, advanced_available)
         self._set_row(
             self.confirmation_heading, advanced_available and not direct_mode and not number_mode
-            and not process_mode and not timed_enabled
+            and not process_mode
             and bool(self.advanced_recognition_var.get()),
         )
         if not advanced_available or not self.advanced_recognition_var.get():
             for advanced_row in (
                 self.row_interval, self.row_cooldown, self.confirmation_heading,
-                self.row_hold, self.row_fallback_module, self.row_fallback_click,
-                self.row_fallback_click_settings,
+                self.row_hold,
                 self.row_recheck_confirm,
             ):
                 self._set_row(advanced_row, False)
         if category == "识图":
             for name in (
                 'row_start_delay', 'row_interval', 'row_cooldown', 'row_recheck_confirm',
-                'row_wait_text_absent', 'row_blocking', 'row_fallback_module', 'row_fallback_click',
-                'row_fallback_click_settings', 'action_section_heading', 'row_after', 'row_hold',
+                'row_wait_text_absent', 'row_blocking',
+                'action_section_heading', 'row_after', 'row_hold',
                 'row_button', 'row_click_count', 'row_ocr_offset', 'row_click_point',
                 'row_second_template', 'row_second_timeout', 'row_second_click_target',
                 'row_second_click_region', 'segment_section_heading', 'row_run_code_after_action',
                 'segment_frame', 'timeout_section_heading', 'row_run_code_on_timeout',
-                'row_not_found_timeout', 'timeout_segment_frame', 'timed_heading',
-                'row_timed_detection', 'row_timed_condition', 'row_timed_duration',
-                'timed_segment_frame', 'row_advanced_recognition', 'confirmation_heading',
+                'row_not_found_timeout', 'timeout_segment_frame', 'row_advanced_recognition', 'confirmation_heading',
             ):
                 self._set_row(getattr(self, name, None), False)
         self._resize_for_content()
@@ -1410,20 +1275,15 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         try:
             hold = max(0, int(self.hold_var.get()))
             click_count = max(1, min(9999, int(self.click_count_var.get())))
-            fallback_count_var = getattr(self, "fallback_click_count_var", None)
-            fallback_interval_var = getattr(self, "fallback_click_interval_var", None)
-            fallback_click_count = max(1, min(9999, int(fallback_count_var.get()) if fallback_count_var else 1))
-            fallback_click_interval = max(0, min(60000, int(fallback_interval_var.get()) if fallback_interval_var else 100))
         except ValueError:
             show_floating_notice(
                 self, "数字格式错误",
                 "持续时间必须是大于等于 0 的整数；点击次数必须是大于等于 1 的整数。",
             )
             return
-        timed_enabled = process_mode or (not number_mode and not direct_mode and self.timed_detection_var.get())
         recheck_enabled = (
             bool(self.recheck_enabled_var.get())
-            and not number_mode and not direct_mode and not timed_enabled
+            and not number_mode and not direct_mode and not process_mode
         )
         try:
             recheck_delay = int(self.recheck_delay_var.get())
@@ -1438,8 +1298,8 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         if not 1000 <= recheck_delay <= 600000:
             # 未启用时允许留空/填 0，保存回默认 5 秒，不拦保存。
             recheck_delay = DEFAULT_MODULE_RECHECK_DELAY_MS
-        after_value = "continue" if timed_enabled else AFTER_ACTION_VALUES.get(self.after_action_var.get(), "click_match")
-        if direct_mode and after_value not in ("click_custom", "continue"):
+        after_value = AFTER_ACTION_VALUES.get(self.after_action_var.get(), "click_match")
+        if (direct_mode or process_mode) and after_value not in ("click_custom", "continue"):
             after_value = "continue"
         try:
             ocr_offsets = {
@@ -1497,7 +1357,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                     )
                     return
         run_code_after_action = (
-            not timed_enabled and not number_mode and not direct_global and bool(self.run_code_after_action_var.get())
+            not number_mode and not direct_global and bool(self.run_code_after_action_var.get())
         )
         if run_code_after_action:
             if not self.segment:
@@ -1507,20 +1367,9 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
                 )
                 return
             ensure_action_ids(self.segment)
-        try:
-            timed_duration = int(self.timed_duration_var.get())
-        except ValueError:
-            timed_duration = 0
-        if timed_enabled:
-            if not 1 <= timed_duration <= 86400000:
-                show_floating_notice(self, "持续时长格式错误", "持续时长必须大于 0 且不超过 24 小时。")
-                return
-            if not self.timed_segment:
-                show_floating_notice(self, "自定义步骤为空", "请至少添加一个持续状态触发后执行的步骤。")
-                return
-            ensure_action_ids(self.timed_segment)
         run_code_on_timeout = (
-            not timed_enabled and not number_mode and (not direct_mode or direct_global)
+            not number_mode and (not direct_mode or direct_global)
+            and not (process_mode and self.category_var.get() == "切换模块")
             and bool(self.run_code_on_timeout_var.get())
             and not (self.category_var.get() == "切换模块" and (
                 self.wait_rule_var.get() == "一直等待"
@@ -1528,7 +1377,10 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             ))
         )
         try:
-            not_found_timeout = max(0, int(self.not_found_timeout_var.get()))
+            not_found_timeout = (
+                0 if process_mode and self.category_var.get() == "切换模块"
+                else max(0, int(self.not_found_timeout_var.get()))
+            )
         except ValueError:
             show_floating_notice(
                 self, "未识别时限格式错误",
@@ -1540,7 +1392,7 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
         elif (self.category_var.get() == "切换模块"
               and self.wait_rule_var.get() == "限时等待"
               and self.target_condition_var.get() != "消失"
-              and not direct_mode and not timed_enabled and not_found_timeout <= 0):
+              and not direct_mode and not process_mode and not_found_timeout <= 0):
             show_floating_notice(self, "等待时限无效", "限时等待的时长必须大于 0；只识别一次请选择“未命中立即跳过”。")
             return
         if run_code_on_timeout:
@@ -1575,16 +1427,6 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "cooldown_ms": cooldown,
             "recheck_enabled": recheck_enabled,
             "recheck_delay_ms": recheck_delay,
-            "fallback_module_key": (
-                getattr(self, "fallback_module_keys", {}).get(
-                    self.fallback_module_key_var.get(), self.fallback_module_key_var.get().strip(),
-                )
-                if not number_mode and not direct_mode else ""
-            ),
-            "fallback_on_match": self._fallback_on_match_value(),
-            "fallback_click": self._fallback_on_match_value().startswith("click_"),
-            "fallback_click_count": fallback_click_count,
-            "fallback_click_interval_ms": fallback_click_interval,
             "blocking": False if direct_mode else self.wait_rule_var.get() == "一直等待",
             "hold_enabled": bool(self.hold_enabled_var.get()),
             "hold_ms": hold,
@@ -1605,15 +1447,14 @@ class TemplateRegionFormDialog(SegmentEditorMixin, ModalDialog):
             "not_found_timeout_ms": not_found_timeout,
             "on_timeout_actions": [] if number_mode else self.timeout_segment,
             "process_name": process_name if process_mode else "",
-            "timed_detection": bool(timed_enabled),
-            "timed_condition": "present" if self.timed_condition_var.get() == "连续检测到" else "absent",
-            "timed_duration_ms": timed_duration if timed_duration > 0 else 30000,
-            "timed_actions": self.timed_segment,
             "wait_text_absent": False if direct_mode or number_mode else self.target_condition_var.get() == "消失",
         }
         if process_mode:
             module_dict.update({"recognize": "process", "template": "", "region": [],
                                 "blocking": False, "wait_text_absent": False})
+            if self.category_var.get() == "切换模块":
+                module_dict.update({"hold_enabled": False, "run_code_on_timeout": False,
+                                    "not_found_timeout_ms": 0, "on_timeout_actions": []})
         elif text_mode:
             module_dict["recognize"] = "text"
             module_dict["expected_text"] = expected_text
@@ -3156,7 +2997,7 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
         key = str(action.get("module_key") or action.get("template", ""))
         obj = registered_module_object(key)
         number_routes = bool(result_routes and obj and obj.get("recognize") == "number")
-        self.blocking_module = bool(obj and obj.get("blocking", False) and not obj.get("timed_detection"))
+        self.blocking_module = bool(obj and obj.get("blocking", False))
         super().__init__(
             parent, "编辑数字读取" if number_routes else "编辑模块引用",
             680, 640 if number_routes else 570 if result_routes else 330,
@@ -3248,38 +3089,38 @@ class ModuleReferenceDelayDialog(FailureSegmentMixin, ModalDialog):
             ttk.Label(body, text="数字等于时" if number_routes else "模块成功后").grid(
                 row=next_row, column=0, sticky="w", pady=px(8),
             )
-            ttk.Combobox(
+            compact_combobox(
                 body, textvariable=self.on_success, values=option_labels,
                 state="readonly",
-            ).grid(row=next_row, column=1, sticky="ew", pady=px(8))
+            ).grid(row=next_row, column=1, sticky="w", pady=px(8))
             next_row += 1
             ttk.Label(body, text="等于后跳转到" if number_routes else "成功跳转到").grid(
                 row=next_row, column=0, sticky="w", pady=px(8),
             )
-            self.success_target_combo = ttk.Combobox(
+            self.success_target_combo = compact_combobox(
                 body, textvariable=self.success_target, values=target_labels,
                 state="disabled",
             )
-            self.success_target_combo.grid(row=next_row, column=1, sticky="ew", pady=px(8))
+            self.success_target_combo.grid(row=next_row, column=1, sticky="w", pady=px(8))
             next_row += 1
             ttk.Label(
                 body, text="数字不等于或未读取到时" if number_routes else "模块失败后",
             ).grid(
                 row=next_row, column=0, sticky="w", pady=px(8),
             )
-            ttk.Combobox(
+            compact_combobox(
                 body, textvariable=self.on_failure, values=option_labels,
                 state="readonly",
-            ).grid(row=next_row, column=1, sticky="ew", pady=px(8))
+            ).grid(row=next_row, column=1, sticky="w", pady=px(8))
             next_row += 1
             ttk.Label(body, text="不等于后跳转到" if number_routes else "失败跳转到").grid(
                 row=next_row, column=0, sticky="w", pady=px(8),
             )
-            self.failure_target_combo = ttk.Combobox(
+            self.failure_target_combo = compact_combobox(
                 body, textvariable=self.failure_target, values=target_labels,
                 state="disabled",
             )
-            self.failure_target_combo.grid(row=next_row, column=1, sticky="ew", pady=px(8))
+            self.failure_target_combo.grid(row=next_row, column=1, sticky="w", pady=px(8))
             next_row += 1
             self.on_success.trace_add("write", self._update_result_target_states)
             self.on_failure.trace_add("write", self._update_result_target_states)

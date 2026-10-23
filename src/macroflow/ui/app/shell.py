@@ -399,8 +399,7 @@ class ShellMixin:
         tk.Checkbutton(
             sidebar, text="执行前切换英文输入法",
             variable=self.switch_english_input_var,
-            command=lambda: setattr(self, "switch_english_input_enabled",
-                                    bool(self.switch_english_input_var.get())),
+            command=self._toggle_english_input,
             **check_style,
         ).pack(anchor="w", pady=pad(0, 6))
         focus_row = ttk.Frame(sidebar, style="Sidebar.TFrame")

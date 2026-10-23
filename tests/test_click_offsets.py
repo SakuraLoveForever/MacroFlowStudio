@@ -34,7 +34,7 @@ class RecognitionClickOffsetTests(unittest.TestCase):
                     "row_name", "row_image", "row_region", "detect_section_heading",
                     "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
                     "row_wait_text_absent", "row_interval", "row_cooldown", "row_start_delay", "row_recheck_confirm",
-                    "row_fallback_module", "row_fallback_click", "row_blocking",
+                    "row_blocking",
                     "action_section_heading", "row_delay", "row_after", "row_hold", "row_button",
                     "row_click_count", "row_ocr_offset", "row_click_point", "row_second_template",
                     "row_second_timeout", "row_second_click_target", "row_second_click_region",
@@ -111,50 +111,7 @@ class RecognitionClickOffsetTests(unittest.TestCase):
         for key, value in OFFSETS.items():
             self.assertEqual(hit["second"][key], value)
 
-    def test_ordinary_fallback_uses_its_own_offsets(self):
-        with tempfile.TemporaryDirectory() as folder:
-            template = Path(folder) / "main.png"
-            template.write_bytes(b"test")
-            main = dict(template=str(template), blocking=True, after_action="continue",
-                        fallback_module_key="fallback", fallback_on_match="click_continue",
-                        ocr_offset_right=999)
-            fallback = dict(OFFSETS, template=str(template), name="fallback")
-            match = dict(x=40, y=50, width=20, height=20, center_x=50, center_y=60, score=0.9)
-            player = MacroPlayer()
-            player._wait = Mock()
-            player._click_module_point = Mock()
-            with package_patch('player', 'registered_module_object',
-                               side_effect=lambda key: {"main": main, "fallback": fallback}[key]), \
-                 package_patch('player', 'find_template', side_effect=[None, match, match]), \
-                 package_patch('player', 'show_overlay'):
-                player._execute_image(dict(type="image_match", module_ref=True,
-                                           module_key="main", template=str(template)), None)
-            player._click_module_point.assert_called_once_with(35, 70, "left", 1, None)
 
-    def test_global_fallback_offsets_survive_deferred_execution(self):
-        fixture = guard_tests.GlobalDetectTests()
-        app = fixture._make_guard_app()
-        app._pending_global_guard_hits = []
-        app._guard_config_version = 3
-        app._detection_run_id = 7
-        app._ui = Mock()
-        with tempfile.TemporaryDirectory() as folder:
-            template = Path(folder) / "main.png"
-            template.write_bytes(b"test")
-            guard = fixture._make_guard(template, key="g1", fallback_module_key="fallback",
-                                        fallback_click=True, ocr_offset_right=999)
-            app.global_guards["g1"] = guard
-            fallback = dict(OFFSETS, template=str(template), name="fallback")
-            match = dict(x=40, y=50, width=20, height=20, center_x=50, center_y=60)
-            with package_patch('app', 'capture_bgr', return_value=(None, None)), \
-                 package_patch('app', 'registered_module_object', return_value=fallback), \
-                 package_patch('app', 'find_template', side_effect=[None, match]):
-                evaluation = app._evaluate_global_guards_sync()
-            clicks = [event for event in evaluation.deferred_events
-                      if event["kind"] == "fallback_click"]
-            self.assertEqual(len(clicks), 1)
-            self.assertEqual((clicks[0]["match"]["center_x"], clicks[0]["match"]["center_y"]),
-                             (35, 70))
 
 
 if __name__ == "__main__":

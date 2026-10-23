@@ -8,16 +8,16 @@ from macroflow.ui.app import plugins_page
 
 class RecognitionCategoryTests(unittest.TestCase):
  def test_recognition_normalization_removes_actions_and_clicks(self):
-  obj=_normalize_object({'category':'recognition','after_action':'click_match','fallback_click':True,
+  obj=_normalize_object({'category':'recognition','after_action':'click_match',
     'on_success_actions':[{'type':'key_press','vk':1}],'on_timeout_actions':[{'type':'delay','ms':1}],
-    'timed_detection':True,'timed_actions':[{'type':'key_press','vk':1}],'blocking':True})
+    'blocking':True})
   self.assertEqual(obj['after_action'],'continue')
-  for field in ('fallback_click','timed_detection','blocking','run_code_after_action','run_code_on_timeout'):
+  for field in ('blocking','run_code_after_action','run_code_on_timeout'):
    self.assertFalse(obj[field])
-  for field in ('on_success_actions','on_timeout_actions','timed_actions'):self.assertEqual(obj[field],[])
+  for field in ('on_success_actions','on_timeout_actions'):self.assertEqual(obj[field],[])
  def test_recognition_returns_result_without_clicking_or_running_module_code(self):
   for result in (None,{'center_x':1,'center_y':1}):
-   p=MacroPlayer();p._match_fallback_module=Mock(return_value=result)
+   p=MacroPlayer();p._match_recognition_module=Mock(return_value=result)
    p._after_module_success=Mock();p._module_result_route=Mock(return_value=('row',2))
    obj={'category':'recognition','recognize':'image','after_action':'click_match'}
    with patch('macroflow.execution.player.image.registered_module_object',return_value=obj):

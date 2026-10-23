@@ -62,7 +62,7 @@ class RecognitionSettingsTests(unittest.TestCase):
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
             "row_start_delay", "row_delay",
-            "row_fallback_module", "row_fallback_click", "row_blocking",
+            "row_blocking",
             "action_section_heading", "row_after", "row_hold", "row_button",
             "row_click_count", "row_ocr_offset", "row_click_point", "row_second_template",
             "row_second_timeout", "row_second_click_target", "row_second_click_region",
@@ -74,21 +74,19 @@ class RecognitionSettingsTests(unittest.TestCase):
         form._set_row = Mock()
         form._resize_for_content = Mock()
         form.advanced_recognition_var.get.return_value = False
-        form.fallback_module_key_var.get.return_value = "module:fallback"
         form.hold_enabled_var.get.return_value = True
 
         TemplateRegionFormDialog._toggle_sections(form)
 
         final_visibility = {call.args[0]: call.args[1] for call in form._set_row.call_args_list}
         for row in (form.row_interval, form.row_cooldown, form.row_hold,
-                    form.row_fallback_module, form.row_fallback_click_settings):
+                    form.row_recheck_confirm):
             self.assertFalse(final_visibility[row])
         self.assertTrue(final_visibility[form.row_blocking])
         self.assertTrue(final_visibility[form.row_not_found_timeout])
         with package_patch('dialogs', 'show_floating_notice') as notice:
             form.save()
         notice.assert_not_called()
-        self.assertEqual(form.result[2]['fallback_module_key'], "module:fallback")
         self.assertTrue(form.result[2]['hold_enabled'])
 
         form.wait_rule_var.get.return_value = "未命中立即跳过"

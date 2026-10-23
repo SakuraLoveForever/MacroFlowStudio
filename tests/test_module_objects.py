@@ -948,17 +948,10 @@ class TemplateRegionTests(unittest.TestCase):
         form.recheck_enabled_var.get.return_value = False
         form.recheck_delay_var = Mock()
         form.recheck_delay_var.get.return_value = "5000"
-        form.fallback_module_key_var = Mock()
-        form.fallback_module_key_var.get.return_value = ""
-        form.fallback_click_var = Mock()
-        form.fallback_click_var.get.return_value = False
-        form.fallback_on_match_var = Mock()
-        form.fallback_on_match_var.get.return_value = "继续识别主模块（不点击）"
         form.advanced_recognition_var = Mock()
         form.advanced_recognition_var.get.return_value = True
         form.row_advanced_recognition = Mock()
         form.confirmation_heading = Mock()
-        form.row_fallback_click_settings = Mock()
         form.wait_rule_var = Mock()
         form.wait_rule_var.get.return_value = "限时等待"
         form.hold_enabled_var = Mock()
@@ -991,16 +984,6 @@ class TemplateRegionTests(unittest.TestCase):
         form.second_click_region_var.get.return_value = ""
         form.segment = []
         form.timeout_segment = []
-        form.timed_detection_var = Mock()
-        form.timed_detection_var.get.return_value = False
-        form.timed_condition_var = Mock()
-        form.timed_condition_var.get.return_value = "连续未检测到"
-        form.timed_duration_var = Mock()
-        form.timed_duration_var.get.return_value = "30000"
-        form.timed_segment = []
-        for field in ("timed_heading", "row_timed_detection", "row_timed_condition",
-                      "row_timed_duration", "timed_segment_frame"):
-            setattr(form, field, Mock())
         form.name_var = Mock()
         form.name_var.get.return_value = ""
         form._toggle_sections = Mock()
@@ -1115,8 +1098,6 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertFalse(obj["recheck_enabled"])
         self.assertEqual(obj["recheck_delay_ms"], 5000)
         self.assertEqual(obj["start_delay_ms"], 0)
-        self.assertEqual(obj["fallback_module_key"], "")
-        self.assertFalse(obj["fallback_click"])
         self.assertFalse(obj["blocking"])
         self.assertFalse(obj["hold_enabled"])  # 持续延时默认不启用
         self.assertEqual(obj["hold_ms"], 1000)
@@ -1234,7 +1215,6 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
-            "row_fallback_module", "row_fallback_click",
             "row_blocking", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
             "row_second_template", "row_second_timeout", "row_second_click_target",
@@ -1304,29 +1284,7 @@ class TemplateRegionTests(unittest.TestCase):
         self.assertEqual(mapping["第 1 行 · a"], 1)
         self.assertEqual(mapping["第 2 行 · 模块 可领取"], 2)
 
-    def test_form_saves_fallback_module_and_click_behavior(self):
-        form = self._form(image="images/g.png", region="10,20,300,400")
-        form.fallback_module_key_var.get.return_value = "module:fallback"
-        form.fallback_click_var.get.return_value = True
-        form.fallback_on_match_var.get.return_value = "点击备用命中位置，继续识别主模块"
-        with package_patch('dialogs', 'show_floating_notice') as notice:
-            form.save()
-        self.assertEqual(form.result[2]["fallback_module_key"], "module:fallback")
-        self.assertTrue(form.result[2]["fallback_click"])
-        self.assertEqual(
-            form.result[2]["fallback_on_match"], "click_continue",
-        )
-        notice.assert_not_called()
 
-    def test_form_saves_fallback_exit_option(self):
-        form = self._form(image="images/g.png", region="10,20,300,400")
-        form.fallback_module_key_var.get.return_value = "module:fallback"
-        form.fallback_on_match_var.get.return_value = "点击备用命中位置后退出主模块识别"
-        with package_patch('dialogs', 'show_floating_notice') as notice:
-            form.save()
-        self.assertEqual(form.result[2]["fallback_on_match"], "click_exit")
-        self.assertTrue(form.result[2]["fallback_click"])
-        notice.assert_not_called()
 
     def test_form_save_click_custom_requires_point(self):
         form = self._form(
@@ -1685,8 +1643,8 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent",
-            "row_interval", "row_cooldown", "row_recheck_confirm", "row_fallback_module",
-            "row_fallback_click", "row_blocking",
+            "row_interval", "row_cooldown", "row_recheck_confirm",
+            "row_blocking",
             "action_section_heading", "row_after", "row_hold", "row_button",
             "row_click_count",
             "row_ocr_offset",
@@ -1735,7 +1693,6 @@ class TemplateRegionTests(unittest.TestCase):
             "row_name", "row_image", "row_region", "detect_section_heading",
             "row_recognize", "row_expected_text", "row_match_mode", "row_threshold",
             "row_wait_text_absent", "row_interval", "row_cooldown", "row_recheck_confirm",
-            "row_fallback_module", "row_fallback_click",
             "row_blocking", "action_section_heading", "row_after",
             "row_hold", "row_button", "row_click_count", "row_ocr_offset", "row_click_point",
             "row_second_template", "row_second_timeout", "row_second_click_target",

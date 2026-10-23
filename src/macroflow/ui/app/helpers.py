@@ -13,6 +13,10 @@ from .constants import SEGMENT_BAR
 class HelpersMixin:
     """Studio authoring behavior."""
 
+    def _toggle_english_input(self):
+        self.switch_english_input_enabled = bool(self.switch_english_input_var.get())
+        self._settings_changed()
+
     def _sidebar_save_values(self):
         names = ('sound_enabled_var', 'mini_window_enabled_var', 'execution_mini_enabled_var',
                  'focus_mode_enabled_var', 'activate_target_enabled_var',
@@ -22,6 +26,9 @@ class HelpersMixin:
         values = {name: getattr(self, name).get() for name in names}
         values['switch_english_input_enabled'] = bool(self.switch_english_input_enabled)
         values['aim'] = self._aim_follow_draft()
+        for name in ('saved_window_signature', 'saved_activation_signature',
+                     'execution_mini_position', 'resolution_styles', 'hotkey_scripts', '_game_setup_note'):
+            values[name] = copy.deepcopy(getattr(self, name, None))
         return values
 
     def _workflow_save_values(self):
@@ -79,6 +86,12 @@ class HelpersMixin:
             return False
         if not self._persist_sidebar_settings():
             return False
+        state = self.__dict__.get('_aim_save_state')
+        if state is not None:
+            state.saved(value)
+        state = self.__dict__.get('_sidebar_save_state')
+        if state is not None:
+            state.refresh()
         self._set_status(f'全局锁定跟随等待已设为 {value} ms', 'success')
         return True
 
@@ -186,7 +199,11 @@ class HelpersMixin:
             except (TypeError, ValueError):
                 self._notify('跟随等待', '请输入 1–1000 ms 的整数。')
                 return False
-        self._persist_sidebar_settings(show_feedback=True)
+        self._save_activation_interval()
+        if not self._persist_sidebar_settings(show_feedback=True):
+            return False
+        self._settings_saved()
+        return True
 
     def open_game_setup_note(self):
         """打开「游戏设置说明」：查看/编辑使用本软件前游戏需要设置的参数。"""

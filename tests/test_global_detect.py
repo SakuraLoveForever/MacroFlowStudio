@@ -42,12 +42,6 @@ class GuardTestHelpers:
             "start_delay_ms": 0,
             "start_delay_since": 0.0,
             "start_delay_done": False,
-            "fallback_module_key": "",
-            "fallback_click": False,
-            "fallback_click_count": 1,
-            "fallback_click_interval_ms": 100,
-            "fallback_present": False,
-            "fallback_click_since": 0.0,
             "recognize": "",
             "expected_text": "",
             "match_mode": "contains",
@@ -251,49 +245,6 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         self.assertIsNone(app._detection_worker)
         self.assertTrue(worker._closed)
 
-    def test_worker_evaluator_defers_overlay_and_fallback_click_to_player_thread(self):
-        app = self._make_guard_app()
-        app._pending_global_guard_hits = []
-        app._guard_config_version = 3
-        app._detection_run_id = 7
-        app._ui = Mock()
-        with tempfile.TemporaryDirectory() as folder:
-            main_path = Path(folder) / "main.png"
-            fallback_path = Path(folder) / "fallback.png"
-            main_path.write_bytes(b"main")
-            fallback_path.write_bytes(b"fallback")
-            guard = self._make_guard(
-                main_path,
-                key="script:g1",
-                fallback_module_key="module:fallback",
-                fallback_click=True,
-            )
-            app.global_guards[guard["key"]] = guard
-            fallback_obj = {"name": "备用", "template": str(fallback_path), "threshold": 0.8}
-            fallback_match = {"x": 10, "y": 20, "width": 30, "height": 40,
-                              "center_x": 25, "center_y": 40}
-            with package_patch('app', 'capture_bgr', return_value=(None, None)), \
-                 package_patch('app', 'registered_module_object', return_value=fallback_obj), \
-                 package_patch('app', 'find_template', side_effect=[None, fallback_match]), \
-                 package_patch('app', 'show_overlay') as overlay, \
-                 patch.object(app.player, "_click_module_point") as fallback_click:
-                evaluation = app._evaluate_global_guards_sync()
-
-        self.assertIsInstance(evaluation, DetectionEvaluation)
-        self.assertIsNone(evaluation.hit)
-        self.assertEqual([event["kind"] for event in evaluation.deferred_events],
-                         ["restore_foreground", "overlay", "fallback_click"])
-        self.assertEqual(evaluation.deferred_events[1]["key"], "script:g1:fallback")
-        overlay.assert_not_called()
-        fallback_click.assert_not_called()
-        with package_patch('app', 'show_overlay') as consumed_overlay, \
-             patch.object(app, "_restore_workflow_scan_foreground") as restore_foreground, \
-             patch.object(app.player, "_click_module_point") as consumed_click:
-            app._consume_detection_events(evaluation.deferred_events)
-        consumed_overlay.assert_called_once_with(10, 20, 30, 40,
-                                                 label=None, key="script:g1:fallback")
-        restore_foreground.assert_called_once()
-        consumed_click.assert_called_once()
 
     def test_worker_result_is_returned_only_for_current_run_and_config(self):
         class FakeWorker:
@@ -339,37 +290,6 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
         self.assertIsNone(evaluation.hit)
         self.assertEqual(app._pending_global_guard_hits, [])
 
-    def test_switch_module_fallback_clicks_once_then_main_match_finishes(self):
-        with tempfile.TemporaryDirectory() as folder:
-            main_path = Path(folder) / "main.png"
-            fallback_path = Path(folder) / "fallback.png"
-            main_path.write_bytes(b"main")
-            fallback_path.write_bytes(b"fallback")
-            main_obj = {
-                "name": "主模块", "template": str(main_path), "region": [1, 2, 30, 40],
-                "threshold": 0.85, "interval_ms": 50, "blocking": True,
-                "fallback_module_key": "module:fallback", "fallback_click": True,
-                "after_action": "continue",
-            }
-            fallback_obj = {
-                "name": "备用模块", "template": str(fallback_path), "region": [5, 6, 20, 20],
-                "threshold": 0.8, "button": "left", "click_count": 1,
-            }
-            main_match = {"x": 10, "y": 20, "width": 30, "height": 40,
-                          "center_x": 25, "center_y": 40, "score": 0.9}
-            fallback_match = {"x": 50, "y": 60, "width": 20, "height": 20,
-                              "center_x": 60, "center_y": 70, "score": 0.9}
-            player = MacroPlayer()
-            player._wait = Mock()
-            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match, main_match]), package_patch('player', 'send_move_absolute') as move, package_patch('player', 'send_button') as button, \
-                 package_patch('player', 'show_overlay'):
-                player._execute_image({
-                    "type": "image_match", "module_ref": True,
-                    "module_key": "module:main", "template": str(main_path),
-                    "region_mode": "template",
-                }, None)
-            move.assert_called_once_with(60, 70)
-            self.assertEqual(button.call_count, 2)
 
     def test_module_object_start_delay_precedes_detection(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -425,73 +345,7 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
                 }, None)
             self.assertFalse(any("进入前延时" in line for line in logs), logs)
 
-    def test_switch_module_continuous_fallback_is_clicked_only_once(self):
-        with tempfile.TemporaryDirectory() as folder:
-            main_path = Path(folder) / "main.png"
-            fallback_path = Path(folder) / "fallback.png"
-            main_path.write_bytes(b"main")
-            fallback_path.write_bytes(b"fallback")
-            main_obj = {
-                "name": "main", "template": str(main_path), "region": [1, 2, 30, 40],
-                "threshold": 0.85, "interval_ms": 50, "blocking": True,
-                "fallback_module_key": "module:fallback", "fallback_click": True,
-                "after_action": "continue",
-            }
-            fallback_obj = {
-                "name": "fallback", "template": str(fallback_path),
-                "region": [5, 6, 20, 20], "threshold": 0.8,
-                "button": "left", "click_count": 1,
-            }
-            main_match = {"x": 10, "y": 20, "width": 30, "height": 40,
-                          "center_x": 25, "center_y": 40, "score": 0.9}
-            fallback_match = {"x": 50, "y": 60, "width": 20, "height": 20,
-                              "center_x": 60, "center_y": 70, "score": 0.9}
-            player = MacroPlayer()
-            player._wait = Mock()
-            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match, None, fallback_match, main_match]), package_patch('player', 'send_move_absolute') as move, package_patch('player', 'send_button') as button, \
-                 package_patch('player', 'show_overlay'):
-                player._execute_image({
-                    "type": "image_match", "module_ref": True,
-                    "module_key": "module:main", "template": str(main_path),
-                    "region_mode": "template",
-                }, None)
-            move.assert_called_once_with(60, 70)
-            self.assertEqual(button.call_count, 2)
 
-    def test_switch_module_fallback_can_click_and_exit_main_recognition(self):
-        with tempfile.TemporaryDirectory() as folder:
-            main_path = Path(folder) / "main.png"
-            fallback_path = Path(folder) / "fallback.png"
-            main_path.write_bytes(b"main")
-            fallback_path.write_bytes(b"fallback")
-            main_obj = {
-                "name": "main", "template": str(main_path), "region": [1, 2, 30, 40],
-                "threshold": 0.85, "interval_ms": 50, "blocking": True,
-                "fallback_module_key": "module:fallback",
-                "fallback_on_match": "click_exit",
-                "after_action": "continue",
-            }
-            fallback_obj = {
-                "name": "fallback", "template": str(fallback_path),
-                "region": [5, 6, 20, 20], "threshold": 0.8,
-                "button": "left", "click_count": 1,
-            }
-            fallback_match = {"x": 50, "y": 60, "width": 20, "height": 20,
-                              "center_x": 60, "center_y": 70, "score": 0.9}
-            player = MacroPlayer()
-            player._wait = Mock()
-            with package_patch('player', 'registered_module_object', side_effect=lambda key: {'module:main': main_obj, 'module:fallback': fallback_obj}.get(key)), package_patch('player', 'find_template', side_effect=[None, fallback_match]) as find, package_patch('player', 'send_move_absolute') as move, \
-                 package_patch('player', 'send_button') as button, \
-                 package_patch('player', 'show_overlay'):
-                result = player._execute_image({
-                    "type": "image_match", "module_ref": True,
-                    "module_key": "module:main", "template": str(main_path),
-                    "region_mode": "template",
-                }, None)
-        self.assertIsNone(result)
-        self.assertEqual(find.call_count, 2)
-        move.assert_called_once_with(60, 70)
-        self.assertEqual(button.call_count, 2)
 
     def test_timeout_guard_returns_timeout_hit(self):
         # recognize=none 守卫不截图；超过 not_found_timeout_ms 后返回 kind=timeout 的
@@ -617,19 +471,6 @@ class GlobalDetectTests(GuardTestHelpers, unittest.TestCase):
             (660, 370),
         )
 
-    def test_guard_fallback_region_scales_from_recorded_screen(self):
-        app = self._make_guard_app()
-        app.player._source_screen = {"left": 0, "top": 0, "width": 1920, "height": 1080}
-        app.player._target_screen = {"left": 0, "top": 0, "width": 1280, "height": 720}
-        fallback = {
-            "template": "images/fallback.png", "region": [960, 540, 480, 270],
-            "threshold": 0.85,
-        }
-        with package_patch('app', 'resolve_path', return_value=Path("fallback.png")), \
-             patch.object(Path, 'is_file', return_value=True), \
-             package_patch('app', 'find_template', return_value=None) as find:
-            app._guard_fallback_match({}, fallback, None, None)
-        self.assertEqual(find.call_args.args[2], (640, 360, 320, 180))
 
     def test_ensure_ocr_ready_loads_engine_once(self):
         # OCR 引擎首次导入不可中断且可能耗时数十秒：播放开始前确保就绪，
@@ -794,14 +635,6 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
                 [{"type": "global_detect", "module_key": "module:123"}],
             ))
 
-    def test_fallback_text_module_needs_ocr(self):
-        # 主模块是模板，备用识别模块是文字模块。
-        app = MacroFlowApp.__new__(MacroFlowApp)
-        with package_patch('app', 'registered_module_object', side_effect=[None, {'recognize': 'text'}]):
-            self.assertTrue(app._script_needs_ocr(
-                [{"type": "global_detect", "module_key": "module:main",
-                  "fallback_module_key": "module:fb"}],
-            ))
 
     def test_script_ref_follows_referenced_script(self):
         app = MacroFlowApp.__new__(MacroFlowApp)
@@ -1435,7 +1268,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app.global_guards, {})
         self.assertCountEqual(
             [call.args[0] for call in hide.call_args_list],
-            ["a", "a:fallback", "b", "b:fallback"],
+            ["a", "b"],
         )
 
     def test_activate_global_detect_defaults_click_delay_to_1000ms(self):
@@ -1665,7 +1498,7 @@ class ScriptOcrNeedTests(GuardTestHelpers, unittest.TestCase):
         self.assertEqual(app._guard_config_version, 9)
         self.assertEqual(app._pending_global_guard_hits, [])
         self.assertEqual([call.args[0] for call in hide.call_args_list],
-                         ["script:one", "script:one:fallback"])
+                         ["script:one"])
 
     def test_activate_global_detect_region_mode_parsing(self):
         # 旧配置没有 region_mode：无区域 → 全屏；有区域 → 自定义区域。

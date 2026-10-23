@@ -30,7 +30,6 @@ from macroflow.input.wininput import (
     send_text, set_cursor_pos,
 )
 from macroflow.ui.detect_overlay import show_overlay
-from macroflow.core.timed_detection import sustained_detection
 import math
 import time
 
@@ -43,7 +42,7 @@ from .control import (
 )
 
 class ImageMixin:
-    """识图动作：等待命中、超时分支、备用模块与二次识别。"""
+    """识图动作：等待命中、超时分支、二次识别。"""
 
     def _recognize_module(self, obj, probe):
         result = probe()
@@ -56,49 +55,6 @@ class ImageMixin:
             self._wait(delay_ms)
             result = probe()
         return result
-
-    def _execute_timed_detection(self, action, obj, template, region, hwnd, script_stack, depth):
-        condition = obj.get("timed_condition", "absent")
-        duration = int(obj.get("timed_duration_ms", 30000))
-        label = "检测到" if condition == "present" else "未检测到"
-        self._trace(f"模块 {obj.get('name', '')}：等待连续{label} {duration} ms，状态变化重新计时。", module_detail=True)
-        if depth >= MAX_SCRIPT_REF_DEPTH:
-            raise RuntimeError("持续状态模块步骤嵌套过深")
-        state = {}
-        while True:
-            if self.stop_event.is_set():
-                raise PlaybackStopped()
-            try:
-                if obj.get("recognize") == "process":
-                    process_name = str(obj.get("process_name", "")).strip()
-                    if not process_name:
-                        raise RuntimeError("进程检测模块未设置进程名")
-                    detected = is_process_running(process_name)
-                elif obj.get("recognize") == "text":
-                    if self.on_ocr_engine_wait and not self.on_ocr_engine_wait():
-                        raise PlaybackStopped()
-                    text, boxes = recognize_region_with_boxes(region)
-                    expected = str(obj.get("expected_text", ""))
-                    mode = obj.get("match_mode", "contains")
-                    detected = (matches_expected(text, expected, mode)
-                                or find_expected_match(boxes, expected, mode) is not None)
-                else:
-                    detected = find_template(template, float(obj.get("threshold", 0.85)), region,
-                                             scale=self._template_scale()) is not None
-            except CAPTURE_ERRORS as exc:
-                if obj.get("recognize") == "process":
-                    self._trace(f"进程检测失败，重新计时：{exc}", module_detail=True)
-                else:
-                    self._note_capture_failure(exc)
-                detected = None
-            else:
-                self._clear_capture_failure()
-            if sustained_detection(state, detected, condition, duration, time.perf_counter()):
-                self._trace(f"模块 {obj.get('name', '')}：连续{label}达到 {duration} ms，执行自定义步骤。", module_detail=True)
-                self._run_action_sequence(list(obj.get("timed_actions") or []), hwnd,
-                                          script_stack=script_stack, depth=depth + 1)
-                return self._module_result_route(action, obj, succeeded=True)
-            self._wait(max(50, int(obj.get("interval_ms", 1000))))
 
     def _execute_image(self, action: dict, hwnd: int | None,
                        script_stack: set[str] | None = None,
@@ -134,7 +90,7 @@ class ImageMixin:
             if self.stop_event.is_set():
                 raise PlaybackStopped()
             try:
-                matched = self._match_fallback_module(module_obj, hwnd) is not None
+                matched = self._match_recognition_module(module_obj, hwnd) is not None
             except CAPTURE_ERRORS as exc:
                 self._note_capture_failure(exc)
                 matched = False
@@ -150,6 +106,19 @@ class ImageMixin:
             if start_delay:
                 self._trace(f"模块识别前强制等待 {start_delay} ms", module_detail=True)
                 self._wait(start_delay)
+        if module_obj is not None and module_obj.get("recognize") == "process":
+            process_name = str(module_obj.get("process_name", "")).strip()
+            if not process_name:
+                raise RuntimeError("进程检测模块未设置进程名")
+            detected = is_process_running(process_name)
+            if detected:
+                result = self._after_module_success(module_obj, {}, hwnd, script_stack, depth)
+                if result is not None:
+                    return result
+            return self._module_result_route(
+                action, module_obj, succeeded=detected, hwnd=hwnd,
+                script_stack=script_stack, depth=depth,
+            )
         if module_obj is not None and module_obj.get("recognize") == "none":
             module_label = str(module_obj.get("name") or "无需识图模块")
             self._status(f"无需识图，直接执行模块：{module_label}")
@@ -248,17 +217,6 @@ class ImageMixin:
             )
         fallback_switch_ms = max(0, int(action.get("fallback_switch_ms", 3000)))
         fallback_region = None
-        module_fallback = None
-        if module_obj is not None:
-            fallback_key = str(module_obj.get("fallback_module_key", "")).strip()
-            candidate = registered_module_object(fallback_key) if fallback_key else None
-            if candidate is not None and candidate.get("recognize") not in ("number", "none"):
-                module_fallback = candidate
-        fallback_on_match = "continue"
-        if module_obj is not None:
-            fallback_on_match = str(module_obj.get("fallback_on_match", "")).strip()
-            if fallback_on_match not in ("continue", "click_continue", "exit", "click_exit"):
-                fallback_on_match = "click_continue" if bool(module_obj.get("fallback_click", False)) else "continue"
         if fallback_template is not None:
             fallback_region_mode = action.get("fallback_region_mode", "screen")
             if fallback_region_mode == "template":
@@ -297,16 +255,12 @@ class ImageMixin:
         # 图。否则两个 1920 宽显示器会让模板按 2 倍缩放，导致同分辨率换屏
         # 后也无法命中。
         recognition_region = region if region is not None else self._target_screen
-        if module_obj is not None and module_obj.get("timed_detection"):
-            return self._execute_timed_detection(action, module_obj, template,
-                                                 recognition_region, hwnd, script_stack, depth)
         fallback_capture_region = (
             fallback_region if fallback_region is not None else self._target_screen
         )
         start = time.perf_counter()
         match = None
         fallback_active = False
-        module_fallback_present = False
         recognized = ""
         waiting_absent_logged = False
         last_ocr_observation = None
@@ -468,43 +422,6 @@ class ImageMixin:
                     continue
                 hold_since = None
             fallback_match = None
-            if module_fallback is not None:
-                try:
-                    fallback_match = self._match_fallback_module(module_fallback, hwnd)
-                except CAPTURE_ERRORS as exc:
-                    # 备用模块自己也要截屏：截图不可用时和主模板一样按未命中处理。
-                    self._note_capture_failure(exc)
-                    fallback_match = None
-                if fallback_match and not module_fallback_present:
-                    module_fallback_present = True
-                    fallback_name = str(module_fallback.get("name") or "备用识别模块")
-                    show_overlay(
-                        fallback_match["x"], fallback_match["y"],
-                        fallback_match["width"], fallback_match["height"],
-                    )
-                    if fallback_on_match.startswith("click_"):
-                        fallback_x, fallback_y = self._module_match_click_point(
-                            module_fallback, fallback_match,
-                        )
-                        self._click_module_point(
-                            fallback_x, fallback_y,
-                            str(module_fallback.get("button", "left")),
-                            max(1, int(module_fallback.get("click_count", 1))),
-                            hwnd,
-                        )
-                        self._status(
-                            f"备用模块 {fallback_name} 已识别并点击，"
-                            f"{'退出' if fallback_on_match == 'click_exit' else '继续'}识别主模块"
-                        )
-                    else:
-                        self._status(
-                            f"备用模块 {fallback_name} 已识别，"
-                            f"{'退出' if fallback_on_match == 'exit' else '继续'}识别主模块"
-                        )
-                    if fallback_on_match in ("exit", "click_exit"):
-                        return
-                elif not fallback_match:
-                    module_fallback_present = False
             if wait_forever and fallback_template is not None and (
                 fallback_active
                 or (time.perf_counter() - start) * 1000 >= fallback_switch_ms
@@ -696,7 +613,7 @@ class ImageMixin:
                 return "action_id", target_id
             self._jump_reason = "识图成功"
             return "row", max(1, int(action.get("found_jump_row", 1)))
-    def _match_fallback_module(self, obj: dict, hwnd: int | None) -> dict | None:
+    def _match_recognition_module(self, obj: dict, hwnd: int | None) -> dict | None:
         raw_region = obj.get("region") or []
         region = None
         if len(raw_region) == 4 and int(raw_region[2]) > 0 and int(raw_region[3]) > 0:

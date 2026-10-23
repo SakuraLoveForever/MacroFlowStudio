@@ -1,0 +1,2430 @@
+{
+  "artifacts": [
+    {
+      "path": "研究\\挂机脚本\\ZeusTool.exe",
+      "bytes": 27881984,
+      "sha256": "039f71465f44e5cab51476e2b63cfb9b71098f83fbbe54648efa6fd003d75579",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 0,
+          "virtual": 6533589
+        },
+        {
+          "name": ".rdata",
+          "raw": 0,
+          "virtual": 1355914
+        },
+        {
+          "name": ".data",
+          "raw": 0,
+          "virtual": 171252
+        },
+        {
+          "name": ".fptable",
+          "raw": 0,
+          "virtual": 128
+        },
+        {
+          "name": ".yandf",
+          "raw": 0,
+          "virtual": 4528
+        },
+        {
+          "name": ".hfasd",
+          "raw": 0,
+          "virtual": 12
+        },
+        {
+          "name": "INIT0",
+          "raw": 0,
+          "virtual": 17599554
+        },
+        {
+          "name": "INIT1",
+          "raw": 512,
+          "virtual": 208
+        },
+        {
+          "name": "INIT2",
+          "raw": 27852288,
+          "virtual": 27852000
+        },
+        {
+          "name": ".rsrc",
+          "raw": 28160,
+          "virtual": 597728
+        }
+      ],
+      "imports": [
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "CoRegisterMessageFilter"
+          ]
+        },
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "GetVersionExW",
+            "GetVersionExA"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "WaitMessage"
+          ]
+        },
+        {
+          "dll": "GDI32.dll",
+          "symbols": [
+            "GetWindowExtEx"
+          ]
+        },
+        {
+          "dll": "MSIMG32.dll",
+          "symbols": [
+            "TransparentBlt"
+          ]
+        },
+        {
+          "dll": "WINSPOOL.DRV",
+          "symbols": [
+            "ClosePrinter"
+          ]
+        },
+        {
+          "dll": "ADVAPI32.dll",
+          "symbols": [
+            "RegOpenKeyW"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "DragQueryFileW"
+          ]
+        },
+        {
+          "dll": "COMCTL32.dll",
+          "symbols": [
+            "#17"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathFileExistsA"
+          ]
+        },
+        {
+          "dll": "UxTheme.dll",
+          "symbols": [
+            "GetThemeSysColor"
+          ]
+        },
+        {
+          "dll": "OLEAUT32.dll",
+          "symbols": [
+            "OleCreateFontIndirect"
+          ]
+        },
+        {
+          "dll": "oledlg.dll",
+          "symbols": [
+            "OleUIBusyW"
+          ]
+        },
+        {
+          "dll": "urlmon.dll",
+          "symbols": [
+            "URLDownloadToFileW"
+          ]
+        },
+        {
+          "dll": "gdiplus.dll",
+          "symbols": [
+            "GdipCreateBitmapFromHBITMAP"
+          ]
+        },
+        {
+          "dll": "WS2_32.dll",
+          "symbols": [
+            "shutdown"
+          ]
+        },
+        {
+          "dll": "WINHTTP.dll",
+          "symbols": [
+            "WinHttpOpen"
+          ]
+        },
+        {
+          "dll": "CRYPT32.dll",
+          "symbols": [
+            "CertFreeCertificateContext"
+          ]
+        },
+        {
+          "dll": "IMM32.dll",
+          "symbols": [
+            "ImmReleaseContext"
+          ]
+        },
+        {
+          "dll": "WINMM.dll",
+          "symbols": [
+            "timeGetTime"
+          ]
+        },
+        {
+          "dll": "OLEACC.dll",
+          "symbols": [
+            "CreateStdAccessibleObject"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "??0Assembler@asmjit@@QAE@PAURuntime@1@@Z",
+          "ordinal": 1,
+          "rva": "0x86130"
+        },
+        {
+          "name": "??0CodeGen@asmjit@@QAE@PAURuntime@1@@Z",
+          "ordinal": 2,
+          "rva": "0x942d0"
+        },
+        {
+          "name": "??0HostRuntime@asmjit@@QAE@XZ",
+          "ordinal": 3,
+          "rva": "0x8b6e0"
+        },
+        {
+          "name": "??0JitRuntime@asmjit@@QAE@XZ",
+          "ordinal": 4,
+          "rva": "0x8b860"
+        },
+        {
+          "name": "??0Runtime@asmjit@@QAE@XZ",
+          "ordinal": 5,
+          "rva": "0x8b6a0"
+        },
+        {
+          "name": "??0StaticRuntime@asmjit@@QAE@PAXI@Z",
+          "ordinal": 6,
+          "rva": "0x8b790"
+        },
+        {
+          "name": "??0VMemMgr@asmjit@@QAE@PAX@Z",
+          "ordinal": 7,
+          "rva": "0x79f20"
+        },
+        {
+          "name": "??0X86Assembler@asmjit@@QAE@PAURuntime@1@I@Z",
+          "ordinal": 8,
+          "rva": "0x8bb40"
+        },
+        {
+          "name": "??0Zone@asmjit@@QAE@I@Z",
+          "ordinal": 9,
+          "rva": "0x94570"
+        },
+        {
+          "name": "??1Assembler@asmjit@@UAE@XZ",
+          "ordinal": 10,
+          "rva": "0x861d0"
+        },
+        {
+          "name": "??1CodeGen@asmjit@@UAE@XZ",
+          "ordinal": 11,
+          "rva": "0x94330"
+        },
+        {
+          "name": "??1HostRuntime@asmjit@@UAE@XZ",
+          "ordinal": 12,
+          "rva": "0x8b6d0"
+        },
+        {
+          "name": "??1JitRuntime@asmjit@@UAE@XZ",
+          "ordinal": 13,
+          "rva": "0x8b8f0"
+        },
+        {
+          "name": "??1Runtime@asmjit@@UAE@XZ",
+          "ordinal": 14,
+          "rva": "0x8b6d0"
+        },
+        {
+          "name": "??1StaticRuntime@asmjit@@UAE@XZ",
+          "ordinal": 15,
+          "rva": "0x8b6d0"
+        },
+        {
+          "name": "??1VMemMgr@asmjit@@QAE@XZ",
+          "ordinal": 16,
+          "rva": "0x79f90"
+        },
+        {
+          "name": "??1X86Assembler@asmjit@@UAE@XZ",
+          "ordinal": 17,
+          "rva": "0x8bb70"
+        },
+        {
+          "name": "??1Zone@asmjit@@QAE@XZ",
+          "ordinal": 18,
+          "rva": "0x94590"
+        },
+        {
+          "name": "??_FVMemMgr@asmjit@@QAEXXZ",
+          "ordinal": 19,
+          "rva": "0x731d0"
+        },
+        {
+          "name": "?_alloc@Zone@asmjit@@QAEPAXI@Z",
+          "ordinal": 20,
+          "rva": "0x94660"
+        },
+        {
+          "name": "?_emit@X86Assembler@asmjit@@UAEIIABUOperand@2@000@Z",
+          "ordinal": 21,
+          "rva": "0x8c140"
+        },
+        {
+          "name": "?_grow@Assembler@asmjit@@QAEII@Z",
+          "ordinal": 22,
+          "rva": "0x863f0"
+        },
+        {
+          "name": "?_grow@PodVectorBase@asmjit@@IAEIII@Z",
+          "ordinal": 23,
+          "rva": "0x94460"
+        },
+        {
+          "name": "?_newLabel@Assembler@asmjit@@QAEIPAULabel@2@@Z",
+          "ordinal": 24,
+          "rva": "0x865b0"
+        },
+        {
+          "name": "?_newLabelLink@Assembler@asmjit@@QAEPAULabelLink@2@XZ",
+          "ordinal": 25,
+          "rva": "0x86640"
+        },
+        {
+          "name": "?_nullData@PodVectorBase@asmjit@@2UPodVectorData@2@B",
+          "ordinal": 26,
+          "rva": "0x7399e0"
+        },
+        {
+          "name": "?_registerIndexedLabels@Assembler@asmjit@@QAEII@Z",
+          "ordinal": 27,
+          "rva": "0x86510"
+        },
+        {
+          "name": "?_relocCode@X86Assembler@asmjit@@UBEIPAX_K@Z",
+          "ordinal": 28,
+          "rva": "0x8bfe0"
+        },
+        {
+          "name": "?_reserve@Assembler@asmjit@@QAEII@Z",
+          "ordinal": 29,
+          "rva": "0x86490"
+        },
+        {
+          "name": "?_reserve@PodVectorBase@asmjit@@IAEIII@Z",
+          "ordinal": 30,
+          "rva": "0x94500"
+        },
+        {
+          "name": "?_x86CondToCmovcc@asmjit@@3QBIB",
+          "ordinal": 31,
+          "rva": "0x73e2c0"
+        },
+        {
+          "name": "?_x86CondToJcc@asmjit@@3QBIB",
+          "ordinal": 32,
+          "rva": "0x73e360"
+        },
+        {
+          "name": "?_x86CondToSetcc@asmjit@@3QBIB",
+          "ordinal": 33,
+          "rva": "0x73e310"
+        },
+        {
+          "name": "?_x86InstExtendedInfo@asmjit@@3QBUX86InstExtendedInfo@1@B",
+          "ordinal": 34,
+          "rva": "0x73a6d0"
+        },
+        {
+          "name": "?_x86InstInfo@asmjit@@3QBUX86InstInfo@1@B",
+          "ordinal": 35,
+          "rva": "0x73c140"
+        },
+        {
+          "name": "?_x86ReverseCond@asmjit@@3QBIB",
+          "ordinal": 36,
+          "rva": "0x73e270"
+        },
+        {
+          "name": "?add@JitRuntime@asmjit@@UAEIPAPAXPAUAssembler@2@@Z",
+          "ordinal": 37,
+          "rva": "0x8b940"
+        },
+        {
+          "name": "?add@StaticRuntime@asmjit@@UAEIPAPAXPAUAssembler@2@@Z",
+          "ordinal": 38,
+          "rva": "0x8b7c0"
+        },
+        {
+          "name": "?align@X86Assembler@asmjit@@UAEIII@Z",
+          "ordinal": 39,
+          "rva": "0x8bd40"
+        },
+        {
+          "name": "?alloc@VMemMgr@asmjit@@QAEPAXII@Z",
+          "ordinal": 40,
+          "rva": "0x79fe0"
+        },
+        {
+          "name": "?alloc@VMemUtil@asmjit@@SAPAXIPAII@Z",
+          "ordinal": 41,
+          "rva": "0x79430"
+        },
+        {
+          "name": "?allocProcessMemory@VMemUtil@asmjit@@SAPAXPAXIPAII@Z",
+          "ordinal": 42,
+          "rva": "0x79490"
+        },
+        {
+          "name": "?allocZeroed@Zone@asmjit@@QAEPAXI@Z",
+          "ordinal": 43,
+          "rva": "0x94710"
+        },
+        {
+          "name": "?bind@Assembler@asmjit@@UAEIABULabel@2@@Z",
+          "ordinal": 44,
+          "rva": "0x866a0"
+        },
+        {
+          "name": "?callCpuId@X86CpuUtil@asmjit@@SAXIIPATX86CpuId@2@@Z",
+          "ordinal": 45,
+          "rva": "0x9d3d0"
+        },
+        {
+          "name": "?detect@X86CpuUtil@asmjit@@SAXPAUX86CpuInfo@2@@Z",
+          "ordinal": 46,
+          "rva": "0x9d400"
+        },
+        {
+          "name": "?detectHwThreadsCount@CpuInfo@asmjit@@SAIXZ",
+          "ordinal": 47,
+          "rva": "0x97360"
+        },
+        {
+          "name": "?dup@Zone@asmjit@@QAEPAXPBXI@Z",
+          "ordinal": 48,
+          "rva": "0x94750"
+        },
+        {
+          "name": "?embed@Assembler@asmjit@@UAEIPBXI@Z",
+          "ordinal": 49,
+          "rva": "0x867b0"
+        },
+        {
+          "name": "?embedLabel@X86Assembler@asmjit@@QAEIABULabel@2@@Z",
+          "ordinal": 50,
+          "rva": "0x8bbf0"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEII@Z",
+          "ordinal": 51,
+          "rva": "0x86910"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@00@Z",
+          "ordinal": 52,
+          "rva": "0x86990"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@00H@Z",
+          "ordinal": 53,
+          "rva": "0x86b90"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@00_K@Z",
+          "ordinal": 54,
+          "rva": "0x86bd0"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@0@Z",
+          "ordinal": 55,
+          "rva": "0x86970"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@0H@Z",
+          "ordinal": 56,
+          "rva": "0x86af0"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@0_K@Z",
+          "ordinal": 57,
+          "rva": "0x86b40"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@@Z",
+          "ordinal": 58,
+          "rva": "0x86940"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@H@Z",
+          "ordinal": 59,
+          "rva": "0x86a50"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIABUOperand@2@_K@Z",
+          "ordinal": 60,
+          "rva": "0x86aa0"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEIIH@Z",
+          "ordinal": 61,
+          "rva": "0x869b0"
+        },
+        {
+          "name": "?emit@Assembler@asmjit@@QAEII_K@Z",
+          "ordinal": 62,
+          "rva": "0x86a00"
+        },
+        {
+          "name": "?flush@HostRuntime@asmjit@@UAEXPAXI@Z",
+          "ordinal": 63,
+          "rva": "0x8b780"
+        },
+        {
+          "name": "?getCpuInfo@HostRuntime@asmjit@@UAEPBUCpuInfo@2@XZ",
+          "ordinal": 64,
+          "rva": "0x8b710"
+        },
+        {
+          "name": "?getHost@CpuInfo@asmjit@@SAPBU12@XZ",
+          "ordinal": 65,
+          "rva": "0x97380"
+        },
+        {
+          "name": "?getPageGranularity@VMemUtil@asmjit@@SAIXZ",
+          "ordinal": 66,
+          "rva": "0x79420"
+        },
+        {
+          "name": "?getPageSize@VMemUtil@asmjit@@SAIXZ",
+          "ordinal": 67,
+          "rva": "0x79410"
+        },
+        {
+          "name": "?getStackAlignment@HostRuntime@asmjit@@UAEIXZ",
+          "ordinal": 68,
+          "rva": "0x8b770"
+        },
+        {
+          "name": "?make@Assembler@asmjit@@UAEPAXXZ",
+          "ordinal": 69,
+          "rva": "0x868b0"
+        },
+        {
+          "name": "?noOperand@asmjit@@3UOperand@1@B",
+          "ordinal": 70,
+          "rva": "0x7399d0"
+        },
+        {
+          "name": "?ptr_abs@x86@asmjit@@YA?AUX86Mem@2@_KABUX86Reg@2@IHI@Z",
+          "ordinal": 71,
+          "rva": "0x8ba30"
+        },
+        {
+          "name": "?ptr_abs@x86@asmjit@@YA?AUX86Mem@2@_KHI@Z",
+          "ordinal": 72,
+          "rva": "0x8ba00"
+        },
+        {
+          "name": "?release@JitRuntime@asmjit@@UAEIPAX@Z",
+          "ordinal": 73,
+          "rva": "0x8b9f0"
+        },
+        {
+          "name": "?release@StaticRuntime@asmjit@@UAEIPAX@Z",
+          "ordinal": 74,
+          "rva": "0x73640"
+        },
+        {
+          "name": "?release@VMemMgr@asmjit@@QAEIPAX@Z",
+          "ordinal": 75,
+          "rva": "0x7a110"
+        },
+        {
+          "name": "?release@VMemUtil@asmjit@@SAIPAXI@Z",
+          "ordinal": 76,
+          "rva": "0x79500"
+        },
+        {
+          "name": "?releaseProcessMemory@VMemUtil@asmjit@@SAIPAX0I@Z",
+          "ordinal": 77,
+          "rva": "0x79530"
+        },
+        {
+          "name": "?relocCode@Assembler@asmjit@@QBEIPAX_K@Z",
+          "ordinal": 78,
+          "rva": "0x86820"
+        },
+        {
+          "name": "?reset@Assembler@asmjit@@QAEX_N@Z",
+          "ordinal": 79,
+          "rva": "0x86320"
+        },
+        {
+          "name": "?reset@PodVectorBase@asmjit@@QAEX_N@Z",
+          "ordinal": 80,
+          "rva": "0x94420"
+        },
+        {
+          "name": "?reset@VMemMgr@asmjit@@QAEXXZ",
+          "ordinal": 81,
+          "rva": "0x79fd0"
+        },
+        {
+          "name": "?reset@Zone@asmjit@@QAEX_N@Z",
+          "ordinal": 82,
+          "rva": "0x945e0"
+        },
+        {
+          "name": "?sdup@Zone@asmjit@@QAEPADPBD@Z",
+          "ordinal": 83,
+          "rva": "0x947a0"
+        },
+        {
+          "name": "?setArch@X86Assembler@asmjit@@QAEII@Z",
+          "ordinal": 84,
+          "rva": "0x8bb80"
+        },
+        {
+          "name": "?setError@CodeGen@asmjit@@QAEIIPBD@Z",
+          "ordinal": 85,
+          "rva": "0x94380"
+        },
+        {
+          "name": "?setErrorHandler@CodeGen@asmjit@@QAEIPAUErrorHandler@2@@Z",
+          "ordinal": 86,
+          "rva": "0x943e0"
+        },
+        {
+          "name": "?sformat@Zone@asmjit@@QAAPADPBDZZ",
+          "ordinal": 87,
+          "rva": "0x94810"
+        },
+        {
+          "name": "?shrink@VMemMgr@asmjit@@QAEIPAXI@Z",
+          "ordinal": 88,
+          "rva": "0x7a2b0"
+        },
+        {
+          "name": "?x86RegData@asmjit@@3UX86RegData@1@B",
+          "ordinal": 89,
+          "rva": "0x734d18"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\Plugin\\崩溃保存.dll",
+      "bytes": 162304,
+      "sha256": "50e25488aa90e69dc53a79416347841b14bc4ba7079ced84ca11b8d5f9445ccc",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 94208,
+          "virtual": 93954
+        },
+        {
+          "name": ".rdata",
+          "raw": 39936,
+          "virtual": 39498
+        },
+        {
+          "name": ".data",
+          "raw": 2560,
+          "virtual": 5060
+        },
+        {
+          "name": ".fptable",
+          "raw": 512,
+          "virtual": 128
+        },
+        {
+          "name": ".detourc",
+          "raw": 14336,
+          "virtual": 13880
+        },
+        {
+          "name": ".detourd",
+          "raw": 512,
+          "virtual": 36
+        },
+        {
+          "name": ".rsrc",
+          "raw": 512,
+          "virtual": 248
+        },
+        {
+          "name": ".reloc",
+          "raw": 8704,
+          "virtual": 8248
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "SetLastError",
+            "GetCurrentProcess",
+            "TerminateProcess",
+            "MultiByteToWideChar",
+            "GetLastError",
+            "CloseHandle",
+            "GetProcAddress",
+            "ExitProcess",
+            "VirtualProtect",
+            "GetCurrentThreadId",
+            "WriteFile",
+            "SetFilePointer",
+            "GetModuleHandleW",
+            "FreeLibrary",
+            "LoadLibraryExW",
+            "GetModuleFileNameW",
+            "CreateDirectoryW",
+            "GetCurrentProcessId",
+            "GetLocalTime",
+            "CreateFileW",
+            "SetEndOfFile",
+            "SetUnhandledExceptionFilter",
+            "DecodePointer",
+            "GetConsoleMode",
+            "GetConsoleOutputCP",
+            "FlushFileBuffers",
+            "ReleaseSRWLockExclusive",
+            "AcquireSRWLockExclusive",
+            "WakeAllConditionVariable",
+            "SleepConditionVariableSRW",
+            "UnhandledExceptionFilter",
+            "IsProcessorFeaturePresent",
+            "IsDebuggerPresent",
+            "GetStartupInfoW",
+            "QueryPerformanceCounter",
+            "GetSystemTimeAsFileTime",
+            "InitializeSListHead",
+            "RtlUnwind",
+            "RaiseException",
+            "InterlockedFlushSList",
+            "EncodePointer",
+            "EnterCriticalSection",
+            "LeaveCriticalSection",
+            "DeleteCriticalSection",
+            "InitializeCriticalSectionAndSpinCount",
+            "TlsAlloc",
+            "TlsGetValue",
+            "TlsSetValue",
+            "TlsFree",
+            "GetModuleHandleExW",
+            "HeapFree",
+            "HeapAlloc",
+            "GetStdHandle",
+            "GetFileType",
+            "FindClose",
+            "FindFirstFileExW",
+            "FindNextFileW",
+            "IsValidCodePage",
+            "GetACP",
+            "GetOEMCP",
+            "GetCPInfo",
+            "GetCommandLineA",
+            "GetCommandLineW",
+            "WideCharToMultiByte",
+            "GetEnvironmentStringsW",
+            "FreeEnvironmentStringsW",
+            "FlsAlloc",
+            "FlsGetValue",
+            "FlsSetValue",
+            "FlsFree",
+            "InitializeCriticalSectionEx",
+            "LCMapStringW",
+            "GetProcessHeap",
+            "SetFilePointerEx",
+            "GetStringTypeW",
+            "SetStdHandle",
+            "HeapSize",
+            "HeapReAlloc",
+            "WriteConsoleW"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "wsprintfW",
+            "MessageBoxW"
+          ]
+        },
+        {
+          "dll": "dbghelp.dll",
+          "symbols": [
+            "MiniDumpWriteDump"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "GetPluginName",
+          "ordinal": 5,
+          "rva": "0x43b0"
+        },
+        {
+          "name": "GetPluginStatus",
+          "ordinal": 4,
+          "rva": "0x43a0"
+        },
+        {
+          "name": "GetPluginUUID",
+          "ordinal": 2,
+          "rva": "0x42a0"
+        },
+        {
+          "name": "SetPluginSetting",
+          "ordinal": 1,
+          "rva": "0x3760"
+        },
+        {
+          "name": "SetPluginStatus",
+          "ordinal": 3,
+          "rva": "0x4390"
+        },
+        {
+          "name": "SetWorkInfo",
+          "ordinal": 6,
+          "rva": "0x4410"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\Plugin\\挂本详细日志.dll",
+      "bytes": 282112,
+      "sha256": "6b731007ecf7667c460be789c7670032dff5df012f251c40eeae8ac03a269f5c",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 208896,
+          "virtual": 208576
+        },
+        {
+          "name": ".rdata",
+          "raw": 57344,
+          "virtual": 57338
+        },
+        {
+          "name": ".data",
+          "raw": 4608,
+          "virtual": 8452
+        },
+        {
+          "name": ".fptable",
+          "raw": 512,
+          "virtual": 128
+        },
+        {
+          "name": ".rsrc",
+          "raw": 512,
+          "virtual": 248
+        },
+        {
+          "name": ".reloc",
+          "raw": 9216,
+          "virtual": 9056
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "MultiByteToWideChar",
+            "WideCharToMultiByte",
+            "SetProcessMitigationPolicy",
+            "GetModuleFileNameA",
+            "GetFileAttributesW",
+            "GetLastError",
+            "SetEndOfFile",
+            "WriteConsoleW",
+            "HeapSize",
+            "SetStdHandle",
+            "GetProcessHeap",
+            "SetEnvironmentVariableW",
+            "FreeEnvironmentStringsW",
+            "GetEnvironmentStringsW",
+            "InitOnceComplete",
+            "InitOnceBeginInitialize",
+            "LocalFree",
+            "FormatMessageA",
+            "GetLocaleInfoEx",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "CreateDirectoryW",
+            "CreateFileW",
+            "FindClose",
+            "FindFirstFileW",
+            "FindFirstFileExW",
+            "FindNextFileW",
+            "GetFileAttributesExW",
+            "AreFileApisANSI",
+            "CloseHandle",
+            "GetModuleHandleW",
+            "GetProcAddress",
+            "GetFileInformationByHandleEx",
+            "Sleep",
+            "GetCurrentThreadId",
+            "ReleaseSRWLockExclusive",
+            "AcquireSRWLockExclusive",
+            "TryAcquireSRWLockExclusive",
+            "SleepConditionVariableSRW",
+            "EnterCriticalSection",
+            "LeaveCriticalSection",
+            "InitializeCriticalSectionEx",
+            "DeleteCriticalSection",
+            "EncodePointer",
+            "DecodePointer",
+            "LCMapStringEx",
+            "GetSystemTimeAsFileTime",
+            "WakeAllConditionVariable",
+            "GetStringTypeW",
+            "GetCPInfo",
+            "IsProcessorFeaturePresent",
+            "UnhandledExceptionFilter",
+            "SetUnhandledExceptionFilter",
+            "GetCurrentProcess",
+            "TerminateProcess",
+            "IsDebuggerPresent",
+            "GetStartupInfoW",
+            "GetCurrentProcessId",
+            "InitializeSListHead",
+            "RtlUnwind",
+            "RaiseException",
+            "InterlockedFlushSList",
+            "SetLastError",
+            "InitializeCriticalSectionAndSpinCount",
+            "TlsAlloc",
+            "TlsGetValue",
+            "TlsSetValue",
+            "TlsFree",
+            "FreeLibrary",
+            "LoadLibraryExW",
+            "CreateThread",
+            "ExitThread",
+            "FreeLibraryAndExitThread",
+            "GetModuleHandleExW",
+            "ExitProcess",
+            "GetModuleFileNameW",
+            "HeapFree",
+            "HeapAlloc",
+            "GetStdHandle",
+            "GetFileType",
+            "FlsAlloc",
+            "FlsGetValue",
+            "FlsSetValue",
+            "FlsFree",
+            "VirtualProtect",
+            "CompareStringW",
+            "LCMapStringW",
+            "GetLocaleInfoW",
+            "IsValidLocale",
+            "GetUserDefaultLCID",
+            "EnumSystemLocalesW",
+            "GetTimeZoneInformation",
+            "GetFileSizeEx",
+            "SetFilePointerEx",
+            "FlushFileBuffers",
+            "WriteFile",
+            "GetConsoleOutputCP",
+            "GetConsoleMode",
+            "ReadFile",
+            "ReadConsoleW",
+            "HeapReAlloc",
+            "IsValidCodePage",
+            "GetACP",
+            "GetOEMCP",
+            "GetCommandLineA",
+            "GetCommandLineW"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "GetWindowTextW",
+            "GetClassNameW",
+            "PostMessageW",
+            "EnumWindows"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "ShellExecuteW"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "GetPluginName",
+          "ordinal": 5,
+          "rva": "0x4d40"
+        },
+        {
+          "name": "GetPluginStatus",
+          "ordinal": 4,
+          "rva": "0x4d30"
+        },
+        {
+          "name": "GetPluginUUID",
+          "ordinal": 2,
+          "rva": "0x4660"
+        },
+        {
+          "name": "SetPluginSetting",
+          "ordinal": 1,
+          "rva": "0x58c0"
+        },
+        {
+          "name": "SetPluginStatus",
+          "ordinal": 3,
+          "rva": "0x4d10"
+        },
+        {
+          "name": "SetWorkInfo",
+          "ordinal": 6,
+          "rva": "0x5a80"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\Plugin\\挂机插件.dll",
+      "bytes": 1883648,
+      "sha256": "11006a0c86d5b7fda1d98dac196014dd302ae55e9caea13d590a182dd85d3c5e",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": "UPX0",
+          "raw": 0,
+          "virtual": 3928064
+        },
+        {
+          "name": "UPX1",
+          "raw": 1876992,
+          "virtual": 1880064
+        },
+        {
+          "name": ".rsrc",
+          "raw": 5632,
+          "virtual": 8192
+        }
+      ],
+      "imports": [
+        {
+          "dll": "ADVAPI32.dll",
+          "symbols": [
+            "RegEnumKeyW"
+          ]
+        },
+        {
+          "dll": "CRYPT32.dll",
+          "symbols": [
+            "CertCloseStore"
+          ]
+        },
+        {
+          "dll": "GDI32.dll",
+          "symbols": [
+            "LineTo"
+          ]
+        },
+        {
+          "dll": "gdiplus.dll",
+          "symbols": [
+            "GdipFree"
+          ]
+        },
+        {
+          "dll": "IMM32.dll",
+          "symbols": [
+            "ImmGetContext"
+          ]
+        },
+        {
+          "dll": "KERNEL32.DLL",
+          "symbols": [
+            "LoadLibraryA",
+            "GetProcAddress",
+            "VirtualProtect"
+          ]
+        },
+        {
+          "dll": "MSIMG32.dll",
+          "symbols": [
+            "AlphaBlend"
+          ]
+        },
+        {
+          "dll": "ole32.dll",
+          "symbols": [
+            "DoDragDrop"
+          ]
+        },
+        {
+          "dll": "OLEACC.dll",
+          "symbols": [
+            "LresultFromObject"
+          ]
+        },
+        {
+          "dll": "OLEAUT32.dll",
+          "symbols": [
+            "SysAllocString"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "DragFinish"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathIsUNCW"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "GetDC"
+          ]
+        },
+        {
+          "dll": "UxTheme.dll",
+          "symbols": [
+            "IsAppThemed"
+          ]
+        },
+        {
+          "dll": "WINMM.dll",
+          "symbols": [
+            "PlaySoundW"
+          ]
+        },
+        {
+          "dll": "WINSPOOL.DRV",
+          "symbols": [
+            "OpenPrinterW"
+          ]
+        },
+        {
+          "dll": "WS2_32.dll",
+          "symbols": [
+            "htons"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "GetPluginName",
+          "ordinal": 5,
+          "rva": "0x4d140"
+        },
+        {
+          "name": "GetPluginStatus",
+          "ordinal": 4,
+          "rva": "0x4d120"
+        },
+        {
+          "name": "GetPluginUUID",
+          "ordinal": 2,
+          "rva": "0x4bef0"
+        },
+        {
+          "name": "SetPluginSetting",
+          "ordinal": 1,
+          "rva": "0x65340"
+        },
+        {
+          "name": "SetPluginStatus",
+          "ordinal": 3,
+          "rva": "0x4d100"
+        },
+        {
+          "name": "SetWorkInfo",
+          "ordinal": 6,
+          "rva": "0x4e520"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\Plugin\\时间显示.dll",
+      "bytes": 1973760,
+      "sha256": "6bd372ac1b7dc00af372c8cc5e719dcb9f7cc0835afce7ca487ca2300af1b314",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 12800,
+          "virtual": 12396
+        },
+        {
+          "name": ".rdata",
+          "raw": 8192,
+          "virtual": 7682
+        },
+        {
+          "name": ".data",
+          "raw": 1024,
+          "virtual": 1644
+        },
+        {
+          "name": ".rsrc",
+          "raw": 1949184,
+          "virtual": 1949000
+        },
+        {
+          "name": ".reloc",
+          "raw": 1536,
+          "virtual": 1244
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "GetTempPathW",
+            "GetTempFileNameW",
+            "FindResourceW",
+            "DeleteFileW",
+            "LoadResource",
+            "LockResource",
+            "SizeofResource",
+            "AcquireSRWLockExclusive",
+            "WakeAllConditionVariable",
+            "SleepConditionVariableSRW",
+            "UnhandledExceptionFilter",
+            "SetUnhandledExceptionFilter",
+            "GetCurrentProcess",
+            "TerminateProcess",
+            "IsProcessorFeaturePresent",
+            "IsDebuggerPresent",
+            "QueryPerformanceCounter",
+            "GetCurrentProcessId",
+            "GetCurrentThreadId",
+            "GetSystemTimeAsFileTime",
+            "InitializeSListHead",
+            "ReleaseSRWLockExclusive"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "ShellExecuteW"
+          ]
+        },
+        {
+          "dll": "MSVCP140.dll",
+          "symbols": [
+            "?setstate@?$basic_ios@DU?$char_traits@D@std@@@std@@QAEXH_N@Z",
+            "??0?$basic_ios@DU?$char_traits@D@std@@@std@@IAE@XZ",
+            "??0?$basic_ostream@DU?$char_traits@D@std@@@std@@QAE@PAV?$basic_streambuf@DU?$char_traits@D@std@@@1@_N@Z",
+            "?in@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PBD1AAPBDPAD3AAPAD@Z",
+            "?unshift@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PAD1AAPAD@Z",
+            "??1?$basic_ios@DU?$char_traits@D@std@@@std@@UAE@XZ",
+            "??1?$basic_streambuf@DU?$char_traits@D@std@@@std@@UAE@XZ",
+            "?showmanyc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JXZ",
+            "?xsgetn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JPAD_J@Z",
+            "?xsputn@?$basic_streambuf@DU?$char_traits@D@std@@@std@@MAE_JPBD_J@Z",
+            "??1?$basic_ostream@DU?$char_traits@D@std@@@std@@UAE@XZ",
+            "?write@?$basic_ostream@DU?$char_traits@D@std@@@std@@QAEAAV12@PBD_J@Z",
+            "?fail@ios_base@std@@QBE_NXZ",
+            "??7ios_base@std@@QBE_NXZ",
+            "?always_noconv@codecvt_base@std@@QBE_NXZ",
+            "?_Xbad_alloc@std@@YAXXZ",
+            "?out@?$codecvt@DDU_Mbstatet@@@std@@QBEHAAU_Mbstatet@@PBD1AAPBDPAD3AAPAD@Z",
+            "?_Getcat@?$codecvt@DDU_Mbstatet@@@std@@SAIPAPBVfacet@locale@2@PBV42@@Z",
+            "??0_Lockit@std@@QAE@H@Z",
+            "??1_Lockit@std@@QAE@XZ",
+            "?_Xlength_error@std@@YAXPBD@Z",
+            "?_Getgloballocale@locale@std@@CAPAV_Locimp@12@XZ",
+            "?_Id_cnt@id@locale@std@@0HA",
+            "?id@?$codecvt@DDU_Mbstatet@@@std@@2V0locale@2@A",
+            "?_Fiopen@std@@YAPAU_iobuf@@PB_WHH@Z",
+            "??0?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAE@XZ",
+            "?getloc@?$basic_streambuf@DU?$char_traits@D@std@@@std@@QBE?AVlocale@2@XZ",
+            "?_Init@?$basic_streambuf@DU?$char_traits@D@std@@@std@@IAEXXZ"
+          ]
+        },
+        {
+          "dll": "VCRUNTIME140.dll",
+          "symbols": [
+            "memset",
+            "__std_type_info_destroy_list",
+            "__std_exception_destroy",
+            "__std_exception_copy",
+            "__std_terminate",
+            "_except_handler4_common",
+            "_CxxThrowException",
+            "__CxxFrameHandler3",
+            "memcpy",
+            "memmove"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-runtime-l1-1-0.dll",
+          "symbols": [
+            "_cexit",
+            "_initterm",
+            "_initterm_e",
+            "_crt_atexit",
+            "_seh_filter_dll",
+            "_invoke_watson",
+            "_configure_narrow_argv",
+            "_register_onexit_function",
+            "_initialize_onexit_table",
+            "_initialize_narrow_environment",
+            "_execute_onexit_table"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-stdio-l1-1-0.dll",
+          "symbols": [
+            "fclose",
+            "fread",
+            "fwrite",
+            "fgetpos",
+            "_fseeki64",
+            "fsetpos",
+            "setvbuf",
+            "fflush",
+            "fgetc",
+            "ungetc",
+            "fputc",
+            "_get_stream_buffer_pointers"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-string-l1-1-0.dll",
+          "symbols": [
+            "wcscat_s"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-filesystem-l1-1-0.dll",
+          "symbols": [
+            "_unlock_file",
+            "_lock_file"
+          ]
+        },
+        {
+          "dll": "api-ms-win-crt-heap-l1-1-0.dll",
+          "symbols": [
+            "free",
+            "_callnewh",
+            "malloc"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "GetPluginName",
+          "ordinal": 5,
+          "rva": "0x1710"
+        },
+        {
+          "name": "GetPluginStatus",
+          "ordinal": 4,
+          "rva": "0x1700"
+        },
+        {
+          "name": "GetPluginUUID",
+          "ordinal": 2,
+          "rva": "0x1640"
+        },
+        {
+          "name": "SetPluginSetting",
+          "ordinal": 1,
+          "rva": "0x1560"
+        },
+        {
+          "name": "SetPluginStatus",
+          "ordinal": 3,
+          "rva": "0x16f0"
+        },
+        {
+          "name": "SetWorkInfo",
+          "ordinal": 6,
+          "rva": "0x17c0"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\plugin32.dll",
+      "bytes": 102912,
+      "sha256": "b54330a2f7a3933857c0539e94b5f85587892c5ecdc5cd94a7045e8b0bc4a779",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": "UPX0",
+          "raw": 0,
+          "virtual": 299008
+        },
+        {
+          "name": "UPX1",
+          "raw": 100864,
+          "virtual": 102400
+        },
+        {
+          "name": ".rsrc",
+          "raw": 1024,
+          "virtual": 4096
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.DLL",
+          "symbols": [
+            "LoadLibraryA",
+            "GetProcAddress",
+            "VirtualProtect"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "RtlUnwind"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathAppendA"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "IsWindow"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": null,
+          "ordinal": 1,
+          "rva": "0x5b80"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\plugin64.dll",
+      "bytes": 133120,
+      "sha256": "ed04adf721f78d688e880e114302fd5ac0c61b0c7427faef07b0dcd3140f331e",
+      "machine": "0x8664",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": "UPX0",
+          "raw": 0,
+          "virtual": 299008
+        },
+        {
+          "name": "UPX1",
+          "raw": 131072,
+          "virtual": 131072
+        },
+        {
+          "name": ".rsrc",
+          "raw": 1024,
+          "virtual": 4096
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.DLL",
+          "symbols": [
+            "LoadLibraryA",
+            "GetProcAddress",
+            "VirtualProtect"
+          ]
+        },
+        {
+          "dll": "ntdll.dll",
+          "symbols": [
+            "RtlUnwindEx"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathAppendA"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "IsWindow"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": null,
+          "ordinal": 1,
+          "rva": "0x4400"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\FindPic.dll",
+      "bytes": 17526784,
+      "sha256": "6292abe8db3cde0af67d6c04b514138b5a672742f3be4c5a57b2b3cbb4b58e81",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 13256192,
+          "virtual": 13255722
+        },
+        {
+          "name": "IPPCODE",
+          "raw": 591872,
+          "virtual": 591735
+        },
+        {
+          "name": ".rdata",
+          "raw": 3073536,
+          "virtual": 3073484
+        },
+        {
+          "name": ".data",
+          "raw": 83456,
+          "virtual": 606292
+        },
+        {
+          "name": ".fptable",
+          "raw": 512,
+          "virtual": 128
+        },
+        {
+          "name": ".debug_a",
+          "raw": 512,
+          "virtual": 276
+        },
+        {
+          "name": ".debug_i",
+          "raw": 512,
+          "virtual": 504
+        },
+        {
+          "name": ".debug_r",
+          "raw": 512,
+          "virtual": 288
+        },
+        {
+          "name": ".debug_s",
+          "raw": 249344,
+          "virtual": 248910
+        },
+        {
+          "name": ".debug_l",
+          "raw": 5632,
+          "virtual": 5326
+        },
+        {
+          "name": ".rsrc",
+          "raw": 512,
+          "virtual": 248
+        },
+        {
+          "name": ".reloc",
+          "raw": 263168,
+          "virtual": 262792
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "DeleteFileA",
+            "GetTempPathA",
+            "GetTempFileNameA",
+            "FlsAlloc",
+            "FlsGetValue",
+            "FlsSetValue",
+            "FlsFree",
+            "GetCurrentProcess",
+            "GetExitCodeProcess",
+            "GetSystemInfo",
+            "CreateFileA",
+            "GetFileAttributesExA",
+            "LockFileEx",
+            "UnlockFileEx",
+            "CloseHandle",
+            "GetLastError",
+            "Sleep",
+            "FreeLibrary",
+            "GetProcAddress",
+            "LoadLibraryW",
+            "FindClose",
+            "FindFirstFileExA",
+            "FindNextFileA",
+            "GetModuleHandleA",
+            "LoadLibraryA",
+            "GetModuleFileNameA",
+            "GetModuleFileNameW",
+            "GetModuleHandleExA",
+            "SleepConditionVariableCS",
+            "FormatMessageA",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "ReleaseSRWLockExclusive",
+            "AcquireSRWLockExclusive",
+            "TryAcquireSRWLockExclusive",
+            "GetCurrentThreadId",
+            "WideCharToMultiByte",
+            "RaiseException",
+            "WaitForSingleObjectEx",
+            "SwitchToThread",
+            "GetExitCodeThread",
+            "EnterCriticalSection",
+            "LeaveCriticalSection",
+            "InitializeCriticalSectionEx",
+            "DeleteCriticalSection",
+            "LocalFree",
+            "EncodePointer",
+            "DecodePointer",
+            "MultiByteToWideChar",
+            "LCMapStringEx",
+            "CreateEventExW",
+            "CreateSemaphoreExW",
+            "FlushProcessWriteBuffers",
+            "GetSystemTimeAsFileTime",
+            "GetTickCount64",
+            "FreeLibraryWhenCallbackReturns",
+            "CreateThreadpoolTimer",
+            "SetThreadpoolTimer",
+            "WaitForThreadpoolTimerCallbacks",
+            "CloseThreadpoolTimer",
+            "CreateThreadpoolWait",
+            "SetThreadpoolWait",
+            "CloseThreadpoolWait",
+            "GetModuleHandleW",
+            "WakeConditionVariable",
+            "WakeAllConditionVariable",
+            "SleepConditionVariableSRW",
+            "GetStringTypeW",
+            "GetCPInfo",
+            "IsProcessorFeaturePresent",
+            "UnhandledExceptionFilter",
+            "SetUnhandledExceptionFilter",
+            "TerminateProcess",
+            "GetCurrentProcessId",
+            "InitializeSListHead",
+            "IsDebuggerPresent",
+            "GetStartupInfoW",
+            "GetCurrentThread",
+            "GetThreadTimes",
+            "FreeLibraryAndExitThread",
+            "LoadLibraryExW",
+            "DuplicateHandle",
+            "SetEvent",
+            "ReleaseSemaphore",
+            "InterlockedPopEntrySList",
+            "InterlockedPushEntrySList",
+            "InterlockedFlushSList",
+            "QueryDepthSList",
+            "SetLastError",
+            "SignalObjectAndWait",
+            "CreateThread",
+            "SetThreadPriority",
+            "GetThreadPriority",
+            "TlsAlloc",
+            "TlsGetValue",
+            "TlsSetValue",
+            "TlsFree",
+            "GetCurrentProcessorNumberEx",
+            "GetLogicalProcessorInformationEx",
+            "GetNumaHighestNodeNumber",
+            "GetThreadGroupAffinity",
+            "SetThreadGroupAffinity",
+            "VerSetConditionMask",
+            "VirtualFree",
+            "GetProcessAffinityMask",
+            "VerifyVersionInfoW",
+            "RtlUnwind",
+            "InitializeCriticalSectionAndSpinCount",
+            "ReadFile",
+            "CreateFileW",
+            "GetFileType",
+            "SetFilePointerEx",
+            "ExitThread",
+            "GetModuleHandleExW",
+            "ExitProcess",
+            "WriteFile",
+            "GetConsoleOutputCP",
+            "GetConsoleMode",
+            "ReadConsoleW",
+            "HeapFree",
+            "GetStdHandle",
+            "GetFileSizeEx",
+            "HeapAlloc",
+            "VirtualProtect",
+            "CompareStringW",
+            "LCMapStringW",
+            "GetLocaleInfoW",
+            "IsValidLocale",
+            "GetUserDefaultLCID",
+            "EnumSystemLocalesW",
+            "DeleteFileW",
+            "FlushFileBuffers",
+            "HeapReAlloc",
+            "HeapSize",
+            "HeapQueryInformation",
+            "CreateDirectoryW",
+            "RemoveDirectoryW",
+            "SetStdHandle",
+            "SetEndOfFile",
+            "FindFirstFileExW",
+            "FindNextFileW",
+            "IsValidCodePage",
+            "GetACP",
+            "GetOEMCP",
+            "GetCommandLineA",
+            "GetCommandLineW",
+            "GetEnvironmentStringsW",
+            "FreeEnvironmentStringsW",
+            "SetEnvironmentVariableW",
+            "GetProcessHeap",
+            "WriteConsoleW",
+            "DebugBreak",
+            "WaitForSingleObject",
+            "CreateSemaphoreA",
+            "GetEnvironmentVariableA",
+            "InitializeCriticalSection",
+            "lstrcmpA",
+            "CreateEventA",
+            "SetFilePointer",
+            "MapViewOfFile",
+            "UnmapViewOfFile",
+            "CreateFileMappingA",
+            "InitializeConditionVariable"
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "name": "DetectObj",
+          "ordinal": 3,
+          "rva": "0x8fc570"
+        },
+        {
+          "name": "DetectObj2",
+          "ordinal": 4,
+          "rva": "0x8ff710"
+        },
+        {
+          "name": "FindPic",
+          "ordinal": 1,
+          "rva": "0x8fa050"
+        },
+        {
+          "name": "FindPicEx",
+          "ordinal": 2,
+          "rva": "0x8fab20"
+        }
+      ]
+    },
+    {
+      "path": "研究\\挂机脚本\\libcef.dll",
+      "bytes": 12937216,
+      "sha256": "9eb5daf94ea9f03cb947aa9eba8152ea09fc8f65d7a6fb1aaab796f12608802b",
+      "machine": "0x14c",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 2532864,
+          "virtual": 2532472
+        },
+        {
+          "name": ".rdata",
+          "raw": 644096,
+          "virtual": 644046
+        },
+        {
+          "name": ".data",
+          "raw": 31744,
+          "virtual": 46032
+        },
+        {
+          "name": ".fptable",
+          "raw": 512,
+          "virtual": 128
+        },
+        {
+          "name": ".yandf",
+          "raw": 4608,
+          "virtual": 4528
+        },
+        {
+          "name": ".hfasd",
+          "raw": 512,
+          "virtual": 12
+        },
+        {
+          "name": "INIT0",
+          "raw": 5066752,
+          "virtual": 5066472
+        },
+        {
+          "name": "INIT1",
+          "raw": 1024,
+          "virtual": 936
+        },
+        {
+          "name": "INIT2",
+          "raw": 4530176,
+          "virtual": 4530176
+        },
+        {
+          "name": ".rsrc",
+          "raw": 512,
+          "virtual": 233
+        },
+        {
+          "name": ".reloc",
+          "raw": 123392,
+          "virtual": 123064
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "CreateJobObjectW",
+            "SetInformationJobObject",
+            "AssignProcessToJobObject",
+            "GetLastError",
+            "WideCharToMultiByte",
+            "TerminateProcess",
+            "GetCurrentProcessId",
+            "GetModuleFileNameW",
+            "GetModuleFileNameA",
+            "ResumeThread",
+            "GetModuleHandleW",
+            "Sleep",
+            "MultiByteToWideChar",
+            "DisableThreadLibraryCalls",
+            "CreateToolhelp32Snapshot",
+            "Process32FirstW",
+            "Process32NextW",
+            "OpenProcess",
+            "QueryFullProcessImageNameW",
+            "GetTickCount",
+            "GetCurrentThread",
+            "SetLastError",
+            "VirtualQueryEx",
+            "ReadProcessMemory",
+            "VirtualAllocEx",
+            "OutputDebugStringW",
+            "WriteProcessMemory",
+            "VirtualProtectEx",
+            "LoadLibraryW",
+            "GetProcAddress",
+            "GetCurrentProcess",
+            "CreateProcessW",
+            "DeleteCriticalSection",
+            "WaitForSingleObject",
+            "GetExitCodeProcess",
+            "GetEnvironmentVariableW",
+            "VirtualQuery",
+            "VirtualProtect",
+            "FlushInstructionCache",
+            "VirtualAlloc",
+            "VirtualFree",
+            "GetCurrentThreadId",
+            "GetThreadContext",
+            "SetThreadContext",
+            "SuspendThread",
+            "LoadLibraryExW",
+            "FreeLibrary",
+            "LoadLibraryExA",
+            "GetLocalTime",
+            "FormatMessageA",
+            "TlsAlloc",
+            "TlsGetValue",
+            "TlsSetValue",
+            "TlsFree",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "GetHandleInformation",
+            "CreateIoCompletionPort",
+            "GetQueuedCompletionStatusEx",
+            "InitializeSRWLock",
+            "ReleaseSRWLockExclusive",
+            "ReleaseSRWLockShared",
+            "AcquireSRWLockExclusive",
+            "AcquireSRWLockShared",
+            "InitOnceExecuteOnce",
+            "GetTickCount64",
+            "SetFileCompletionNotificationModes",
+            "TerminateJobObject",
+            "InitializeCriticalSection",
+            "LeaveCriticalSection",
+            "EnterCriticalSection",
+            "OpenFileMappingA",
+            "SearchPathW",
+            "UnmapViewOfFile",
+            "MapViewOfFile",
+            "CloseHandle",
+            "CreateFileMappingW",
+            "ExitProcess",
+            "ReadConsoleA",
+            "SetConsoleMode",
+            "ConvertThreadToFiber",
+            "ConvertFiberToThread",
+            "CreateSemaphoreA",
+            "ReleaseSemaphore",
+            "LoadLibraryA",
+            "GetSystemDirectoryA",
+            "FindFirstFileW",
+            "SystemTimeToFileTime",
+            "GetSystemTime",
+            "CreateFiber",
+            "DeleteFiber",
+            "SwitchToFiber",
+            "SetEndOfFile",
+            "WriteConsoleW",
+            "HeapSize",
+            "GetProcessHeap",
+            "SetEnvironmentVariableW",
+            "FreeEnvironmentStringsW",
+            "GetEnvironmentStringsW",
+            "GetCommandLineW",
+            "GetCommandLineA",
+            "GetOEMCP",
+            "WakeAllConditionVariable",
+            "SleepConditionVariableSRW",
+            "IsProcessorFeaturePresent",
+            "UnhandledExceptionFilter",
+            "SetUnhandledExceptionFilter",
+            "IsDebuggerPresent",
+            "GetStartupInfoW",
+            "GetSystemTimeAsFileTime",
+            "InitializeSListHead",
+            "WaitForSingleObjectEx",
+            "GetExitCodeThread",
+            "TryAcquireSRWLockExclusive",
+            "InitializeCriticalSectionEx",
+            "EncodePointer",
+            "DecodePointer",
+            "LCMapStringEx",
+            "GetStringTypeW",
+            "GetCPInfo",
+            "RtlUnwind",
+            "RaiseException",
+            "InterlockedFlushSList",
+            "InitializeCriticalSectionAndSpinCount",
+            "CreateThread",
+            "ExitThread",
+            "FreeLibraryAndExitThread",
+            "GetModuleHandleExW",
+            "GetDriveTypeW",
+            "GetFileInformationByHandle",
+            "GetFileType",
+            "PeekNamedPipe",
+            "SystemTimeToTzSpecificLocalTime",
+            "FileTimeToSystemTime",
+            "ReadFile",
+            "GetTimeZoneInformation",
+            "GetFullPathNameW",
+            "GetConsoleMode",
+            "ReadConsoleW",
+            "WriteFile",
+            "GetConsoleOutputCP",
+            "FlsAlloc",
+            "FlsGetValue",
+            "FlsSetValue",
+            "FlsFree",
+            "CompareStringW",
+            "LCMapStringW",
+            "GetLocaleInfoW",
+            "IsValidLocale",
+            "GetUserDefaultLCID",
+            "EnumSystemLocalesW",
+            "HeapFree",
+            "HeapAlloc",
+            "GetStdHandle",
+            "HeapReAlloc",
+            "GetCurrentDirectoryW",
+            "SetStdHandle",
+            "FlushFileBuffers",
+            "SetFilePointerEx",
+            "GetFileSizeEx",
+            "DeleteFileW",
+            "SetConsoleCtrlHandler",
+            "FindClose",
+            "FindFirstFileExW",
+            "FindNextFileW",
+            "IsValidCodePage",
+            "GetACP",
+            "CreateFileW"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "ShellExecuteExW"
+          ]
+        },
+        {
+          "dll": "WS2_32.dll",
+          "symbols": [
+            "setsockopt",
+            "select",
+            "listen",
+            "htons",
+            "htonl",
+            "ioctlsocket",
+            "connect",
+            "closesocket",
+            "bind",
+            "recvfrom",
+            "socket",
+            "WSACleanup",
+            "WSAGetLastError",
+            "recv",
+            "getaddrinfo",
+            "freeaddrinfo",
+            "ntohs",
+            "getpeername",
+            "getsockopt",
+            "WSAStartup",
+            "inet_pton",
+            "inet_ntop",
+            "send",
+            "WSASetLastError",
+            "inet_addr",
+            "inet_ntoa",
+            "gethostbyaddr",
+            "gethostbyname",
+            "getservbyport",
+            "getservbyname",
+            "shutdown",
+            "getsockname",
+            "sendto",
+            "WSAIoctl",
+            "accept"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathRemoveFileSpecA",
+            "PathAddBackslashA",
+            "PathAppendA",
+            "PathFileExistsW"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "GetProcessWindowStation",
+            "MessageBoxW",
+            "GetUserObjectInformationW"
+          ]
+        },
+        {
+          "dll": "ADVAPI32.dll",
+          "symbols": [
+            "DeregisterEventSource",
+            "RegisterEventSourceW",
+            "ReportEventW",
+            "CryptAcquireContextW",
+            "CryptReleaseContext",
+            "CryptGenRandom"
+          ]
+        },
+        {
+          "dll": "CRYPT32.dll",
+          "symbols": [
+            "CertFindCertificateInStore",
+            "CertFreeCertificateContext",
+            "CertOpenSystemStoreW",
+            "CertCloseStore"
+          ]
+        }
+      ],
+      "exports": []
+    },
+    {
+      "path": "研究\\挂机脚本\\libpng.dll",
+      "bytes": 19383296,
+      "sha256": "53c9573ae7ee89575d0bee1ab58da39b81dbd984bc01e3f7111859f54a413a34",
+      "machine": "0x8664",
+      "subsystem": 2,
+      "clr": false,
+      "sections": [
+        {
+          "name": ".text",
+          "raw": 3832320,
+          "virtual": 3832292
+        },
+        {
+          "name": ".rdata",
+          "raw": 983040,
+          "virtual": 982660
+        },
+        {
+          "name": ".data",
+          "raw": 46080,
+          "virtual": 66124
+        },
+        {
+          "name": ".pdata",
+          "raw": 148480,
+          "virtual": 148392
+        },
+        {
+          "name": ".fptable",
+          "raw": 512,
+          "virtual": 256
+        },
+        {
+          "name": ".yandf",
+          "raw": 8704,
+          "virtual": 8656
+        },
+        {
+          "name": ".hfasd",
+          "raw": 512,
+          "virtual": 24
+        },
+        {
+          "name": "INIT0",
+          "raw": 7333376,
+          "virtual": 7333246
+        },
+        {
+          "name": "INIT1",
+          "raw": 2048,
+          "virtual": 1912
+        },
+        {
+          "name": "INIT2",
+          "raw": 6980096,
+          "virtual": 6979708
+        },
+        {
+          "name": ".rsrc",
+          "raw": 512,
+          "virtual": 233
+        },
+        {
+          "name": ".reloc",
+          "raw": 46592,
+          "virtual": 46272
+        }
+      ],
+      "imports": [
+        {
+          "dll": "KERNEL32.dll",
+          "symbols": [
+            "CreateJobObjectW",
+            "SetInformationJobObject",
+            "AssignProcessToJobObject",
+            "GetLastError",
+            "WideCharToMultiByte",
+            "TerminateProcess",
+            "GetCurrentProcessId",
+            "GetModuleFileNameW",
+            "GetModuleFileNameA",
+            "ResumeThread",
+            "GetModuleHandleW",
+            "Sleep",
+            "MultiByteToWideChar",
+            "DisableThreadLibraryCalls",
+            "CreateToolhelp32Snapshot",
+            "Process32FirstW",
+            "Process32NextW",
+            "OpenProcess",
+            "QueryFullProcessImageNameW",
+            "GetTickCount",
+            "GetCurrentThread",
+            "SetLastError",
+            "VirtualQueryEx",
+            "ReadProcessMemory",
+            "VirtualAllocEx",
+            "OutputDebugStringW",
+            "WriteProcessMemory",
+            "VirtualProtectEx",
+            "IsWow64Process",
+            "CreateProcessW",
+            "ExitProcess",
+            "TerminateJobObject",
+            "GetExitCodeProcess",
+            "GetEnvironmentVariableW",
+            "VirtualQuery",
+            "VirtualProtect",
+            "GetCurrentProcess",
+            "FlushInstructionCache",
+            "VirtualAlloc",
+            "VirtualFree",
+            "GetCurrentThreadId",
+            "GetThreadContext",
+            "SetThreadContext",
+            "SuspendThread",
+            "LoadLibraryExW",
+            "FreeLibrary",
+            "GetProcAddress",
+            "LoadLibraryExA",
+            "GetLocalTime",
+            "FormatMessageA",
+            "TlsAlloc",
+            "TlsGetValue",
+            "TlsSetValue",
+            "TlsFree",
+            "QueryPerformanceCounter",
+            "QueryPerformanceFrequency",
+            "GetHandleInformation",
+            "CreateIoCompletionPort",
+            "GetQueuedCompletionStatusEx",
+            "InitializeSRWLock",
+            "ReleaseSRWLockExclusive",
+            "ReleaseSRWLockShared",
+            "AcquireSRWLockExclusive",
+            "AcquireSRWLockShared",
+            "InitOnceExecuteOnce",
+            "GetTickCount64",
+            "SetFileCompletionNotificationModes",
+            "DeleteCriticalSection",
+            "InitializeCriticalSection",
+            "LeaveCriticalSection",
+            "EnterCriticalSection",
+            "SearchPathW",
+            "OpenFileMappingA",
+            "UnmapViewOfFile",
+            "MapViewOfFile",
+            "CloseHandle",
+            "CreateFileMappingW",
+            "WaitForSingleObject",
+            "CreateFileW",
+            "ReadConsoleA",
+            "SetConsoleMode",
+            "LoadLibraryW",
+            "ConvertThreadToFiber",
+            "ConvertFiberToThread",
+            "CreateSemaphoreA",
+            "ReleaseSemaphore",
+            "LoadLibraryA",
+            "GetSystemDirectoryA",
+            "FindFirstFileW",
+            "SystemTimeToFileTime",
+            "GetSystemTime",
+            "CreateFiber",
+            "DeleteFiber",
+            "SwitchToFiber",
+            "SetEndOfFile",
+            "WriteConsoleW",
+            "HeapSize",
+            "GetProcessHeap",
+            "SetEnvironmentVariableW",
+            "FreeEnvironmentStringsW",
+            "GetEnvironmentStringsW",
+            "GetCommandLineW",
+            "WakeAllConditionVariable",
+            "SleepConditionVariableSRW",
+            "RtlCaptureContext",
+            "RtlLookupFunctionEntry",
+            "RtlVirtualUnwind",
+            "UnhandledExceptionFilter",
+            "SetUnhandledExceptionFilter",
+            "IsProcessorFeaturePresent",
+            "IsDebuggerPresent",
+            "GetStartupInfoW",
+            "GetSystemTimeAsFileTime",
+            "InitializeSListHead",
+            "WaitForSingleObjectEx",
+            "GetExitCodeThread",
+            "TryAcquireSRWLockExclusive",
+            "InitializeCriticalSectionEx",
+            "EncodePointer",
+            "DecodePointer",
+            "LCMapStringEx",
+            "GetStringTypeW",
+            "GetCPInfo",
+            "RtlUnwindEx",
+            "RtlPcToFileHeader",
+            "RaiseException",
+            "InterlockedFlushSList",
+            "InitializeCriticalSectionAndSpinCount",
+            "CreateThread",
+            "ExitThread",
+            "FreeLibraryAndExitThread",
+            "GetModuleHandleExW",
+            "GetDriveTypeW",
+            "GetFileInformationByHandle",
+            "GetFileType",
+            "PeekNamedPipe",
+            "SystemTimeToTzSpecificLocalTime",
+            "FileTimeToSystemTime",
+            "ReadFile",
+            "GetTimeZoneInformation",
+            "GetFullPathNameW",
+            "GetConsoleMode",
+            "ReadConsoleW",
+            "WriteFile",
+            "GetConsoleOutputCP",
+            "FlsAlloc",
+            "FlsGetValue",
+            "FlsSetValue",
+            "FlsFree",
+            "CompareStringW",
+            "LCMapStringW",
+            "GetLocaleInfoW",
+            "IsValidLocale",
+            "GetUserDefaultLCID",
+            "EnumSystemLocalesW",
+            "HeapFree",
+            "HeapAlloc",
+            "GetStdHandle",
+            "HeapReAlloc",
+            "GetCurrentDirectoryW",
+            "SetStdHandle",
+            "FlushFileBuffers",
+            "SetFilePointerEx",
+            "GetFileSizeEx",
+            "DeleteFileW",
+            "SetConsoleCtrlHandler",
+            "FindClose",
+            "FindFirstFileExW",
+            "FindNextFileW",
+            "IsValidCodePage",
+            "GetACP",
+            "GetOEMCP",
+            "GetCommandLineA"
+          ]
+        },
+        {
+          "dll": "SHELL32.dll",
+          "symbols": [
+            "ShellExecuteExW"
+          ]
+        },
+        {
+          "dll": "WS2_32.dll",
+          "symbols": [
+            "setsockopt",
+            "select",
+            "listen",
+            "htons",
+            "htonl",
+            "ioctlsocket",
+            "connect",
+            "closesocket",
+            "bind",
+            "recvfrom",
+            "socket",
+            "inet_ntop",
+            "WSACleanup",
+            "recv",
+            "WSAGetLastError",
+            "getsockname",
+            "ntohs",
+            "getpeername",
+            "getsockopt",
+            "WSAStartup",
+            "getaddrinfo",
+            "freeaddrinfo",
+            "WSASetLastError",
+            "inet_addr",
+            "inet_ntoa",
+            "gethostbyaddr",
+            "gethostbyname",
+            "getservbyport",
+            "getservbyname",
+            "shutdown",
+            "send",
+            "inet_pton",
+            "sendto",
+            "WSAIoctl",
+            "accept"
+          ]
+        },
+        {
+          "dll": "SHLWAPI.dll",
+          "symbols": [
+            "PathRemoveFileSpecA",
+            "PathAddBackslashA",
+            "PathAppendA",
+            "PathFileExistsW"
+          ]
+        },
+        {
+          "dll": "USER32.dll",
+          "symbols": [
+            "MessageBoxW",
+            "GetUserObjectInformationW",
+            "GetProcessWindowStation"
+          ]
+        },
+        {
+          "dll": "ADVAPI32.dll",
+          "symbols": [
+            "DeregisterEventSource",
+            "ReportEventW",
+            "CryptAcquireContextW",
+            "CryptReleaseContext",
+            "CryptGenRandom",
+            "RegisterEventSourceW"
+          ]
+        },
+        {
+          "dll": "CRYPT32.dll",
+          "symbols": [
+            "CertFindCertificateInStore",
+            "CertFreeCertificateContext",
+            "CertOpenSystemStoreW",
+            "CertCloseStore"
+          ]
+        }
+      ],
+      "exports": []
+    }
+  ],
+  "directory_bytes": 89571953,
+  "exe_dll_bytes": 89212928
+}

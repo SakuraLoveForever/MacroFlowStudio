@@ -13,7 +13,7 @@ from . import storage
 
 SCRIPT_FIELDS = {"script"}
 IMAGE_FIELDS = {"template", "second_match_template", "fallback_template", "image_path"}
-MODULE_FIELDS = {"module_key", "fallback_module_key"}
+MODULE_FIELDS = {"module_key"}
 MAX_FILES = 10_000
 MAX_BYTES = 512 * 1024 * 1024
 

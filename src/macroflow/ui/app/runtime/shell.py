@@ -701,7 +701,7 @@ class RuntimeShellMixin:
         for line in text.splitlines(keepends=True):
             highlighted = any(marker in line for marker in (
                 "全局检测触发：", "全局检测超时：", "全局检测处理", "全局模块步骤已执行：",
-                "持续状态触发：", "全局检测：",
+                "全局检测：",
             ))
             widget.insert("end", line, ("global_trigger",) if highlighted else ())
 

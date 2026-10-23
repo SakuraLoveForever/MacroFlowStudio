@@ -601,9 +601,6 @@ class RuntimeHelpersMixin:
         if show_feedback:
             self._set_status("左侧配置已保存", "success")
             self._log("已保存左侧配置，下次启动会自动恢复。")
-        callback = getattr(self, '_settings_saved', None)
-        if callback is not None:
-            callback()
         return True
 
     def _refresh_resolution_styles_summary(self) -> None:
@@ -619,7 +616,9 @@ class RuntimeHelpersMixin:
         self.resolution_styles_summary_var.set(summary)
 
     def _settings_changed(self, _event=None):
-        saved = self._persist_sidebar_settings()
+        state = self.__dict__.get('_sidebar_save_state')
+        if state is not None:
+            state.refresh()
         if self.recorder is not None and self.recorder.running:
             # 录制期间主窗口一律保持隐藏（避免挡住/录进要录的内容），这个勾选
             # 只切换「要不要留一个悬浮小窗显示已录条数」；主窗口在录制结束后
@@ -628,11 +627,11 @@ class RuntimeHelpersMixin:
                 self._show_operation_mini("recording")
             else:
                 self._hide_recording_mini()
-        return saved
+        return True
 
     def _toggle_target_activation(self):
         """Toggle execution focus without changing the persisted target binding."""
-        self._persist_sidebar_settings()
+        self._settings_changed()
         if self.activate_target_enabled_var.get():
             self._log("已启用执行时前置目标窗口；保留当前目标窗口绑定。")
         else:

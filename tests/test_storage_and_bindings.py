@@ -653,6 +653,7 @@ class BindingTests(unittest.TestCase):
         app.bound_window = target
         app.activate_target_enabled_var = Mock()
         app.activate_target_enabled_var.get.return_value = False
+        app.recorder = None
         app._persist_sidebar_settings = Mock(return_value=True)
         app._log = Mock()
 
@@ -660,7 +661,7 @@ class BindingTests(unittest.TestCase):
 
         self.assertIs(app.saved_window_signature, signature)
         self.assertIs(app.bound_window, target)
-        app._persist_sidebar_settings.assert_called_once_with()
+        app._persist_sidebar_settings.assert_not_called()
         self.assertIn("目标窗口绑定仍然保留", app._log.call_args.args[0])
 
     def test_foreground_target_status_matches_current_hwnd(self):

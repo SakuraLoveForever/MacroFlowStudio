@@ -1,4 +1,4 @@
-"""Continuous detection timing shared by script modules and global guards."""
+"""Continuous observation timing for execution plugins."""
 
 
 def sustained_detection(state: dict, detected: bool | None, condition: str,

@@ -425,7 +425,6 @@ MODULE_AFTER_ACTIONS = (
     "second_match",      # 二次识别后点击：识别另一个模板（可限定区域）后点击其位置
     "run_actions",       # 旧格式：仅执行代码段；加载时迁移为 continue + 附加代码段
 )
-MODULE_FALLBACK_ACTIONS = ("continue", "click_continue", "exit", "click_exit")
 DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS = 5000
 # 模块对象的「检测间隔」默认值：新建模块按 1 秒轮询（识别一次约几百毫秒，
 # 1 秒间隔对挂机足够灵敏，又不会让 CPU/截图开销堆在一起）。
@@ -443,9 +442,6 @@ DEFAULT_MODULE_OBJECT: dict = {
     "cooldown_ms": DEFAULT_MODULE_TRIGGER_COOLDOWN_MS,
     "recheck_enabled": False,           # 首次识别结束后等设定时长，以再次识别结果执行动作
     "recheck_delay_ms": DEFAULT_MODULE_RECHECK_DELAY_MS,  # 再次识别前的等待时长
-    "fallback_module_key": "",         # 主模块等待期间同时识别的备用图片/文字模块
-    "fallback_on_match": "continue",   # 备用命中后继续识别主模块或直接退出
-    "fallback_click": False,            # 备用首次出现时点击备用命中位置
     "blocking": False,                 # 阻塞识别：识别不到就一直等
     "wait_text_absent": False,         # OCR：目标文字存在时循环，消失后才完成
     "hold_enabled": False,             # 全局模块是否要求命中状态持续达到 hold_ms（默认不启用）
@@ -468,10 +464,6 @@ DEFAULT_MODULE_OBJECT: dict = {
     "not_found_timeout_ms": DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS,
     "on_timeout_actions": [],
     "process_name": "",
-    "timed_detection": False,
-    "timed_condition": "absent",
-    "timed_duration_ms": 30000,
-    "timed_actions": [],
 }
 
 
@@ -497,6 +489,12 @@ def _normalize_object(value, key: str = ""):
         return None
     obj = dict(DEFAULT_MODULE_OBJECT)
     obj.update(value)
+    for field in (
+        "fallback_module_key", "fallback_on_match", "fallback_click",
+        "fallback_click_count", "fallback_click_interval_ms",
+        "timed_detection", "timed_condition", "timed_duration_ms", "timed_actions",
+    ):
+        obj.pop(field, None)
     if obj.get("category") == "global":
         # 原全局模块属于工作流的常驻检测，升级为明确的工作流全局类别。
         obj["category"] = "workflow_global"
@@ -559,12 +557,6 @@ def _normalize_object(value, key: str = ""):
     except (TypeError, ValueError):
         obj["hold_ms"] = 1000
     obj["blocking"] = bool(obj.get("blocking", False))
-    obj["fallback_module_key"] = str(obj.get("fallback_module_key", "")).strip()
-    fallback_on_match = str(obj.get("fallback_on_match", "")).strip()
-    if fallback_on_match not in MODULE_FALLBACK_ACTIONS:
-        fallback_on_match = "click_continue" if bool(obj.get("fallback_click", False)) else "continue"
-    obj["fallback_on_match"] = fallback_on_match
-    obj["fallback_click"] = fallback_on_match.startswith("click_")
     obj["wait_text_absent"] = bool(obj.get("wait_text_absent", False))
     obj["enabled"] = bool(obj.get("enabled", True))
     obj["hold_enabled"] = bool(obj.get("hold_enabled", False))
@@ -578,7 +570,7 @@ def _normalize_object(value, key: str = ""):
         obj["run_code_after_action"] = True
     else:
         obj["run_code_after_action"] = bool(obj.get("run_code_after_action", False))
-    if obj.get("recognize") == "none" and obj.get("after_action") not in (
+    if obj.get("recognize") in ("none", "process") and obj.get("after_action") not in (
         "click_custom", "continue",
     ):
         obj["after_action"] = "continue"
@@ -631,18 +623,14 @@ def _normalize_object(value, key: str = ""):
         obj["not_found_timeout_ms"] = DEFAULT_MODULE_NOT_FOUND_TIMEOUT_MS
     if not isinstance(obj.get("on_timeout_actions"), list):
         obj["on_timeout_actions"] = []
-    obj["timed_detection"] = bool(obj.get("timed_detection", False)) and obj.get("recognize") not in ("number", "none") and not obj.get("pure_action")
     obj["process_name"] = str(obj.get("process_name", "")).strip()
     if obj.get("recognize") == "process":
-        obj.update({"template": "", "region": [], "timed_detection": True,
-                    "blocking": False, "wait_text_absent": False})
-    obj["timed_condition"] = "present" if obj.get("timed_condition") == "present" else "absent"
-    try:
-        obj["timed_duration_ms"] = max(1, min(86400000, int(obj.get("timed_duration_ms", 30000))))
-    except (TypeError, ValueError):
-        obj["timed_duration_ms"] = 30000
-    if not isinstance(obj.get("timed_actions"), list):
-        obj["timed_actions"] = []
+        obj.update({"template": "", "region": [], "recheck_enabled": False,
+                    "blocking": False, "wait_text_absent": False,
+                    "second_match_template": "", "second_match_click_region": []})
+        if obj["category"] == "switch":
+            obj.update({"hold_enabled": False, "run_code_on_timeout": False,
+                        "not_found_timeout_ms": 0, "on_timeout_actions": []})
     if obj.get("recognize") == "number" and obj["category"] != "recognition":
         # 数字读取只负责在脚本行里产出比较结果，不执行点击或模块代码段。
         obj.update({
@@ -659,9 +647,8 @@ def _normalize_object(value, key: str = ""):
             "pure_action": False, "after_action": "continue", "click_point": [],
             "run_code_after_action": False, "on_success_actions": [],
             "run_code_on_timeout": False, "on_timeout_actions": [],
-            "fallback_module_key": "", "fallback_on_match": "continue", "fallback_click": False,
             "second_match_template": "", "second_match_click_region": [],
-            "timed_detection": False, "timed_actions": [], "blocking": False,
+            "blocking": False,
             "wait_text_absent": False, "hold_enabled": False,
         })
 

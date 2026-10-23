@@ -34,7 +34,7 @@ class BundleTests(unittest.TestCase):
         ]))
         storage.save_module_objects({
             'module:main': {'name': 'main', 'template': 'images/sample.png',
-                            'fallback_module_key': 'module:other'},
+                            'on_success_actions': [{'type': 'module', 'module_ref': True, 'module_key': 'module:other'}]},
             'module:other': {'name': 'other', 'template': 'images/sample.png',
                              'on_success_actions': [{'type': 'script_ref', 'script': 'scripts/child.json'}]},
             'module:unused': {'name': 'unused', 'template': 'images/missing.png'},
@@ -62,7 +62,7 @@ class BundleTests(unittest.TestCase):
         objects = storage.load_module_objects()
         self.assertEqual(objects['module:main']['template'], 'images/sample.png')
         self.assertTrue(storage.resolve_path(objects[key]['template']).is_file())
-        self.assertIn(objects[key]['fallback_module_key'], objects)
+        self.assertIn(objects[key]['on_success_actions'][0]['module_key'], objects)
         export_bundle(self.root / 'again.zip', workflow=imported)
         self.assertEqual(import_bundle(self.root / 'again.zip')[0], 'workflow')
 

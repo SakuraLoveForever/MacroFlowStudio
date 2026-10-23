@@ -26,6 +26,7 @@ from macroflow.core.storage import (
     save_template_regions, save_script, script_category_for_path, update_module_object,
 )
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from macroflow.ui.form_controls import compact_combobox, integer_spinbox
 from macroflow.input.wininput import (
     WindowInfo, enum_windows, get_cursor_pos,
     get_monitor_work_area_for_point,
@@ -230,10 +231,10 @@ class JumpActionDialog(ModalDialog):
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
         ttk.Label(body, text="跳转到").grid(row=0, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
-        ttk.Combobox(
+        compact_combobox(
             body, textvariable=self.target, values=list(self.target_ids),
             state="readonly", width=50,
-        ).grid(row=0, column=1, sticky="ew", pady=px(8))
+        ).grid(row=0, column=1, sticky="w", pady=px(8))
         ttk.Label(
             body,
             text=("脚本开头会从第 1 行重新执行；指定行会跟随该动作移动；"
@@ -494,8 +495,8 @@ class KeyActionDialog(ModalDialog):
         self.capture_button.pack(side="left", padx=pad(8, 0))
         ttk.Label(body, textvariable=self.capture_hint, foreground=COLOR_MUTED).grid(row=1, column=1, sticky="w")
         ttk.Label(body, text="动作").grid(row=2, column=0, sticky="w", pady=px(14))
-        box = ttk.Combobox(body, textvariable=self.mode, values=("press", "down", "up"), state="readonly")
-        box.grid(row=2, column=1, sticky="ew")
+        box = compact_combobox(body, textvariable=self.mode, values=("press", "down", "up"), state="readonly")
+        box.grid(row=2, column=1, sticky="w")
         ttk.Label(body, text="按住时长").grid(row=3, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.hold).grid(row=3, column=1, sticky="ew")
         ttk.Label(body, text="执行前延时").grid(row=4, column=0, sticky="w", pady=px(8))
@@ -591,7 +592,7 @@ class KeySequenceDialog(ModalDialog):
         self.keys_entry.bind("<Control-y>", self.redo_sequence)
         ttk.Checkbutton(body, text="相邻操作间隔 (ms)", variable=self.interval_enabled,
                         command=self._toggle_interval).grid(row=1, column=0, sticky="w", padx=pad(0, 12), pady=px(8))
-        self.interval_entry = ttk.Entry(body, textvariable=self.interval)
+        self.interval_entry = integer_spinbox(body, textvariable=self.interval)
         self.interval_entry.grid(row=1, column=1, sticky="ew")
         self._toggle_interval()
         ttk.Checkbutton(body, text="整套执行间隔 (s)", variable=self.cycle_interval_enabled,
@@ -603,10 +604,10 @@ class KeySequenceDialog(ModalDialog):
         mouse_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=px(8))
         self.mouse_action = tk.StringVar(value="左键")
         self.mouse_count = tk.StringVar(value="1")
-        ttk.Combobox(mouse_row, textvariable=self.mouse_action, values=("左键", "右键", "中键", "滚轮上", "滚轮下"),
+        compact_combobox(mouse_row, textvariable=self.mouse_action, values=("左键", "右键", "中键", "滚轮上", "滚轮下"),
                      state="readonly", width=9).pack(side="left")
         ttk.Label(mouse_row, text="滚轮次数").pack(side="left", padx=px(8))
-        ttk.Entry(mouse_row, textvariable=self.mouse_count, width=7).pack(side="left")
+        integer_spinbox(mouse_row, textvariable=self.mouse_count, from_=1, width=7).pack(side="left")
         ttk.Button(mouse_row, text="插入鼠标操作", command=self.insert_mouse_action).pack(side="left", padx=px(8))
         delay_row = ttk.Frame(body)
         delay_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=px(8))
@@ -614,7 +615,7 @@ class KeySequenceDialog(ModalDialog):
         self.insert_delay_ms = tk.StringVar(value="500")
         ttk.Checkbutton(delay_row, text="启用延时插入", variable=self.insert_delay_enabled,
                         command=self._toggle_insert_delay).pack(side="left")
-        self.insert_delay_entry = ttk.Entry(delay_row, textvariable=self.insert_delay_ms, width=8)
+        self.insert_delay_entry = integer_spinbox(delay_row, textvariable=self.insert_delay_ms, from_=1, width=8)
         self.insert_delay_entry.pack(side="left", padx=px(8))
         ttk.Label(delay_row, text="ms").pack(side="left")
         self.insert_delay_button = ttk.Button(delay_row, text="插入延时", command=self.insert_sequence_delay)
@@ -753,17 +754,18 @@ class MouseMoveDialog(ModalDialog):
         for row, (label, variable) in enumerate(labels):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(9))
             if row == 0:
-                combo = ttk.Combobox(body, textvariable=variable, values=("absolute", "relative"), state="readonly")
-                combo.grid(row=row, column=1, sticky="ew")
+                combo = compact_combobox(body, textvariable=variable, values=("absolute", "relative"), state="readonly")
+                combo.grid(row=row, column=1, sticky="w")
                 combo.bind("<<ComboboxSelected>>", self._mode_changed)
             elif variable is self.x:
                 frame = ttk.Frame(body)
                 frame.grid(row=row, column=1, sticky="ew")
-                ttk.Entry(frame, textvariable=variable).pack(side="left", fill="x", expand=True)
+                integer_spinbox(frame, textvariable=variable, from_=-2147483647).pack(side="left", fill="x", expand=True)
                 self.pick_button = ttk.Button(frame, text="点击屏幕选取…", command=self.start_pick_position)
                 self.pick_button.pack(side="left", padx=pad(8, 0))
             else:
-                entry = ttk.Entry(body, textvariable=variable)
+                entry = (integer_spinbox(body, textvariable=variable, from_=-2147483647)
+                         if variable is self.y else ttk.Entry(body, textvariable=variable))
                 entry.grid(row=row, column=1, sticky="ew")
         self._update_pick_label()
         body.columnconfigure(1, weight=1)
@@ -873,13 +875,13 @@ class ClickDialog(ModalDialog):
             grid_row = row + row_offset
             ttk.Label(body, text=label).grid(row=grid_row, column=0, sticky="w", pady=px(8))
             if row == 0:
-                ttk.Combobox(body, textvariable=variable, values=("left", "right", "middle"), state="readonly").grid(row=grid_row, column=1, sticky="ew")
+                compact_combobox(body, textvariable=variable, values=("left", "right", "middle"), state="readonly").grid(row=grid_row, column=1, sticky="w")
             elif self.kind == "mouse_button" and variable is None:
-                ttk.Combobox(body, textvariable=self.down, values=("按下", "松开"), state="readonly").grid(row=grid_row, column=1, sticky="ew")
+                compact_combobox(body, textvariable=self.down, values=("按下", "松开"), state="readonly").grid(row=grid_row, column=1, sticky="w")
             elif variable is self.x:
                 frame = ttk.Frame(body)
                 frame.grid(row=grid_row, column=1, sticky="ew")
-                self._x_entry = ttk.Entry(frame, textvariable=variable)
+                self._x_entry = integer_spinbox(frame, textvariable=variable, from_=-2147483647)
                 self._x_entry.pack(side="left", fill="x", expand=True)
                 if self.kind != "mouse_button":
                     self._pick_button = ttk.Button(
@@ -887,7 +889,8 @@ class ClickDialog(ModalDialog):
                     )
                     self._pick_button.pack(side="left", padx=pad(8, 0))
             else:
-                entry = ttk.Entry(body, textvariable=variable)
+                entry = (integer_spinbox(body, textvariable=variable, from_=-2147483647)
+                         if variable is self.y else ttk.Entry(body, textvariable=variable))
                 entry.grid(row=grid_row, column=1, sticky="ew")
                 if variable is self.y:
                     self._y_entry = entry
@@ -989,19 +992,26 @@ class ScrollDialog(ModalDialog):
         for row, (label, variable) in enumerate(values):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             if variable is self.direction:
-                ttk.Combobox(
+                compact_combobox(
                     body, textvariable=variable,
                     values=(SCROLL_UP_LABEL, SCROLL_DOWN_LABEL), state="readonly",
-                ).grid(row=row, column=1, sticky="ew")
+                ).grid(row=row, column=1, sticky="w")
             elif variable is self.x:
                 frame = ttk.Frame(body)
                 frame.grid(row=row, column=1, sticky="ew")
-                ttk.Entry(frame, textvariable=variable).pack(side="left", fill="x", expand=True)
+                integer_spinbox(frame, textvariable=variable, from_=-2147483647).pack(side="left", fill="x", expand=True)
                 ttk.Button(
                     frame, text="点击屏幕选取…", command=self.start_pick_position,
                 ).pack(side="left", padx=pad(8, 0))
             else:
-                ttk.Entry(body, textvariable=variable).grid(row=row, column=1, sticky="ew")
+                if variable is self.y:
+                    entry = integer_spinbox(body, textvariable=variable, from_=-2147483647)
+                elif variable in (self.clicks, self.interval):
+                    entry = integer_spinbox(body, textvariable=variable,
+                                            from_=1 if variable is self.clicks else 0)
+                else:
+                    entry = ttk.Entry(body, textvariable=variable)
+                entry.grid(row=row, column=1, sticky="ew")
         buttons = ttk.Frame(body)
         buttons.grid(row=len(values), column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
@@ -1067,12 +1077,12 @@ class ScrollSequenceDialog(ModalDialog):
         ttk.Label(body, text="屏幕 X").grid(row=0, column=0, sticky="w", pady=px(6))
         x_row = ttk.Frame(body)
         x_row.grid(row=0, column=1, sticky="ew")
-        ttk.Entry(x_row, textvariable=self.x).pack(side="left", fill="x", expand=True)
+        integer_spinbox(x_row, textvariable=self.x, from_=-2147483647).pack(side="left", fill="x", expand=True)
         ttk.Button(x_row, text="点击屏幕选取…", command=self.start_pick_position).pack(
             side="left", padx=pad(8, 0),
         )
         ttk.Label(body, text="屏幕 Y").grid(row=1, column=0, sticky="w", pady=px(6))
-        ttk.Entry(body, textvariable=self.y).grid(row=1, column=1, sticky="ew")
+        integer_spinbox(body, textvariable=self.y, from_=-2147483647).grid(row=1, column=1, sticky="ew")
         ttk.Label(body, text="滚动步骤").grid(row=2, column=0, columnspan=2,
                                                sticky="w", pady=pad(12, 4))
         self.tree = ttk.Treeview(
@@ -1096,7 +1106,7 @@ class ScrollSequenceDialog(ModalDialog):
 
         edit_row = ttk.Frame(body)
         edit_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=pad(10, 0))
-        ttk.Combobox(
+        compact_combobox(
             edit_row, textvariable=self.direction,
             values=(SCROLL_UP_LABEL, SCROLL_DOWN_LABEL), state="readonly", width=8,
         ).pack(side="left")
@@ -1112,7 +1122,7 @@ class ScrollSequenceDialog(ModalDialog):
             row=6, column=0, columnspan=2, sticky="w", pady=pad(8, 0),
         )
         ttk.Label(body, text="每格间隔 (ms)").grid(row=7, column=0, sticky="w", pady=px(8))
-        ttk.Entry(body, textvariable=self.interval).grid(row=7, column=1, sticky="ew")
+        integer_spinbox(body, textvariable=self.interval).grid(row=7, column=1, sticky="ew")
         ttk.Label(body, text="执行前延时").grid(row=8, column=0, sticky="w", pady=px(8))
         ttk.Entry(body, textvariable=self.delay).grid(row=8, column=1, sticky="ew")
         buttons = ttk.Frame(body)
@@ -1339,9 +1349,9 @@ class TurnActionDialog(ModalDialog):
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
         ttk.Label(body, text="ΔX").grid(row=0, column=0, sticky="w", pady=px(5))
-        ttk.Entry(body, textvariable=self.dx, width=8).grid(row=0, column=1, sticky="ew")
+        integer_spinbox(body, textvariable=self.dx, from_=-2147483647, width=8).grid(row=0, column=1, sticky="ew")
         ttk.Label(body, text="ΔY").grid(row=1, column=0, sticky="w", pady=px(5))
-        ttk.Entry(body, textvariable=self.dy, width=8).grid(row=1, column=1, sticky="ew")
+        integer_spinbox(body, textvariable=self.dy, from_=-2147483647, width=8).grid(row=1, column=1, sticky="ew")
         ttk.Label(body, text="执行前延时").grid(row=2, column=0, sticky="w", pady=px(5))
         ttk.Entry(body, textvariable=self.delay, width=8).grid(row=2, column=1, sticky="ew")
         ttk.Label(
@@ -1404,18 +1414,20 @@ class RepeatClickDialog(ModalDialog):
         for row, (label, variable) in enumerate(values):
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w", pady=px(8))
             if variable is self.button:
-                ttk.Combobox(body, textvariable=variable, values=("left", "right", "middle"),
-                             state="readonly").grid(row=row, column=1, sticky="ew")
+                compact_combobox(body, textvariable=variable, values=("left", "right", "middle"),
+                             state="readonly").grid(row=row, column=1, sticky="w")
             elif variable is self.x:
                 frame = ttk.Frame(body)
                 frame.grid(row=row, column=1, sticky="ew")
-                ttk.Entry(frame, textvariable=variable).pack(side="left", fill="x", expand=True)
+                integer_spinbox(frame, textvariable=variable, from_=-2147483647).pack(side="left", fill="x", expand=True)
                 ttk.Button(frame, text="点击屏幕选取…", command=self.start_pick_position).pack(side="left", padx=pad(8, 0))
             elif variable is self.y:
-                entry = ttk.Entry(body, textvariable=variable)
+                entry = integer_spinbox(body, textvariable=variable, from_=-2147483647)
                 entry.grid(row=row, column=1, sticky="ew")
             else:
-                ttk.Entry(body, textvariable=variable).grid(row=row, column=1, sticky="ew")
+                entry = (integer_spinbox(body, textvariable=variable, from_=1)
+                         if variable is self.count else ttk.Entry(body, textvariable=variable))
+                entry.grid(row=row, column=1, sticky="ew")
         buttons = ttk.Frame(body)
         buttons.grid(row=len(values), column=0, columnspan=2, sticky="ew", pady=pad(18, 0))
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right")
@@ -1522,10 +1534,10 @@ class SetResolutionActionDialog(ModalDialog):
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1, minsize=px(380))
         ttk.Label(body, text="分辨率样式").grid(row=0, column=0, sticky="w", pady=px(8))
-        self.style_box = ttk.Combobox(
+        self.style_box = compact_combobox(
             body, textvariable=self.name, values=names, state="readonly", width=28,
         )
-        self.style_box.grid(row=0, column=1, sticky="ew", pady=px(8))
+        self.style_box.grid(row=0, column=1, sticky="w", pady=px(8))
         ttk.Label(
             body,
             text="留空即直接修改当前软件所在显示器；也可以选一个窗口，只修改该窗口"

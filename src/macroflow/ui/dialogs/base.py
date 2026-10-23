@@ -741,19 +741,6 @@ AFTER_ACTION_LABELS = {
 AFTER_ACTION_VALUES = {label: value for value, label in AFTER_ACTION_LABELS.items()}
 
 
-FALLBACK_ON_MATCH_LABELS = {
-    "continue": "继续识别主模块（不点击）",
-    "click_continue": "点击备用命中位置，继续识别主模块",
-    "exit": "直接退出主模块识别（不点击）",
-    "click_exit": "点击备用命中位置后退出主模块识别",
-}
-
-
-FALLBACK_ON_MATCH_VALUES = {
-    label: value for value, label in FALLBACK_ON_MATCH_LABELS.items()
-}
-
-
 SECOND_MATCH_CLICK_TARGET_LABELS = {
     "first": "第一次识别位置",
     "second": "第二次识别位置",

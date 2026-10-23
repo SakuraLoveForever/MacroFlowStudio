@@ -1,5 +1,4 @@
 from __future__ import annotations
-from macroflow.core.timed_detection import sustained_detection
 from macroflow.core.workflow_plugins import PROCESS_ABSENCE_RESTART
 
 from macroflow.execution.player import AdvanceToNextWorkflowStep, EndCurrentScriptRequest, GuardJumpRequest, JumpToCurrentScriptLastAction, PlaybackStopped, screen_template_scale, is_process_running
@@ -37,7 +36,8 @@ class GuardsMixin:
                 else:
                     started = guard.pop("plugin_pause_since", None)
                     if started is not None:
-                        guard["plugin_pause_seconds"] = guard.get("plugin_pause_seconds", 0.0) + max(0.0, now - started)
+                        if guard.get("not_found_since") is not None:
+                            guard["not_found_since"] += max(0.0, now - started)
 
     @staticmethod
     def _ocr_region_in_frame(screen, origin, region) -> tuple:
@@ -136,8 +136,6 @@ class GuardsMixin:
             if guard is None:
                 return
             guard["timeout_triggered"] = False
-            if hit.get("kind") == "timed":
-                guard.get("timed_state", {}).pop("fired", None)
             guard["cooldown_until"] = 0.0
             cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
             if cooldowns is not None:
@@ -160,10 +158,6 @@ class GuardsMixin:
                              event["height"], **options)
             elif kind == "restore_foreground":
                 self._restore_workflow_scan_foreground()
-            elif kind == "fallback_click":
-                self._guard_fallback_click(
-                    event["guard"], event["match"], event["fallback_name"],
-                )
     def _detection_overlay(self, x, y, width, height, label=None, key=None) -> None:
         detection_context = getattr(self, "_detection_event_context", None)
         deferred_events = getattr(detection_context, "events", None)
@@ -247,7 +241,7 @@ class GuardsMixin:
             except Exception as exc:
                 for guard in due:
                     if str(guard.get("recognize", "")) not in ("none", "process"):
-                        guard.pop("timed_state", None)
+                        guard["not_found_since"] = None
                 self._defer_detection_event(
                     deferred_events, "log", text=f"全局检测：屏幕截图失败：{exc}",
                 )
@@ -284,7 +278,7 @@ class GuardsMixin:
         if guard.get("module_ref"):
             self._refresh_guard_from_module(guard)
         recognize = str(guard.get("recognize", ""))
-        recheck = bool(guard.get("recheck_enabled")) and recognize not in ("none", "process", "number") and not guard.get("timed_detection")
+        recheck = bool(guard.get("recheck_enabled")) and recognize not in ("none", "process", "number")
         if not recheck:
             guard.pop("recheck_started_at", None)
         elif guard.get("recheck_started_at") is not None and now - guard["recheck_started_at"] < self._guard_recheck_delay(guard):
@@ -297,7 +291,7 @@ class GuardsMixin:
         elif recognize == "process":
             process_name = str(guard.get("process_name", "")).strip()
             if not process_name:
-                guard.pop("timed_state", None)
+                guard["not_found_since"] = None
                 return None
             try:
                 detected = is_process_running(process_name)
@@ -313,24 +307,17 @@ class GuardsMixin:
             detected, match = self._guard_text_detect(guard, screen, origin)
         else:
             detected, match = self._guard_image_detect(guard, screen, origin)
+        if detected is None:
+            guard["not_found_since"] = None
+            return None
+        if guard.get("plugin") == PROCESS_ABSENCE_RESTART and detected:
+            guard["not_found_since"] = None
+            guard["timeout_triggered"] = False
+            return None
         if recheck:
             if guard.pop("recheck_started_at", None) is None:
                 guard["recheck_started_at"] = time.perf_counter()
                 return None
-        if guard.get("timed_detection"):
-            observation = None if guard.get("warned_missing_template") or guard.get("warned_find_error") else detected
-            state = guard.setdefault("timed_state", {})
-            if guard.get("plugin") == PROCESS_ABSENCE_RESTART:
-                now -= guard.get("plugin_pause_seconds", 0.0)
-            if sustained_detection(state, observation, guard.get("timed_condition", "absent"),
-                                   int(guard.get("timed_duration_ms", 30000)), now):
-                label = "检测到" if guard.get("timed_condition") == "present" else "未检测到"
-                self._ui(self._guard_global_event, guard,
-                         f"持续状态触发：连续{label} {guard.get('timed_duration_ms', 30000)} ms，执行自定义步骤。")
-                guard["trigger_kind"] = "timed"
-                hit = self._build_guard_hit(guard, resolve_hwnd=False)
-                return {**hit, "actions": list(guard.get("timed_actions") or []), "delay_ms": 0}
-            return None
         if guard.get("wait_text_absent"):
             if detected:
                 if not guard.get("target_absent_armed"):
@@ -343,36 +330,6 @@ class GuardsMixin:
                     guard["last_present_match"] = dict(match)
             elif guard.get("target_absent_armed"):
                 guard["target_absent_armed"] = False
-        fallback_key = str(guard.get("fallback_module_key", "")).strip()
-        if not detected and fallback_key:
-            fallback_obj = registered_module_object(fallback_key)
-            fallback_match = self._guard_fallback_match(guard, fallback_obj, screen, origin)
-            if fallback_match and not guard.get("fallback_present"):
-                guard["fallback_present"] = True
-                fallback_name = str((fallback_obj or {}).get("name") or "备用识别模块")
-                self._detection_overlay(
-                    fallback_match["x"], fallback_match["y"],
-                    fallback_match["width"], fallback_match["height"],
-                    key=f"{guard['key']}:fallback",
-                )
-                if guard.get("fallback_click"):
-                    offset_x, offset_y = self._guard_scale_offset(
-                        int(fallback_obj.get("ocr_offset_right", 0))
-                        - int(fallback_obj.get("ocr_offset_left", 0)),
-                        int(fallback_obj.get("ocr_offset_down", 0))
-                        - int(fallback_obj.get("ocr_offset_up", 0)),
-                    )
-                    click_match = dict(fallback_match,
-                                       center_x=fallback_match["center_x"] + offset_x,
-                                       center_y=fallback_match["center_y"] + offset_y)
-                    self._guard_fallback_click(guard, click_match, fallback_name)
-                else:
-                    self._ui(
-                        self._guard_global_event, guard,
-                        f"全局检测：备用模块 {fallback_name} 已识别，继续识别主模块。",
-                    )
-            elif not fallback_match:
-                guard["fallback_present"] = False
         subject = (
             str(guard.get("expected_text", "")).strip() or "识别文字"
             if recognize == "text" else
@@ -528,8 +485,7 @@ class GuardsMixin:
                 list(obj.get("on_success_actions") or [])
                 if bool(obj.get("run_code_after_action", False)) else []
             )
-            for field in ("timed_detection", "timed_condition", "timed_duration_ms", "timed_actions", "process_name"):
-                guard[field] = obj.get(field)
+            guard["process_name"] = str(obj.get("process_name", ""))
             guard["recognize"] = str(obj.get("recognize", ""))
             guard["expected_text"] = str(obj.get("expected_text", ""))
             guard["match_mode"] = str(obj.get("match_mode", "contains"))
@@ -544,15 +500,6 @@ class GuardsMixin:
                 guard["click"] = (int(raw_click[0]), int(raw_click[1]))
             else:
                 guard["click"] = None
-            guard["fallback_module_key"] = str(obj.get("fallback_module_key", "")).strip()
-            guard["fallback_on_match"] = str(obj.get("fallback_on_match", "continue")).strip()
-            guard["fallback_click"] = bool(obj.get("fallback_click", False))
-            guard["fallback_click_count"] = max(
-                1, min(9999, int(obj.get("fallback_click_count", 1))),
-            )
-            guard["fallback_click_interval_ms"] = max(
-                0, min(60000, int(obj.get("fallback_click_interval_ms", 100))),
-            )
             for field in (
                 "ocr_offset_up", "ocr_offset_down", "ocr_offset_left", "ocr_offset_right",
             ):
@@ -666,94 +613,6 @@ class GuardsMixin:
             return False, None
         guard["warned_find_error"] = False
         return match is not None, match
-    def _guard_fallback_match(self, guard: dict, obj: dict | None, screen, origin) -> dict | None:
-        if not obj or obj.get("recognize") in ("number", "none"):
-            return None
-        raw_region = obj.get("region") or []
-        region = (
-            self._guard_scale_region(raw_region)
-            if len(raw_region) == 4 and int(raw_region[2]) > 0 and int(raw_region[3]) > 0
-            else None
-        )
-        if obj.get("recognize") == "text":
-            # 引擎未就绪时等待加载（可中断轮询）：F12 能中止，不会卡死在导入里。
-            if not self._wait_ocr_ready():
-                return None
-            try:
-                ocr_screen, ocr_origin = self._ocr_region_in_frame(screen, origin, region)
-                if ocr_screen is None:
-                    recognized, boxes = recognize_region_with_boxes(region)
-                else:
-                    recognized, boxes = recognize_image_with_boxes(ocr_screen, ocr_origin)
-            except Exception:
-                return None
-            expected = str(obj.get("expected_text", ""))
-            mode = str(obj.get("match_mode", "contains"))
-            match = find_expected_match(boxes, expected, mode)
-            if match is None and matches_expected(recognized, expected, mode):
-                if region:
-                    x, y, width, height = region
-                    return {
-                        "x": x, "y": y, "width": width, "height": height,
-                        "center_x": x + width // 2, "center_y": y + height // 2,
-                    }
-            return match
-        template = resolve_path(str(obj.get("template", "")))
-        if not template.is_file():
-            return None
-        try:
-            threshold = min(1.0, max(0.1, float(obj.get("threshold", 0.85))))
-
-            if screen is not None and origin is not None:
-                return find_template_in_image(
-                    template, screen, threshold, origin, region,
-                    scale=self._guard_template_scale(),
-                )
-            return find_template(
-                template, threshold, region,
-                scale=self._guard_template_scale(),
-            )
-        except Exception:
-            return None
-    def _guard_fallback_click(self, guard: dict, match: dict, fallback_name: str) -> None:
-        """备用模块命中点击（播放器线程内联，按间隔节流防连点）。"""
-        detection_context = getattr(self, "_detection_event_context", None)
-        deferred_events = getattr(detection_context, "events", None)
-        if deferred_events is not None:
-            self._defer_detection_event(
-                deferred_events, "fallback_click", guard=dict(guard),
-                match=dict(match), fallback_name=fallback_name,
-            )
-            return
-        now = time.perf_counter()
-        interval_ms = max(0, int(guard.get("fallback_click_interval_ms", 100)))
-        if (now - float(guard.get("fallback_click_since", 0.0))) * 1000 < interval_ms:
-            return
-        guard["fallback_click_since"] = now
-        count = max(1, min(9999, int(guard.get("fallback_click_count", 1))))
-        button = str(guard.get("button", "left"))
-        hwnd = self._bound_hwnd(update_display=False)
-        player = getattr(self, "player", None)
-        try:
-            if player is not None:
-                player._click_module_point(
-                    int(match["center_x"]), int(match["center_y"]), button, count, hwnd,
-                )
-            else:
-                send_move_absolute(int(match["center_x"]), int(match["center_y"]))
-                for index in range(count):
-                    send_button(button, True)
-                    time.sleep(0.03)
-                    send_button(button, False)
-                    if index + 1 < count:
-                        time.sleep(interval_ms / 1000)
-        except Exception as exc:
-            self._ui(self._guard_global_event, guard, f"全局检测：备用模块点击失败：{exc}")
-            return
-        self._ui(
-            self._guard_global_event, guard,
-            f"全局检测：备用模块 {fallback_name} 已识别并点击，继续识别主模块。",
-        )
     def _build_guard_hit(self, guard: dict, *, resolve_hwnd: bool = True) -> dict:
         """把命中的守卫打包成播放器处理段描述（hit）。"""
         hwnd = self._bound_hwnd(update_display=False) if resolve_hwnd else None
@@ -774,8 +633,6 @@ class GuardsMixin:
         }
         if guard.get('scope_action_ids'):
             hit['scope_action_ids'] = tuple(guard['scope_action_ids'])
-        if hit["kind"] == "timed":
-            return hit
         click = guard.get("click")
         custom_click = isinstance(click, (list, tuple)) and len(click) == 2
         # 旧配置兼容：没有显式点击位置、没有语句体回放时，点击识别到的位置
@@ -937,7 +794,6 @@ class GuardsMixin:
             guards.clear()
         for key in keys:
             hide_overlay(key)
-            hide_overlay(f"{key}:fallback")
     def _clear_global_detect_cooldowns(self):
         cooldowns = getattr(self, "global_detect_cooldown_deadlines", None)
         if cooldowns is not None:

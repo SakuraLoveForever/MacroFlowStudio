@@ -198,8 +198,8 @@ class TrayMixin:
         """保守判断动作树是否依赖 OCR 引擎（文字识别）。
 
         任一分支用到 OCR 即返回 True：text_ocr 动作、文字识别全局守卫
-        （recognize == "text"）、引用模块的成功/超时代码段、备用识别
-        模块，以及递归展开的 script_ref 引用脚本。文件缺失/解析失败按
+        （recognize == "text"）、引用模块的成功/超时代码段，
+        以及递归展开的 script_ref 引用脚本。文件缺失/解析失败按
         最坏情况返回 True——宁可在播放开始前多等，也不把不可中断的
         引擎导入留到播放中途。纯键鼠/模板匹配脚本返回 False，可直接
         跳过 OCR 等待立即执行。
@@ -239,7 +239,7 @@ class TrayMixin:
                 segment, seen, seen_modules, module_cache, depth + 1,
             ):
                 return True
-            for field in ("module_key", "fallback_module_key"):
+            for field in ("module_key",):
                 module_key = str(action.get(field, "")).strip()
                 if not module_key or module_key in seen_modules:
                     continue
@@ -280,7 +280,7 @@ class TrayMixin:
             return False
         if str(module.get("recognize", "")).strip() == "text":
             return True
-        for field in ("on_success_actions", "on_timeout_actions", "timed_actions"):
+        for field in ("on_success_actions", "on_timeout_actions"):
             segment = module.get(field)
             if isinstance(segment, list) and self._script_needs_ocr(
                 segment, seen, seen_modules, module_cache, depth,
